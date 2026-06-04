@@ -135,8 +135,9 @@ tracks** — one for issues moving through the build, one for PRs moving through
 - `armada:merged` — the pipeline merged it. Only ever set when `autoMerge` is enabled **and** every
   gate passed.
 - `armada:blocked` — the pipeline stopped and needs a human: a blocking finding, red CI, no
-  convergence within the bounded loop, or `autoMerge` off and the PR is sitting "ready to merge,
-  awaiting human".
+  convergence within the bounded loop, or a non-`mergeable`/branch-protection failure. (With
+  `autoMerge` off, a reviewed-and-green PR is **not** blocked — that's the `ready_awaiting_human`
+  terminal of §3e/§4.5, which keeps `armada` and never adds `armada:blocked`.)
 
 `armada:reviewing`, `armada:merged`, and the issue-track terminal `armada:shipped` are all created
 by [`commission`](../commission/SKILL.md) alongside the other labels.
@@ -243,7 +244,12 @@ signal justifies it; with no signals at all the scheduler degrades to the origin
 
 Walk the graph and select the **runnable frontier**: every unit with **no unsatisfied prerequisite
 edge** (its dependencies have landed) and **no same-file conflict with a unit already in flight**.
-That frontier is dispatched **concurrently**, across both tracks at once, up to the per-track bounds:
+Then **de-conflict the frontier against itself**: if two selected candidates share a same-file
+conflict edge, they must not be dispatched in the same tick — keep the FIFO-earlier one (or the
+priority unit) and **hold the other** with reason `implicit: same file <path>` (§2e), so a
+same-file pair is never dispatched concurrently whether the other side is already in flight *or*
+merely a co-candidate this tick. The surviving frontier is dispatched **concurrently**, across both
+tracks at once, up to the per-track bounds:
 
 - **Issue builds** fill up to `maxConcurrentBuilds` (minus builds already in flight) — §2d.
 - **PR review→merge pipelines** fill up to `maxConcurrentReviews` (minus pipelines already in
@@ -307,15 +313,15 @@ isolation:
 
 - **Supervised single pick — run inline.** When a human asked for one named issue ("crows-nest,
   grab #142"), run [`shipwright`](../shipwright/SKILL.md) **inline in this turn** so the user keeps
-  its approval gates — the plan sign-off (§3 of shipwright) and the base-branch choice (§1a). No
-  subagent, because a subagent can't pause to ask.
+  its approval gates — the plan sign-off (§3 of shipwright) and the base-branch choice (§1a of
+  shipwright). No subagent, because a subagent can't pause to ask.
 
 **The subagent runs `shipwright` non-interactively.** It cannot pause to ask the user, so
 shipwright's approval gates collapse to **sensible defaults** (accept the plan, take the default
 base branch) rather than prompts. Two guards survive non-interactively and must **not** be
 defaulted away:
-- **Base branch** — use `baseBranch` from `.armada/config.json` (§1a's logic still applies if the
-  issue's target code lives only on a feature branch; pick the safe base, don't merge to resolve it).
+- **Base branch** — use `baseBranch` from `.armada/config.json` (shipwright §1a's logic still applies
+  if the issue's target code lives only on a feature branch; pick the safe base, don't merge to resolve it).
 - **No destructive migrations** — never run a data-destructive schema/data migration unattended;
   if the only path forward needs one, return `blocked` rather than guessing.
 
@@ -747,7 +753,7 @@ demand.
   subagent dispatch already makes: a background agent **can't prompt the user mid-build**, so
   shipwright's approval gates collapse to **autonomous defaults** (accept the plan, take the default
   base). The two non-negotiable guards survive unchanged and must **not** be defaulted away — use
-  `baseBranch` from config (don't merge a feature branch to resolve a base, §1a) and **never run a
+  `baseBranch` from config (don't merge a feature branch to resolve a base, shipwright §1a) and **never run a
   destructive migration unattended** (return `blocked` instead, §2d). Concurrency is **bounded**
   (`maxConcurrentBuilds`, default 1) so background fan-out never becomes an unbounded swarm.
 - **Label discipline is the safety rail.** The lookout acts only on `triggerLabel`, so you arm
