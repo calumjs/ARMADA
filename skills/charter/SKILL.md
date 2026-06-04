@@ -9,6 +9,7 @@ description: >
   the user says "create an issue", "file a PBI", "charter a task", "new backlog item", "raise a
   ticket", "draft an issue", "open a work order", or invokes /charter. Distinct from commission
   (which sets the repo up); charter authors and arms the work that flows into the fleet.
+argument-hint: "<rough request>"
 disallowed-tools: Write, Edit
 ---
 

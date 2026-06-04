@@ -11,6 +11,7 @@ description: >
   comments", "respond to the review", "fix the PR feedback". Accepts a GitHub issue number, a
   free-text description, or a PR number plus review findings. Stack-agnostic — it runs whatever
   build/test commands the repo configures.
+argument-hint: "<issue-number | description | PR# + findings>"
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Skill, Agent, EnterWorktree, ExitWorktree
 ---
 

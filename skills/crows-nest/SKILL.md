@@ -12,6 +12,7 @@ description: >
   for ready PRs", "review and merge PRs", "man the lookout", or invokes /crows-nest. Accepts an
   optional trigger label (default from .armada/config.json, else "armada") and an optional poll
   interval.
+argument-hint: "[label] [interval]"
 allowed-tools: Bash, Read, Grep, Glob, Skill, Agent, Workflow
 ---
 
