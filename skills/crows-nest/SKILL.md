@@ -551,6 +551,14 @@ they set `autoMerge: true`. If `/loop` is unavailable, offer to run manual ticks
   object, no code change needed. Removing `armada` from a PR takes it out of the ready-PR watch.
 - If a tick errors (network, `gh` auth, rate limit), report it and let the next interval retry;
   don't spin-retry inside one tick.
+- **Self-improvement loop.** When a tick hits a defect in ARMADA *itself* — the lookout's own
+  guidance was wrong or missing, a guard didn't fire, or it had to **guess** because a step was
+  absent (as opposed to a target-project failure, which is handled normally) — file a fix through
+  [`charter`](../charter/SKILL.md) §9: against the configured `armadaRepo`, de-duped, labelled
+  `fleet-defect`, and **unarmed by default** (armed only if `autoArmSelfFixes` is true, since a
+  self-armed fleet-defect can rewrite and — with `autoMerge` — merge the lookout's own skill
+  unattended). It's best-effort and side-channel: note it in the tick summary, **never** block or
+  derail the watch on it.
 
 ## Inputs
 

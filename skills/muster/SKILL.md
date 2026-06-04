@@ -168,6 +168,12 @@ review was posted at all. Keep the return machine-readable; the prose lives on t
 - **`gh api` comment posting is rejected** (permissions / branch rules) — fall back to a single
   top-level summary comment listing every finding inline, and note the inline-posting failure. Never
   drop findings on the floor because the inline endpoint refused.
+- **An ARMADA defect, not a PR finding.** If the thing that went wrong is a defect in `muster`
+  *itself* — a review step was wrong or missing, a guard didn't fire, or it had to **guess** because
+  guidance was absent (distinct from a finding *about the PR under review*, which is a normal
+  finding) — file a fix through [`charter`](../charter/SKILL.md) §9: against the configured
+  `armadaRepo`, de-duped, labelled `fleet-defect`, **unarmed by default**. It's best-effort and
+  side-channel — note it in the summary and finish the review; never block the muster on it.
 
 ## Inputs
 

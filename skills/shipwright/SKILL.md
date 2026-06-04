@@ -281,10 +281,20 @@ don't auto-record:
 
 Default to skipping if unsure — over-offering trains the user to mute the suggestion.
 
-## 10. Suggest skill improvements
+## 10. Suggest skill improvements — and file ARMADA defects (self-improvement loop)
 
 After each issue, reflect: steps that were missing or mis-ordered, conventions worth documenting,
 friction worth automating. Present suggestions and, if approved, open a PR against this skill.
+
+When a reflection is about a genuine **ARMADA defect** — a step in this skill was wrong or missing, a
+guard didn't fire, or you had to **guess** because guidance was absent — don't just suggest it,
+**file it through the fleet's self-improvement loop**: route it via [`charter`](../charter/SKILL.md)
+§9, which triages ARMADA-defect vs task-problem, files against the configured `armadaRepo` (never the
+host project), de-dupes against open `fleet-defect` issues, and labels it `fleet-defect` **unarmed by
+default** (armed only if `autoArmSelfFixes` is true). Keep it to **genuine ARMADA defects** — a
+broken test or wrong requirement in the *target project* is task work, handled in the build, **not** a
+fleet-defect. Filing is **best-effort and side-channel**: it must never block or derail the build —
+surface what was filed in the handoff (§8) and carry on.
 
 ## 11. Address-review mode — respond to review comments on a PR
 
