@@ -8,5 +8,5 @@
     "test": "node scripts/validate-skills.mjs",
     "lint": "node scripts/validate-skills.mjs"
   },
-  "notes": "ARMADA builds itself. This repo has no compile step — a 'feature' here is a new or updated skill. The validate step checks every skills/*/SKILL.md has well-formed frontmatter (a `name` matching its directory and a non-empty `description`)."
+  "notes": "ARMADA builds itself. This repo has no compile step — a 'feature' here is a new or updated skill. The validate step checks every skills/*/SKILL.md has well-formed frontmatter (a `name` matching its directory and a non-empty `description`). The test/lint command `node scripts/validate-skills.mjs` is REPO-LOCAL to ARMADA — it runs against this checkout's own scripts/ dir, not via the installed plugin, so it intentionally uses a bare relative path. Bundled scripts a skill invokes downstream (review-merge-pipeline.mjs, merge-gate.mjs) are instead referenced via ${CLAUDE_PLUGIN_ROOT}/scripts/... because installed plugins are copied to a cache and relative paths break there. Release rule: bump .claude-plugin/plugin.json `version` on every skill add or change — the version is the install cache key, so installs only pick up changes when it's bumped."
 }
