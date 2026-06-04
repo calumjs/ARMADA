@@ -57,10 +57,14 @@ validation commands — and an instruction to return findings in the **exact sch
 work in **isolated context**: neither reviewer sees the other's output, and neither pollutes the
 lookout's transcript.
 
-- **Lens A — code-review (conventions + correctness).** Dispatch the
-  [`code-review`](../../) pass over the diff: does the change match the surrounding code's idioms,
-  is it correct, does it handle errors and edge cases, does it keep to the issue's scope? This lens
-  knows the repo's conventions.
+- **Lens A — code-review (conventions + correctness).** Dispatch the built-in `/code-review` skill
+  (or, if it isn't available, an `Explore` / `general-purpose` subagent running a
+  conventions+correctness prompt) over the diff: does the change match the surrounding code's
+  idioms, is it correct, does it handle errors and edge cases, does it keep to the issue's scope?
+  This lens knows the repo's conventions. If neither the `/code-review` skill nor a suitable
+  general-purpose subagent is available in the environment, note that in the summary and run with
+  the single lens rather than failing the whole muster — a one-lens review is degraded, not useless,
+  and no review is never a green light.
 
 - **Lens B — codex-rescue (independent second opinion).** Dispatch with
   `agentType: codex:codex-rescue` for a root-cause / second-opinion read of the same diff — an
