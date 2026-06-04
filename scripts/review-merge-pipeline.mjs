@@ -234,6 +234,7 @@ export async function runReviewMergePipeline(ctx, deps) {
       mergeMethod: config.mergeMethod,
       review: { blocking, degraded },
       ci,
+      localChecks: localGreen,
       isDraft: prIsDraft(sh, pr),
       mergeable,
       protectionsSatisfied: branchProtectionsSatisfied(sh, pr),
@@ -291,9 +292,11 @@ function prIsDraft(sh, pr) {
 }
 function branchProtectionsSatisfied(sh, pr) {
   // GitHub is the source of truth; mergeStateStatus BLOCKED/BEHIND/DIRTY means not yet.
+  // Fail closed: only the known-good states satisfy. Empty/unknown (gh failed or the
+  // field was absent) is NOT satisfied — never treat missing protection state as green.
   const r = sh(`gh pr view ${pr} --json mergeStateStatus --jq .mergeStateStatus`);
   const st = (r.stdout || '').trim().toUpperCase();
-  return st === 'CLEAN' || st === 'HAS_HOOKS' || st === 'UNSTABLE' || st === '';
+  return st === 'CLEAN' || st === 'HAS_HOOKS' || st === 'UNSTABLE';
 }
 
 // ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@
 //     "mergeMethod": "squash",           // merge | squash | rebase
 //     "review": { "blocking": 0, "degraded": false },  // latest muster summary
 //     "ci": "green",                     // green | pending | red  (gh pr checks rollup)
+//     "localChecks": true,               // §4.3 local build/test/lint all passed (must be true)
 //     "isDraft": false,
 //     "mergeable": "MERGEABLE",          // MERGEABLE | BEHIND | CONFLICTING | UNKNOWN
 //     "protectionsSatisfied": true,      // false when gh pr merge would be refused
@@ -80,6 +81,7 @@ const mergeable = String(s.mergeable ?? '').toUpperCase();
 const protectionsSatisfied = s.protectionsSatisfied === true;
 const rounds = Number.isFinite(s.rounds) ? s.rounds : null;
 const maxReviewRounds = Number.isFinite(s.maxReviewRounds) ? s.maxReviewRounds : 2;
+const localChecks = s.localChecks; // §4.3 local build/test/lint result; must be true to merge
 
 // --- The five gates (§4.5), each independent of autoMerge so we can report a
 //     green-but-awaiting-human PR distinctly from a blocked one. ---
@@ -97,6 +99,16 @@ if (degraded) {
 // Gate 3 — CI green (never red or pending).
 if (ci !== 'green') {
   blockers.push(ci ? `CI is ${ci} (only green merges)` : 'CI status unknown (only green merges)');
+}
+
+// Gate 3b — local build/test/lint green (the §4.3 verify result). Fails closed:
+// only an explicit `true` clears it, so a missing/unknown local result blocks.
+if (localChecks !== true) {
+  blockers.push(
+    localChecks === false
+      ? 'local build/test/lint failed'
+      : 'local verify result unknown (only green merges)',
+  );
 }
 
 // Gate 4 — not draft and mergeable.
@@ -120,7 +132,7 @@ if (!protectionsSatisfied) {
 // red CI persist after maxReviewRounds, that is a hard block (no convergence),
 // not a "try again". Only relevant when there is still something unresolved.
 const unresolvedThisRound =
-  degraded || !Number.isFinite(blocking) || blocking > 0 || ci !== 'green';
+  degraded || !Number.isFinite(blocking) || blocking > 0 || ci !== 'green' || localChecks !== true;
 let noConvergence = false;
 if (rounds !== null && rounds >= maxReviewRounds && unresolvedThisRound) {
   noConvergence = true;
