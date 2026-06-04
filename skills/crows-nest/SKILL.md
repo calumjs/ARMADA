@@ -407,289 +407,52 @@ crows-nest: #150 review pipeline completed → merged (armada:merged)
 ## 3. The PR track — dispatch ready PRs into the review→merge pipeline
 
 The PR track is **not a separate tick** — it's scheduled in the same unified tick as the issue track
-(§2), from the same batched scan. §3 is what the scheduler does for each **PR on the frontier**
-(§2c): claim it and launch its review→merge pipeline (§4) as a **background** Workflow, then return.
-PR pipelines run **concurrently with issue builds and with each other**, bounded by
-`maxConcurrentReviews` — the lookout doesn't drain the issue track before starting reviews.
+(§2), from the same batched scan. For each **PR on the frontier** (§2c) the scheduler claims it and
+launches its review→merge pipeline (§4) as a **background** Workflow, then returns. PR pipelines run
+**concurrently with issue builds and with each other**, bounded by `maxConcurrentReviews` — the
+lookout doesn't drain the issue track before starting reviews.
 
-### 3a. Eligibility (evaluated in the §2a scan)
+The full track — eligibility (§3a), selection (§3b), claim (§3c), background dispatch (§3d), outcome
+reconciliation (§3e), and reporting (§3f) — lives in
+**[references/ready-pr-watch.md](references/ready-pr-watch.md)**. The shape to keep in mind:
 
-The ready-PR gate is applied during the unified scan (§2a), not as a second `gh pr list`. A PR is
-**ready** — eligible for the frontier — when **all** hold:
-
-- it is **open** and **not draft**;
-- it carries the `<triggerLabel>` (`armada`) — shipwright auto-arms it with this when it opens the
-  PR, so ARMADA-created PRs enter the pipeline automatically with no manual PR-arming gate;
-- **CI is not failing** — `statusCheckRollup` has no `FAILURE`/`ERROR`/`TIMED_OUT` checks (pending
-  is fine to re-check next tick; a green or not-yet-failing rollup passes this stage);
-- it isn't **already mid-pipeline** — not labelled `armada:reviewing`, and not already
-  `armada:merged` or `armada:blocked` (terminal states a future tick must not re-pick).
-
-This is the ready-PR analogue of §2a's issue dedup, and `armada:reviewing` is the idempotency guard
-that stops a second tick double-driving the same PR. The graph (§2b) may still **hold** a ready PR
-behind a base-about-to-move or same-file edge even when it passes this gate — those held PRs are
-reported in §2e, not dispatched.
-
-### 3b. Selection (the §2c frontier, up to `maxConcurrentReviews`)
-
-The scheduler (§2c) selects which ready PRs to launch this tick — the frontier PRs, oldest-update-
-first (FIFO on `updatedAt`), up to `(maxConcurrentReviews − reviews-in-flight)`. **Multiple PRs are
-reviewed concurrently** when the budget allows and the graph permits; the rest are held for later
-ticks. If no PR is on the frontier and none is in flight, the §2e report notes the harbour is clear.
-
-### 3c. Claim it
-
-```bash
-gh pr edit <n> --add-label "armada:reviewing"
-gh pr comment <n> --body "🔭 crows-nest: ready-PR pipeline started — review → address → re-validate → gated merge."
-```
-
-### 3d. Drive the pipeline (background Workflow)
-
-Hand the claimed PR to the **review→merge Workflow** (§4), launched as a **background** dispatch
-(via the **`Agent` tool**, non-interactive, isolated context, `run_in_background: true`) — exactly
-as issue builds run in §2d. Launching it in the background means the tick **kicks off the pipeline
-and returns immediately** instead of blocking the whole `/loop` tick until the review-address-merge
-finishes (which takes many minutes). The lookout goes straight back to scheduling — dispatching more
-PR pipelines up to `maxConcurrentReviews` and more issue builds up to `maxConcurrentBuilds`, all
-concurrently. The Workflow returns a single terminal result the lookout maps to the PR-track labels
-when it **completes** (§3e). The lookout itself stays thin: it claims, launches the Workflow, and
-records the outcome — it does **not** carry the review or build transcripts (those live in the
-subagents' own contexts).
-
-### 3e. Record the outcome (on completion)
-
-The pipeline result arrives **asynchronously** — the tick that launched it has long since returned,
-so this reconcile runs when the background Workflow **completes** (the `Agent` tool surfaces its
-return). Until then the PR stays `armada:reviewing`, and the in-flight guard (§2a/§3a) keeps it out
-of every intervening tick. On completion, map the Workflow's terminal result to a PR-track label and
-a comment — a PR must **never** be left on `armada:reviewing`:
-
-- `merged` → `gh pr edit <n> --remove-label "armada:reviewing" --add-label "armada:merged"`; comment
-  the merge commit. (Only reachable with `autoMerge: true` and all gates green.)
-- `ready_awaiting_human` → `gh pr edit <n> --remove-label "armada:reviewing"` (leave `armada` on so a
-  human sees it); comment "✅ reviewed, addressed, green — **awaiting human merge** (auto-merge off)".
-  This is the default terminal state when `autoMerge` is off.
-- `blocked` → `gh pr edit <n> --remove-label "armada:reviewing" --add-label "armada:blocked"`; comment
-  the reason (blocking finding, red CI, no convergence, non-mergeable, branch protection unmet).
-
-### 3f. Report
-
-The PR track's dispatch is reported as part of the **unified schedule line** (§2e), alongside the
-issue builds dispatched the same tick — builds running, reviews running, held + why, in one line.
-The per-PR pipeline outcome is logged separately when its background Workflow completes (§3e):
-
-```
-crows-nest: #150 review pipeline completed → awaiting human merge (auto-merge off)
-```
+> A ready PR (open, not draft, carries `<triggerLabel>`, CI not failing, not already mid-pipeline) is
+> claimed `armada:reviewing`, driven through the §4 pipeline as a background Workflow, then reconciled
+> on completion to `armada:merged` / `ready_awaiting_human` / `armada:blocked` — a PR is **never** left
+> on `armada:reviewing`.
 
 ## 4. The review→merge pipeline (a Workflow)
 
-Steps 4.1–4.5 are driven as a **Workflow**, not ad-hoc inline turns: a deterministic graph of
-stages — **parallel review fan-out → consolidate → address → verify → make-mergeable → gated merge** — with explicit
-state passed between stages and a single terminal result. A Workflow (rather than a chat loop) is
-what gives multi-agent control its determinism: each stage's output is structured, the fan-out is
-genuinely parallel, and the merge gate is evaluated from data, not from prose the model might
-misread. It reuses the **parallel-reviewers + dedupe** pattern that [`muster`](../muster/SKILL.md)
-implements internally.
+A scheduled PR (§3) runs through a deterministic **Workflow**: **parallel review fan-out → consolidate
+→ address → verify → make-mergeable → gated merge**, with explicit state between stages and a single
+terminal result. It reuses the **parallel-reviewers + dedupe** pattern that
+[`muster`](../muster/SKILL.md) implements internally.
 
-The pipeline runs against one PR `<n>` already claimed `armada:reviewing` (§3c).
+The full pipeline — review (§4.1), address (§4.2), verify (§4.3), the bounded address↔review loop
+(§4.4), make-mergeable / auto-rebase (§4.4b), and the gated merge (§4.5) — lives in
+**[references/review-merge-pipeline.md](references/review-merge-pipeline.md)**. The gates that matter:
 
-### 4.1 Review (parallel fan-out → consolidate)
-
-Dispatch [`muster`](../muster/SKILL.md) against PR `<n>` as a subagent (via the **`Agent` tool**,
-non-interactive, isolated context). `muster` runs its **two lenses in parallel subagents**
-(code-review + `codex:codex-rescue`), dedupes by file+title, posts inline comments + a summary on
-the PR, and **returns the consolidated structured findings** `{severity,file,line,title,detail}`.
-
-The lookout keeps only the structured return — not the review transcript. The gate is computed from
-`summary.blocking`: any blocking finding means the PR cannot merge this round (it must first be
-addressed). A **degraded** review (one or both lenses failed) is **not** a green light — treat a
-missing review as "not safe to merge", never as "no findings".
-
-### 4.2 Address (subagent)
-
-If there are findings to act on, re-dispatch [`shipwright`](../shipwright/SKILL.md) in
-**address-review mode** as a subagent against PR `<n>`, handing it the findings. Shipwright triages
-each comment (agree / discuss / disagree + one-line rationale), implements the agreed changes,
-re-validates, pushes to the PR branch, and replies per thread — see shipwright's address-review
-section. It returns a structured result: what it changed, what it declined and why, and the new
-head sha.
-
-If `muster` found nothing actionable, skip straight to verify.
-
-### 4.3 Verify (re-validate)
-
-After an address pass, re-run the project's checks against the updated head and print results:
-
-```bash
-<commands.build> && <commands.test> && <commands.lint>   # from .armada/config.json
-gh pr checks <n>                                          # CI rollup on the pushed commit
-```
-
-Both the local gate and the CI rollup must be green to advance. Pending CI → re-check next tick
-(leave `armada:reviewing` on so the tick re-enters here), don't merge on yellow.
-
-### 4.4 Bounded address↔review loop
-
-If the address pass changed code, **re-review** the new head (back to 4.1) so fixes are themselves
-reviewed and no blocking finding is left standing. Bound this loop: **`maxReviewRounds` (default 2)**.
-On reaching the cap without convergence (blocking findings still open, or checks still red),
-**stop** and return `blocked` with "no convergence after N rounds" — do not keep looping or merge
-through unresolved blockers.
-
-### 4.4b Make-mergeable — auto-rebase a stale or conflicting PR (only when `autoMerge: true`)
-
-A PR that has passed review and validation can still be **un-mergeable** because its branch drifted
-from the base while the pipeline ran — GitHub reports `mergeable: BEHIND` (just stale) or
-`mergeable: CONFLICTING` (real conflicts). With `autoMerge: false` that's a hand-back: surface
-"needs rebase" and let a human do it (it falls through to §4.5's gate-4 → `blocked`, **don't touch
-the branch**). But with `autoMerge: true` the operator has opted into autonomous landing, so parking
-on a stale branch for a human defeats the point — the pipeline should **make it mergeable itself**
-before the gate, then carry on.
-
-Run this stage **only when `autoMerge: true`** and GitHub reports the PR `BEHIND` or `CONFLICTING`
-(read `mergeable` from §3a; a `mergeable: MERGEABLE` PR skips this stage entirely):
-
-1. **`BEHIND` (stale, no conflicts)** → update the branch from the base. This is the cheap case —
-   no conflict resolution, just bring the head up to date (e.g. `gh pr update-branch <n>`, or a
-   shipwright dispatch that rebases and force-pushes when the repo prefers a linear history).
-2. **`CONFLICTING`** → **dispatch [`shipwright`](../shipwright/SKILL.md) in rebase mode** (§12 of
-   shipwright) as a subagent (via the **`Agent` tool**, non-interactive, isolated, on the PR's own
-   worktree). It rebases the PR branch onto the **configured `baseBranch`**, **resolves the conflicts
-   integrating both sides** (never dropping the base's changes), **re-runs build/test/lint** to prove
-   the resolution is sound, and **force-pushes with `--force-with-lease`** to the PR's own branch. It
-   returns a structured result: `resolved` (with the new head sha) or `unresolved` (with the reason).
-
-**This stage is bounded and fenced — it never force-merges a guess:**
-
-- **Bound the attempts.** Cap rebase/resolve at **`maxRebaseRounds` (default 1, falling back to
-  `maxReviewRounds`)**. A rebase that comes back `unresolved`, or that re-conflicts after the cap, is
-  **not retried indefinitely** — it stops and falls back to `blocked`.
-- **Re-validate after every rebase.** A rebase that produces a clean tree but **breaks the build/
-  test/lint must `block`, not merge** — a mechanically-clean conflict resolution can still be
-  semantically wrong. The post-rebase head only advances if §4.3's gate is green against it.
-- **Re-review the post-rebase diff.** A rebase can introduce new problems, so after a successful
-  resolve, loop back to **§4.1 review** on the new head (counts against `maxReviewRounds`) before the
-  merge gate — fixes from a rebase are themselves reviewed, never merged unseen.
-- **Force-push only fleet-owned branches.** `--force-with-lease` is acceptable here **because it's
-  ARMADA's own branch**. If the PR branch carries **non-ARMADA commits** (a human pushed to it),
-  **do not force-push** — fall back to `blocked` and let a human rebase, rather than risk clobbering
-  their work.
-- **Fall back to `blocked`, never force-merge.** If conflicts aren't mechanically resolvable with
-  confidence, validation fails post-rebase, the attempt cap is hit, or the branch isn't safely
-  fleet-owned, return `blocked` with a clear rationale (which conflict, which check failed). Respect
-  branch protections throughout; the merge itself still goes through §4.5's gate with the configured
-  `mergeMethod`.
-
-After a successful make-mergeable pass the head is updated, re-validated, and re-reviewed — proceed
-to §4.5, where GitHub should now report the PR `mergeable`.
-
-### 4.5 Gated merge
-
-Compute the merge decision from data. **Merge only if every one of these holds:**
-
-1. `autoMerge: true` in `.armada/config.json` (**default false** — see §7);
-2. no unresolved **blocking** finding (`summary.blocking == 0` on the latest review);
-3. CI is **green** (`gh pr checks <n>` all passing) — never on red or pending;
-4. the PR is **not draft** and GitHub reports it **`mergeable`** — with `autoMerge: true` a `BEHIND`
-   or `CONFLICTING` PR is first run through **make-mergeable (§4.4b)**; if it still isn't mergeable
-   after that bounded attempt, this gate fails → `blocked`. With `autoMerge: false` a non-`mergeable`
-   PR fails here untouched ("needs rebase", hand back to a human);
-5. the repo's **branch protections / required reviews are satisfied** (let GitHub be the source of
-   truth — if `gh pr merge` is refused for an unmet protection, that's a `blocked`, not a retry).
-
-If all hold, merge with the **configured method** and record `merged`:
-
-```bash
-gh pr merge <n> --<mergeMethod>   # merge | squash | rebase, from config (default: repo default)
-```
-
-If `autoMerge` is **false** but 2–5 all hold, the PR is genuinely ready — return
-`ready_awaiting_human` (stop-before-merge; never merge). If any of 2–5 fail, return `blocked` with
-the specific reason. Either way the Workflow yields exactly one terminal result for §3e to label.
+> Merge only when **`autoMerge: true`**, **no unresolved blocking finding**, **CI green**, the PR is
+> **not draft and `mergeable`**, and **branch protections are satisfied** (§4.5). With `autoMerge: false`
+> a fully-green PR returns `ready_awaiting_human` — the pipeline **never merges**. The address↔review
+> loop is bounded (`maxReviewRounds`); auto-rebase (§4.4b) runs only when `autoMerge: true`, is bounded
+> and re-validated, force-pushes only fleet-owned branches, and falls back to `blocked` — never a forced
+> merge.
 
 ## 5. Close the loop — shipped issues
 
-Opening a PR is not finishing an issue. An issue left on `armada:done` after its PR has merged is
-the lookout's blind spot: the work shipped but the backlog still shows it open. So each tick — after
-the dispatch pass (§2), or whenever a merge pipeline reports a PR merged — the lookout also walks the
-**in-flight** issues and closes the ones that are genuinely done. An issue is **done** only when
-**both** hold: its linked PR is **merged** *and* its **acceptance criteria are satisfied**. Merge
-alone is not enough; a PR can land and still leave an acceptance criterion unmet.
+Opening a PR is not finishing an issue. An issue left on `armada:done` after its PR has merged is the
+lookout's blind spot: the work shipped but the backlog still shows it open. So each tick — after the
+dispatch pass (§2), or whenever a merge pipeline reports a PR merged — the lookout also walks the
+**in-flight** issues and closes the ones that are genuinely done.
 
-### 5a. List in-flight issues
+The full close-the-loop procedure — listing in-flight issues (§5a), finding and confirming the merged
+PR (§5b), confirming the acceptance criteria (§5c), closing with a trail (§5d), and reporting (§5e) —
+lives in **[references/close-the-loop.md](references/close-the-loop.md)**. The rule that gates it:
 
-Walk the issues ARMADA still owns that *might* be finishable — past the build but not yet terminal:
-
-```bash
-gh issue list --state open --label "armada:done" --json number,title,labels,body --limit 50
-```
-
-Skip any issue still **in motion** — labelled `armada:underway` or `armada:reviewing`. Those mean a
-build or a review pipeline is still running against it; closing one mid-flight would yank work out
-from under a subagent. **Never close while `armada:underway` / `armada:reviewing` is set** — wait for
-it to clear to `armada:done` first. (Same idempotency guard as §2/§3: a terminal action never races
-an in-progress one.)
-
-### 5b. Find the linked PR and confirm it merged
-
-shipwright links its PR to the issue with `Closes #<n>` (full) or `Relates to #<n>` (partial). Find
-that PR and read its merge state:
-
-```bash
-gh pr list --search "<number> in:body" --state all --json number,body,state,mergedAt,mergeCommit
-gh pr view <pr> --json state,mergedAt,mergeCommit --jq '.state'   # must be "MERGED"
-```
-
-- **No merged PR yet** (open, or `state != "MERGED"`) → leave the issue as-is; a later tick re-checks.
-- **`Relates to #<n>`** (partial) → the PR only chips at the issue; **do not close.** A partial PR
-  merging does not finish the issue — it outlives the PR.
-- **`Closes #<n>`** and merged → candidate for closing; proceed to the acceptance-criteria check.
-
-Capture the merge commit (`mergeCommit.oid`, abbreviated) for the closing trail.
-
-### 5c. Confirm the acceptance criteria are satisfied
-
-Do **not** close on merge alone. Read the issue body's acceptance-criteria checklist and confirm it
-is addressed, by either of:
-
-- **every `- [ ]` is now `- [x]`** in the issue body (the checklist is fully ticked), **or**
-- the merged PR / a closing comment **maps each criterion to where it was met** (e.g. "AC1 → §5b of
-  crows-nest; AC2 → label list in commission §4"), so the trail is auditable even when the boxes
-  weren't mechanically ticked.
-
-If **any** criterion is unmet or explicitly deferred, **do not close.** Either leave the issue open
-with a comment naming the gap, or open a focused follow-up for the remainder. When unsure, leave it
-open — a wrongly-closed issue is worse than a stale `armada:done`.
-
-### 5d. Close with a trail
-
-When both gates pass, close the issue with a comment that links the merged PR and maps the criteria,
-then reconcile the labels to the terminal state:
-
-```bash
-gh issue close <number> \
-  --comment "🔭 crows-nest: shipped in #<pr> (merged <sha>). ACs: <each criterion → where it was met>."
-gh issue edit <number> \
-  --add-label "armada:shipped" \
-  --remove-label "armada:done" --remove-label "armada:underway" --remove-label "armada:reviewing"
-```
-
-- **Reconcile, don't error.** A merged `Closes #<n>` PR **auto-closes the issue on merge** to the
-  default branch, so the issue may already be closed when the lookout gets here. That's expected:
-  **reconcile the labels** (add `armada:shipped`, clear the transient ones) and add the trail comment
-  — do **not** treat the already-closed state as an error or try to re-close-then-reopen. `gh issue
-  close` on an already-closed issue is a no-op; the comment + label swap is the work that remains.
-- **Clear every transient label.** `armada:done`, and defensively `armada:underway` /
-  `armada:reviewing`, come off; `armada:shipped` is the single terminal label left. An issue must
-  never sit closed while still wearing an in-flight `armada:*` label.
-
-### 5e. Report the tick
-
-```
-crows-nest close tick: 2 in-flight · #142 "Add CSV export" → shipped (PR #150 merged a1b2c3d, ACs met) · #144 left open (AC3 deferred)
-```
+> An issue is **done** only when **both** hold: its linked `Closes #<n>` PR is **merged** *and* its
+> **acceptance criteria are satisfied**. Merge alone is not enough. Never close while `armada:underway`
+> / `armada:reviewing` is set; on close, reconcile to the single terminal label `armada:shipped`.
 
 ## 6. Arm the loop — hand the /loop line to the user
 
