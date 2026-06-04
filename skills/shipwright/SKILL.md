@@ -133,24 +133,12 @@ Wait for approval. Adjust on feedback.
 
 ### 3b. Decompose large issues into a stacked PR series
 
-Most issues ship as one PR. **Large ones should ship as a stack.** Trigger decomposition when the
-change touches multiple distinct surfaces, the diff would plausibly exceed ~2,000 lines, or the PR
-body would need to be organised into "slices" to be readable. A monster PR is slower to land (one
-blocker holds the whole thing), harder to review carefully, and riskier to revert.
-
-If slicing:
-- **Each slice = one branch, one PR, one focused capability.**
-- **Slices stack — a slice's base is the previous slice's head, not the base branch.** This keeps
-  each PR's diff small and reviewable in isolation.
-- **Identify the foundation first** (usually data model + base surface); co-equal siblings branch
-  off it and can be worked in parallel (their own worktrees). Cross-cutting / hardening passes go
-  last as their own slices.
-- For non-trivial stacks (4+ slices), keep a long-lived `<issue>-rollup` branch that merges each
-  slice's head as it stabilises — it's both the continuous-integration surface and the eventual
-  single merge unit. Fixes land on the slice branch, never the rollup.
-
-Present the slice tree (slice numbers, branch names, base for each, one-line purpose) and **get
-sign-off before writing code** — it's the most expensive thing to redo.
+Most issues ship as one PR. **Large ones should ship as a stack** — sliced into stacked branches,
+each a focused, independently reviewable PR. Trigger decomposition when the change touches multiple
+distinct surfaces, the diff would plausibly exceed ~2,000 lines, or the PR body would need "slices"
+to be readable. When it fires, slice the work, present the slice tree, and **get sign-off before
+writing code** — see [references/stacked-prs.md](references/stacked-prs.md) for the full slicing
+procedure (slice = branch = PR, slices stack, foundation first, rollup branch for 4+ slices).
 
 ## 4. Create a worktree
 
@@ -304,116 +292,17 @@ surface what was filed in the handoff (§8) and carry on.
 
 ## 11. Address-review mode — respond to review comments on a PR
 
-When shipwright is dispatched against an **existing PR with review comments** (by
+When shipwright is dispatched against an **existing PR with review comments** — by
 [`crows-nest`](../crows-nest/SKILL.md)'s pipeline after a [`muster`](../muster/SKILL.md) review, or
-by a human pointing it at a PR), it switches from building to **addressing review**. The goal is a
-considered response to every comment — not blind compliance. A reviewer can be wrong; shipwright's
-job is to engage honestly, fix what's genuinely wrong, and say why when it disagrees.
+by a human pointing it at a PR — it switches from building to **addressing review**: a considered
+response to every comment, not blind compliance. The full procedure lives in
+**[references/address-review-mode.md](references/address-review-mode.md)**:
 
-> **Fetch every comment** → **triage each (agree / discuss / disagree + one-line rationale)** →
-> **implement the agreed changes** → **re-validate** → **push** → **reply per thread**.
-
-### 11a. Check out the PR branch
-
-Work on the PR's **own branch**, not a fresh one — the replies and pushes must land on the PR.
-Use the existing worktree if the PR came from one this session, else add a worktree on its head:
-
-```bash
-gh pr checkout <n>        # or: git worktree add ../<n>-address <prHeadRef>
-git pull --ff-only        # make sure you're on the latest pushed head
-```
-
-### 11b. Fetch every review comment
-
-Gather both the inline review comments and any top-level review summaries — don't miss threads:
-
-```bash
-gh api repos/{owner}/{repo}/pulls/<n>/comments --paginate   # inline review comments (file+line+id)
-gh api repos/{owner}/{repo}/pulls/<n>/reviews  --paginate    # review summaries / state
-gh pr view <n> --json comments                               # issue-style PR comments
-```
-
-If you were handed `muster`'s structured findings directly, reconcile them with the posted comments
-so each finding maps to the thread you'll reply on (match by file + line + title). Every comment
-gets a triage decision — none is silently skipped.
-
-### 11c. Triage each comment
-
-For each comment, decide one of three and record a **one-line rationale**:
-
-- **agree** — the comment is right; you'll implement the change.
-- **discuss** — partly right, needs clarification, or there's a better fix than the one suggested;
-  you'll propose an alternative in the reply rather than implement as-literally-stated.
-- **disagree** — the comment is wrong or out of scope; you'll decline with a reason (and, for a
-  **blocking** finding you disagree with, this is where you make the case — an unresolved blocking
-  finding stops the gated merge, so a disagreement on one is a genuine hand-back-to-human, not a
-  unilateral override).
-
-Keep scope discipline: address what the review raised, don't gold-plate adjacent code. Note any
-genuinely out-of-scope-but-valid point as a follow-up rather than expanding the PR.
-
-### 11d. Implement the agreed changes
-
-Implement every **agree** (and any **discuss** where you and the reviewer would clearly land on a
-fix). Match the surrounding code as in §5. **Commit in small logical commits** referencing what
-they address (`address review: escape quotes in CSV export (#150 thread)`), so the diff maps back to
-the threads.
-
-### 11e. Re-validate
-
-Run the project's checks and **print the outputs** — same gate as §6:
-
-```bash
-<commands.build> && <commands.test> && <commands.lint>   # must be green
-git diff --exit-code                                     # after format, no stray diff
-```
-
-Don't push a red tree. If a fix can't be made green, that comment becomes a `discuss`/`disagree`
-with the reason, not a broken push.
-
-### 11f. Push and reply per thread
-
-```bash
-git push                       # to the PR's own branch — updates the PR in place
-```
-
-Then **reply to each thread** so the reviewer sees a response on every point. Reply on the specific
-comment thread (`in_reply_to`), don't just leave one blanket comment:
-
-```bash
-gh api repos/{owner}/{repo}/pulls/<n>/comments \
-  -f body="Fixed in <sha> — <one line>."   -F in_reply_to=<comment_id>
-# or, when declining:
-gh api repos/{owner}/{repo}/pulls/<n>/comments \
-  -f body="Declined: <one-line rationale>." -F in_reply_to=<comment_id>
-# discuss:
-gh api repos/{owner}/{repo}/pulls/<n>/comments \
-  -f body="Suggest instead <alternative> — <why>. Let me know."  -F in_reply_to=<comment_id>
-```
-
-**Do not resolve threads** — resolving is the reviewer's call. Shipwright replies and leaves the
-thread open unless the repo is explicitly configured to let the builder resolve. Post a short
-top-level summary too (`gh pr comment <n>`): how many agreed/implemented, discussed, declined, and
-the new head sha.
-
-### 11g. Return the structured result
-
-In the pipeline, return a machine-readable result to the lookout so it can re-review / gate:
-
-```json
-{
-  "pr": 150,
-  "headSha": "<new head sha>",
-  "addressed": [ { "thread": 998, "decision": "agree",    "fixedIn": "<sha>" } ],
-  "declined":  [ { "thread": 999, "decision": "disagree", "rationale": "out of scope; tracked as follow-up" } ],
-  "validation": "pass",
-  "blockingDisagreement": false
-}
-```
-
-`blockingDisagreement: true` (you disagreed with a *blocking* finding) signals the lookout to hand
-back to a human rather than merge — shipwright never merges, and never resolves a blocking finding
-by fiat.
+> **Fetch every comment** (§11b) → **triage each — agree / discuss / disagree + one-line
+> rationale** (§11c) → **implement the agreed changes** (§11d) → **re-validate** (§11e) → **push**
+> and **reply per thread** (§11f) → **return the structured result** (§11g). Work on the PR's own
+> branch (§11a); leave threads unresolved (the reviewer's call); a `blockingDisagreement` hands back
+> to a human rather than merging.
 
 ## 12. Rebase mode — make a stale or conflicting PR mergeable
 
