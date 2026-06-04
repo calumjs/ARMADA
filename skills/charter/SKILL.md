@@ -34,6 +34,16 @@ issue. If the file is absent the repo isn't commissioned: run
 [`commission`](../commission/SKILL.md) first (or offer to), since arming keys off labels that
 commissioning creates.
 
+Two more keys matter for **self-improvement mode** (§9), where a skill files a defect against ARMADA
+itself rather than authoring user work:
+
+- `armadaRepo` — the ARMADA home repository (`owner/repo`) a self-raised fix is filed against. If
+  absent, derive it from the plugin source (the marketplace/`homepage` it was installed from). A
+  skill running in someone else's project must file the fix against **ARMADA**, never the host repo.
+- `autoArmSelfFixes` — whether self-raised defect issues are armed. **Default `false`**: they are
+  filed and labelled `fleet-defect` but left for human triage, because arming them lets the fleet
+  rewrite (and, with `autoMerge`, merge) its own skills unattended. See §9.
+
 Skim a couple of recent issues to match the house style for titles and body structure:
 
 ```bash
@@ -175,6 +185,85 @@ Print the created issue's number and URL, its labels (type + whether armed), and
 If armed, note that `crows-nest` will claim it on its next tick (no further action needed). If
 no-arm, give the one-liner to arm it later: `gh issue edit <n> --add-label <triggerLabel>`.
 
+## 9. Self-improvement mode — file a fleet defect (the recursive loop)
+
+This is the **canonical convention for the whole fleet**: when *any* ARMADA skill hits a defect in
+ARMADA *itself*, it routes a fix through `charter` so the fleet improves itself. The other skills
+don't re-describe it — they point here. It generalises shipwright's "suggest skill improvements"
+reflex (§10) into an automatic, fleet-wide one. It is the literal *Recursive* in ARMADA: the fleet
+learning from its own runs.
+
+> **Triage the failure** → if it's an **ARMADA defect**, `charter` a concise defect report **against
+> the ARMADA repo**, **de-duped**, labelled **`fleet-defect`**, and **left unarmed by default** →
+> note it in the run summary. Best-effort and side-channel — it **never blocks the primary task**.
+
+### 9a. Triage first — is this ARMADA's fault, or the task's?
+
+Only ARMADA's *own* defects get filed here. Distinguish, and when unsure default to **not** filing —
+a false defect issue is noise:
+
+- **Target-project / task problem** — the code under work is broken, a test legitimately fails, the
+  issue's requirements are wrong. → Handle it normally in the build/review. **Do not** raise an
+  ARMADA issue; that would pollute the fleet's tracker with the host project's bugs.
+- **ARMADA defect** — a skill's instructions were wrong or missing, a guard didn't fire, the skill
+  had to **guess** because guidance was absent, or the same friction keeps recurring across runs. →
+  This is what self-improvement mode is for.
+
+### 9b. Target the ARMADA repo — never the host project
+
+File against `armadaRepo` from `.armada/config.json`, or derive it from the plugin source if that
+key is absent (§0). A skill running inside someone else's repository **must** file the fix against
+ARMADA's home repo with `gh issue create --repo <armadaRepo>`, so a host project's tracker is never
+polluted with ARMADA's own defects.
+
+### 9c. De-dupe against open `fleet-defect` issues
+
+Before filing, search the ARMADA repo's open defects so the same gap isn't filed twice:
+
+```bash
+gh issue list --repo <armadaRepo> --state open --label "fleet-defect" --search "<keywords>"
+```
+
+If the defect is already filed, **add a comment or a 👍 reaction** to the existing issue (another
+occurrence is signal it matters) rather than opening a duplicate.
+
+### 9d. Draft the defect report
+
+Use the §4 best-practice body, framed as a defect: what the skill was doing, **what went wrong**,
+**why it's an ARMADA (not project) problem**, and a **suggested fix**, with concrete testable
+acceptance criteria. Title it `<skill>: <the defect>` (e.g. `shipwright: base-branch guard didn't
+fire on a feature-only file`).
+
+### 9e. File it — labelled `fleet-defect`, unarmed by default (recursion risk)
+
+Self-raised fixes modify ARMADA's *own* skills. With auto-arming + `autoMerge` on, that becomes a
+**self-modifying loop that could rewrite and merge its own skills unattended** — the dream and the
+hazard. Default to the safe side:
+
+```bash
+# Filed and labelled, but NOT armed — left for human triage (default):
+gh issue create --repo <armadaRepo> --label "fleet-defect" --title "<skill>: <defect>" --body "<report>"
+```
+
+- Self-raised issues are labelled **`fleet-defect`** and are **not** auto-armed — even though
+  `charter` auto-arms human-authored issues (§6). They sit for human triage.
+- Only when **`autoArmSelfFixes: true`** in config does `charter` also add the `triggerLabel`,
+  opting into the fleet fixing itself end-to-end. Leave it `false` unless the operator has chosen
+  full autonomy knowingly.
+
+### 9f. Never derail the primary task
+
+Raising the issue is **best-effort and side-channel**. If the `gh` call fails or the repo can't be
+resolved, **note it and carry on** — never block, fail, or retry-loop the build/review on a
+self-improvement filing. Surface what was filed (or that filing was skipped) in the run summary
+only:
+
+```
+🛠 fleet-defect filed: ARMADA#<n> "<skill>: <defect>" (fleet-defect, unarmed — human triage)
+   — or — 🛠 fleet-defect: deduped onto existing ARMADA#<n>
+   — or — 🛠 fleet-defect: skipped (filing failed: <reason>); primary task unaffected
+```
+
 ## Best-practice guardrails (summary)
 
 - **One issue = one focused capability** — offer a linked stack for epics (§2).
@@ -184,12 +273,16 @@ no-arm, give the one-liner to arm it later: `gh issue edit <n> --add-label <trig
 - **De-dupe first** — search open issues so you don't file a twin (§1).
 - **Opt-out, not opt-in** — auto-arm is default; support `--no-arm` and draft-only (§6).
 - **Confirm before creating** — filing is outward-facing (§5).
+- **Self-raised fixes are unarmed by default** — `fleet-defect` issues go to the ARMADA repo for
+  human triage unless `autoArmSelfFixes` is on; the recursion risk is deliberate (§9).
 
 ## Inputs
 
 - A free-text description of the desired work.
 - Optional: `--no-arm` (create into the backlog, don't add the trigger label) or a draft-only
   request (show the body, don't create).
+- A **fleet-defect report** from another skill (self-improvement mode, §9) — filed against the
+  ARMADA repo, labelled `fleet-defect`, unarmed unless `autoArmSelfFixes` is true.
 
 ## Output
 
@@ -197,3 +290,5 @@ no-arm, give the one-liner to arm it later: `gh issue edit <n> --add-label <trig
   ready for `crows-nest` to pick up.
 - **`--no-arm`:** the same issue created with its type label only, sitting in the backlog.
 - **draft-only:** the drafted issue body printed, nothing created or armed.
+- **self-improvement (§9):** a de-duped `fleet-defect` issue filed against the ARMADA repo (unarmed
+  unless `autoArmSelfFixes`), surfaced in the run summary — never blocking the primary task.

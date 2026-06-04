@@ -68,6 +68,8 @@ overwriting** — the user may have hand-tuned it.
   "autoMerge": false,              // ready-PR pipeline may merge? Default false: stop-before-merge.
   "mergeMethod": "squash",         // merge | squash | rebase, when autoMerge is true
   "maxReviewRounds": 2,            // bound on the address↔review loop before handing back
+  "armadaRepo": "calumjs/ARMADA",  // where self-raised fleet-defect fixes are filed (charter §9)
+  "autoArmSelfFixes": false,       // arm self-raised fleet-defects? Default false: human triage.
   "commands": {
     "build":  "<detected or omitted>",
     "test":   "<detected or omitted>",
@@ -89,6 +91,14 @@ auto-merge on; opting into autonomous merging is a deliberate, explicit choice t
 by hand (see the README Safety section). `mergeMethod`/`maxReviewRounds` only take effect once the
 user turns `autoMerge` on.
 
+`armadaRepo` and `autoArmSelfFixes` wire the **self-improvement loop** (see
+[`charter`](../charter/SKILL.md) §9): when a skill hits a defect in ARMADA *itself*, it files a fix
+against `armadaRepo` — the ARMADA home repo, so a host project's tracker is never polluted — labelled
+`fleet-defect`. Set `armadaRepo` to the repo ARMADA was installed from (e.g. `calumjs/ARMADA`); if
+omitted, the skills derive it from the plugin source. **Write `autoArmSelfFixes: false`** — like
+`autoMerge`, full self-fixing autonomy is an explicit hand edit, never something commissioning turns
+on; left false, self-raised defects are filed for human triage rather than armed into the build queue.
+
 ## 4. Create the GitHub labels
 
 The fleet tracks state entirely through labels, so they must exist. There are two tracks — issues
@@ -107,7 +117,14 @@ gh label create "armada:reviewing" --color "fbca04" --description "Claimed by cr
 gh label create "armada:merged"    --color "5319e7" --description "ARMADA merged this PR (auto-merge was enabled)"       --force
 # Shared terminal failure state (issues and PRs):
 gh label create "armada:blocked"   --color "b60205" --description "ARMADA could not finish; needs a human"              --force
+# Self-improvement loop — a defect a skill found in ARMADA itself (see charter §9):
+gh label create "fleet-defect"     --color "d4c5f9" --description "A defect a skill found in ARMADA itself; raised by the fleet for the fleet" --force
 ```
+
+`fleet-defect` is the **self-improvement** label: when any skill hits a defect in ARMADA's own
+skills it files a fix against `armadaRepo` via [`charter`](../charter/SKILL.md) (§9), labelled
+`fleet-defect` and — by default — **left unarmed** for human triage. It tags issues *about the
+fleet*, so it's neither an issue-track nor a PR-track state; it sits alongside them.
 
 `armada:reviewing` and `armada:merged` are the PR-pipeline labels; `armada:shipped` is the
 **issue-track terminal** state — crows-nest sets it (and closes the issue) once the linked PR is
@@ -127,7 +144,8 @@ and don't arm the loop for them** (both are the user's call):
   build/test  : <commands, or "none detected — skills will infer">
   authors     : <"" = anyone, or the configured allowlist>
   auto-merge  : off (default) — the sole merge gate; ready-PR pipeline stops at "awaiting human merge"
-  labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked ✓
+  self-fixes  : armadaRepo=<owner/repo> · autoArmSelfFixes off (default) — fleet-defects filed for human triage
+  labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked, fleet-defect ✓
 
 Next:
   1. Label the issues you want built with `armada`:
@@ -142,7 +160,8 @@ Next:
 - Config: diff-and-confirm before overwrite — never clobbers hand edits silently. Re-running never
   flips `autoMerge` back on or off behind the user's back; if it's already set, leave it.
 - Nothing here creates issues, opens PRs, or merges. Commissioning only prepares the repo, and it
-  always writes `autoMerge: false` — autonomous merging is never turned on by commissioning.
+  always writes `autoMerge: false` **and `autoArmSelfFixes: false`** — neither autonomous merging
+  nor autonomous self-fixing is ever turned on by commissioning.
 
 ## Inputs
 
@@ -150,6 +169,8 @@ Next:
 
 ## Output
 
-- `.armada/config.json` written (or confirmed up-to-date), with `autoMerge: false`.
-- The seven GitHub labels created/reconciled (issue track + PR track + shared blocked).
+- `.armada/config.json` written (or confirmed up-to-date), with `autoMerge: false` and
+  `autoArmSelfFixes: false`.
+- The eight GitHub labels created/reconciled (issue track + PR track + shared blocked +
+  `fleet-defect`).
 - A readiness summary + the two next-step commands.
