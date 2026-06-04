@@ -30,7 +30,7 @@ opening a pull request. `shipwright` is stack-agnostic: it discovers the project
 - **Rebase mode** (§12) — take an **existing PR that GitHub reports `BEHIND` or `CONFLICTING`** and
   make it mergeable: rebase its branch onto the configured base, resolve conflicts integrating both
   sides, re-validate, and force-push (with `--force-with-lease`) to the PR's own branch. This is the
-  make-mergeable stage [`crows-nest`](../crows-nest/SKILL.md) dispatches in its ready-PR pipeline
+  make-mergeable stage [`crows-nest`](../crows-nest/references/review-merge-pipeline.md) dispatches in its ready-PR pipeline
   (§4.4b) **only when `autoMerge: true`**. If you're invoked to rebase/make-mergeable a PR rather
   than to build or to address review, jump to §12.
 
@@ -418,7 +418,7 @@ by fiat.
 ## 12. Rebase mode — make a stale or conflicting PR mergeable
 
 When shipwright is dispatched to **make an existing PR mergeable** — by
-[`crows-nest`](../crows-nest/SKILL.md)'s make-mergeable stage (§4.4b) when a reviewed PR is `BEHIND`
+[`crows-nest`](../crows-nest/references/review-merge-pipeline.md)'s make-mergeable stage (§4.4b) when a reviewed PR is `BEHIND`
 or `CONFLICTING` and `autoMerge: true`, or by a human pointing it at a stale PR — it rebases the PR
 branch onto the current base, resolves any conflicts, re-validates, and force-pushes. This is the
 hands-off version of the conflict resolution that otherwise has to be done by hand on a stale-branch
