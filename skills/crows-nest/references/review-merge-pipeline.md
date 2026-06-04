@@ -32,9 +32,9 @@ missing review as "not safe to merge", never as "no findings".
 If there are findings to act on, re-dispatch [`shipwright`](../../shipwright/SKILL.md) in
 **address-review mode** as a subagent against PR `<n>`, handing it the findings. Shipwright triages
 each comment (agree / discuss / disagree + one-line rationale), implements the agreed changes,
-re-validates, pushes to the PR branch, and replies per thread — see shipwright's address-review
-section. It returns a structured result: what it changed, what it declined and why, and the new
-head sha.
+re-validates, pushes to the PR branch, and replies per thread — see shipwright's
+[address-review mode](../../shipwright/references/address-review-mode.md). It returns a structured
+result: what it changed, what it declined and why, and the new head sha.
 
 If `muster` found nothing actionable, skip straight to verify.
 

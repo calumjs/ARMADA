@@ -380,9 +380,10 @@ each track, but the two tracks still run **together**, and every dispatch is non
 watch never freezes behind one. Raise either cap to fan that track out across more isolated
 background subagents.
 
-shipwright's **own** internal fan-out — the parallel slices of a stacked PR series (shipwright §3b) —
-should likewise spawn its slice builders as **background** agents rather than blocking serially on
-each, for the same reason: one slice shouldn't stall the others.
+shipwright's **own** internal fan-out — the parallel slices of a stacked PR series (shipwright §3b,
+[references/stacked-prs.md](../shipwright/references/stacked-prs.md)) — should likewise spawn its
+slice builders as **background** agents rather than blocking serially on each, for the same reason:
+one slice shouldn't stall the others.
 
 ### 2e. Report the unified schedule
 
