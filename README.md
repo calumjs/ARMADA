@@ -157,10 +157,21 @@ knowingly. Even with it on, `crows-nest` will **never** merge when any of these 
 
 - CI is **red or pending** (only a green check rollup merges);
 - there's an **unresolved blocking review finding** from `muster`;
-- the PR is a **draft** or GitHub reports it **not `mergeable`**;
+- the PR is a **draft** or GitHub reports it **not `mergeable`** even after the auto-rebase below;
 - the repo's **branch protections / required reviews aren't satisfied** (GitHub is the source of
   truth — a refused merge is a block, not a retry);
 - the **address↔review loop didn't converge** within `maxReviewRounds` (default 2).
+
+**Auto-rebase when `autoMerge` is on — bounded and fenced.** A reviewed PR can still be
+un-mergeable because its branch drifted while the pipeline ran. With `autoMerge: true`, `crows-nest`
+makes it mergeable itself instead of parking it for a human: a `BEHIND` PR is updated from the base,
+and a `CONFLICTING` PR is **rebased and resolved by a `shipwright` subagent** (rebase onto the
+configured base, integrate both sides — never drop the base's changes — re-validate, force-push with
+`--force-with-lease`). It is bounded (`maxRebaseRounds`, default 1), **re-validated and re-reviewed**
+before the merge gate, force-pushes **only fleet-owned branches** (a branch with human commits is
+never rewritten), and **falls back to `armada:blocked`** — never a forced merge — if the conflict
+isn't confidently resolvable, validation fails post-rebase, or the cap is hit. With `autoMerge:
+false` this is off: the branch is left untouched and the PR is surfaced as "needs rebase".
 
 When a merge is gated off for any of these, the PR is labelled `armada:blocked`, commented with the
 reason, and handed back — it is never left half-driven. The merge, when it happens, uses your
