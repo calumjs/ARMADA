@@ -429,6 +429,17 @@ A scheduled PR (§3) runs through a deterministic **Workflow**: **parallel revie
 terminal result. It reuses the **parallel-reviewers + dedupe** pattern that
 [`muster`](../muster/SKILL.md) implements internally.
 
+**This Workflow is bundled as a script, not prose the model re-derives each tick** — that's what
+makes it deterministic and keeps only its *output* in the lookout's context:
+
+- **`${CLAUDE_PLUGIN_ROOT}/scripts/review-merge-pipeline.mjs`** fans out `muster` + `shipwright` via
+  `agent()` with **structured-output schemas**, consolidates, runs the bounded address↔review loop,
+  make-mergeable, and the gated merge.
+- **`${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.mjs`** computes the merge decision (`merge` |
+  `ready_awaiting_human` | `blocked`) **from the run-state JSON** — the model acts on its output and
+  never eyeballs the 5-point gate. (Bundled files are referenced via `${CLAUDE_PLUGIN_ROOT}` because
+  plugins are copied to a cache, so relative paths break.)
+
 The full pipeline — review (§4.1), address (§4.2), verify (§4.3), the bounded address↔review loop
 (§4.4), make-mergeable / auto-rebase (§4.4b), and the gated merge (§4.5) — lives in
 **[references/review-merge-pipeline.md](references/review-merge-pipeline.md)**. The gates that matter:

@@ -12,8 +12,27 @@ genuinely parallel, and the merge gate is evaluated from data, not from prose th
 misread. It reuses the **parallel-reviewers + dedupe** pattern that [`muster`](../../muster/SKILL.md)
 implements internally.
 
+**The Workflow is bundled, not re-derived.** The stage graph below is encoded as an actual script,
+not just the prose here — so the orchestration is the same every run and only its structured
+*output* enters the lookout's context:
+
+- **`${CLAUDE_PLUGIN_ROOT}/scripts/review-merge-pipeline.mjs`** — the Workflow itself. It fans out the
+  reviewers/builders via `agent()` with **explicit structured-output schemas** (`REVIEW_SCHEMA`,
+  `ADDRESS_SCHEMA`, `REBASE_SCHEMA` — the `{severity,file,line,title,detail}` finding shape and the
+  address/rebase return contracts), consolidates, runs the bounded address↔review loop, the
+  make-mergeable stage, and the gated merge. Inspect the stage graph and the schemas it drives with
+  `node ${CLAUDE_PLUGIN_ROOT}/scripts/review-merge-pipeline.mjs --plan` / `--schemas`.
+- **`${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.mjs`** — the merge gate (§4.5's five points + §4.4's
+  convergence bound) computed **from data**. The pipeline pipes it the run-state JSON and acts on its
+  `decision` (`merge` | `ready_awaiting_human` | `blocked`); **the model never eyeballs the gate.**
+
+> **Always reference the bundled files via `${CLAUDE_PLUGIN_ROOT}/...`.** Plugins are copied into a
+> cache, so a relative path breaks once installed — the `${CLAUDE_PLUGIN_ROOT}` prefix resolves to
+> wherever the plugin actually landed.
+
 The pipeline runs against one PR `<n>` already claimed `armada:reviewing`
-([ready-pr-watch.md §3c](ready-pr-watch.md)).
+([ready-pr-watch.md §3c](ready-pr-watch.md)). The sections below describe each stage the bundled
+Workflow drives — they are the spec the script implements, not a second path the model walks by hand.
 
 ## 4.1 Review (parallel fan-out → consolidate)
 
@@ -108,26 +127,63 @@ to §4.5, where GitHub should now report the PR `mergeable`.
 
 ## 4.5 Gated merge
 
-Compute the merge decision from data. **Merge only if every one of these holds:**
+The merge decision is **computed from data by `${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.mjs`**, not
+read off this prose. The pipeline assembles the run-state JSON and pipes it to the script, which
+returns exactly one `decision` — `merge` | `ready_awaiting_human` | `blocked` — with the reasons.
+**The model acts on that output; it never re-evaluates the gate by hand** (re-interpreting a
+5-point gate from English each run is exactly the fragility this script removes).
+
+The state the gate is fed (every field gathered earlier in the pipeline):
+
+```jsonc
+{
+  "pr": <n>,
+  "autoMerge": <config.autoMerge>,          // default false — opt-in only
+  "mergeMethod": "<config.mergeMethod>",     // merge | squash | rebase
+  "review":   { "blocking": <summary.blocking>, "degraded": <muster degraded?> },
+  "ci":       "green" | "pending" | "red",   // from `gh pr checks <n>`
+  "isDraft":  <bool>,
+  "mergeable": "MERGEABLE" | "BEHIND" | "CONFLICTING" | "UNKNOWN",  // `gh pr view <n> --json mergeable`
+  "protectionsSatisfied": <bool>,            // GitHub is the source of truth
+  "rounds": <address↔review rounds elapsed>,
+  "maxReviewRounds": <config.maxReviewRounds, default 2>
+}
+```
+
+```bash
+echo "$STATE_JSON" | node "${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.mjs"
+# → { "decision": "merge" | "ready_awaiting_human" | "blocked", "reasons": [...], "mergeMethod": ... }
+# exit 0 = merge · 10 = ready_awaiting_human · 20 = blocked
+```
+
+The script encodes — and **fails closed on** — exactly the five-point gate plus the convergence
+bound, so the documented behaviour is the implementation:
 
 1. `autoMerge: true` in `.armada/config.json` (**default false** — see
    [SKILL.md §7](../SKILL.md#7-stopping-and-safety));
-2. no unresolved **blocking** finding (`summary.blocking == 0` on the latest review);
+2. no unresolved **blocking** finding (`summary.blocking == 0`) and the review was **not degraded**
+   (a missing/degraded review is treated as not-safe, never as "no findings");
 3. CI is **green** (`gh pr checks <n>` all passing) — never on red or pending;
 4. the PR is **not draft** and GitHub reports it **`mergeable`** — with `autoMerge: true` a `BEHIND`
    or `CONFLICTING` PR is first run through **make-mergeable (§4.4b)**; if it still isn't mergeable
    after that bounded attempt, this gate fails → `blocked`. With `autoMerge: false` a non-`mergeable`
    PR fails here untouched ("needs rebase", hand back to a human);
 5. the repo's **branch protections / required reviews are satisfied** (let GitHub be the source of
-   truth — if `gh pr merge` is refused for an unmet protection, that's a `blocked`, not a retry).
+   truth — if `gh pr merge` is refused for an unmet protection, that's a `blocked`, not a retry);
 
-If all hold, merge with the **configured method** and record `merged`:
+plus the **convergence bound** (§4.4): if blocking findings or red CI persist once `rounds` reaches
+`maxReviewRounds`, the gate returns `blocked` ("no convergence after N rounds") rather than looping.
 
-```bash
-gh pr merge <n> --<mergeMethod>   # merge | squash | rebase, from config (default: repo default)
-```
+Acting on the decision:
 
-If `autoMerge` is **false** but 2–5 all hold, the PR is genuinely ready — return
-`ready_awaiting_human` (stop-before-merge; never merge). If any of 2–5 fail, return `blocked` with
-the specific reason. Either way the Workflow yields exactly one terminal result for
+- **`merge`** → merge with the **configured method** and record `merged`:
+
+  ```bash
+  gh pr merge <n> --<mergeMethod>   # merge | squash | rebase, from config (default: repo default)
+  ```
+- **`ready_awaiting_human`** (gates 2–5 hold but `autoMerge` is off) → stop before merge; never
+  merge.
+- **`blocked`** → return the specific reason from the gate output.
+
+Either way the Workflow yields exactly one terminal result for
 [ready-pr-watch.md §3e](ready-pr-watch.md) to label.
