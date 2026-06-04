@@ -1,35 +1,47 @@
 ---
 name: crows-nest
 description: >
-  The ARMADA lookout. Keeps two watches over a GitHub repo: a new-issue watch that dispatches
-  each labelled issue into the fleet to be built, and a ready-PR watch that drives each labelled
-  pull request through a review → address → re-validate → gated-merge pipeline. Runs as a
-  recurring watch via /loop: each tick claims the next eligible issue or PR and dispatches it.
-  Trigger when the user says "watch for issues", "start the crows-nest", "keep an eye on the
-  backlog", "listen for new issues", "watch for ready PRs", "review and merge PRs", "man the
-  lookout", or invokes /crows-nest. Accepts an optional trigger label (default from
-  .armada/config.json, else "armada") and an optional poll interval.
+  The ARMADA lookout. A single, maximally parallel scheduler that watches two tracks over a GitHub
+  repo at once: a new-issue track that dispatches each labelled issue into the fleet to be built,
+  and a ready-PR track that drives each labelled pull request through a review → address →
+  re-validate → gated-merge pipeline. Runs as a recurring watch via /loop: each tick scans both
+  tracks in one batched scan, builds a dependency/conflict graph spanning them, and dispatches every
+  independent runnable unit — builds and reviews together — concurrently up to a bound, serialising
+  only where a true dependency or file-level conflict forces it. Trigger when the user says "watch
+  for issues", "start the crows-nest", "keep an eye on the backlog", "listen for new issues", "watch
+  for ready PRs", "review and merge PRs", "man the lookout", or invokes /crows-nest. Accepts an
+  optional trigger label (default from .armada/config.json, else "armada") and an optional poll
+  interval.
 ---
 
-# crows-nest — watch issues and ready PRs, and dispatch them
+# crows-nest — a unified, maximally parallel scheduler for issues and PRs
 
 `crows-nest` is ARMADA's entry point: the lookout that turns a GitHub backlog into a stream of
-work for the fleet. It keeps **two watches** and does **one tick of triage** each time it runs;
-`/loop` is what makes it run again and again unattended:
+work for the fleet. It is **one scheduler running two tracks at once** — and each tick it does
+**one round of unified triage**, not one item; `/loop` is what makes it run again and again
+unattended:
 
-> **New-issue watch:** **list new labelled issues** → **claim the next one** → **dispatch it** to
-> [`shipwright`](../shipwright/SKILL.md) (or `flagship`) to build → repeat.
+> **One tick:** **scan both tracks in one batched scan** (armed issues *and* armed PRs) →
+> **build a dependency/conflict graph spanning both** → **dispatch every independent runnable unit
+> concurrently** — builds *and* reviews together, up to a bound — **hold** the rest with a reason →
+> **report the unified schedule** → repeat.
 >
-> **Ready-PR watch:** **list ready labelled PRs** → **claim the next one** → **drive it** through a
-> [`muster`](../muster/SKILL.md) review → shipwright address → re-validate → **gated** merge
-> pipeline → repeat.
+> - **Issue track:** an eligible issue → [`shipwright`](../shipwright/SKILL.md) (or `flagship`)
+>   builds it in a background, worktree-isolated subagent → a PR opens.
+> - **PR track:** a ready PR → a [`muster`](../muster/SKILL.md) review → shipwright address →
+>   re-validate → **gated** merge pipeline.
 
-The two watches share the lookout's wiring (label discipline, atomic claim, bounded loop) but key
-off different objects and label tracks. The new-issue watch is §2; the ready-PR watch and its
-pipeline are §3 and §4; closing the loop on shipped issues is §5. A single `/loop` line can arm them
-(§6).
+**The two tracks run together — concurrently — not one drained before the other.** Builds and PR
+reviews are in flight at the same time, and within each track multiple units run at once (multiple
+builds, multiple reviews), bounded by the concurrency caps. Serialisation is the **exception** a
+dependency or a file-level conflict has to justify, never the default.
 
-## How the watch is wired (read this first)
+The unified scheduler is §2: §2a scans both tracks, §2b builds the cross-track graph, §2c schedules
+for maximum parallelism, §2d dispatches issue builds, §2e reports. The ready-PR **pipeline** a
+scheduled PR runs through is §3 and §4; closing the loop on shipped issues is §5. A single `/loop`
+line arms the scheduler (§6).
+
+## How the scheduler is wired (read this first)
 
 These are constraints the design is built around:
 
@@ -37,11 +49,22 @@ These are constraints the design is built around:
    runs skills — model text isn't executed as a command. So `crows-nest`'s job is to **compose the
    exact `/loop` line and hand it to you to run** (§6). Everything after that repeats automatically.
 2. **Only act on the trigger label.** The lookout must never grab the whole backlog. It acts solely
-   on open issues carrying the configured `triggerLabel` (default `armada`). No label → not its job.
-3. **Claiming must be atomic-ish and visible.** Before dispatching, mark the issue claimed (a label
-   swap + a comment) so a second tick — or a second human — doesn't pick up the same issue.
-4. **Always bound the loop.** Pass `/loop` an interval and let the user stop it. A lookout that
-   never sleeps and never reports is just noise.
+   on open issues *and* PRs carrying the configured `triggerLabel` (default `armada`). No label →
+   not its job.
+3. **Claiming must be atomic-ish and visible.** Before dispatching, mark the unit claimed (a label
+   swap/add + a comment) so a second tick — or a second human — doesn't pick up the same issue or
+   PR. The claim labels (`armada:underway` / `armada:reviewing`) are the in-flight guard that makes
+   concurrency safe: an already-claimed unit is invisible to every later tick, so a slow build or a
+   long review never gets double-picked while it runs.
+4. **Parallel by default, serial by exception.** The scheduler's job is to keep **as many
+   independent units in flight as the bounds allow**, across both tracks at once. It serialises two
+   units **only** when the cross-track graph (§2b) says it must — a true dependency, a same-file
+   conflict, or a merge that would invalidate another in-flight PR's base. Everything else launches
+   concurrently.
+5. **Always bound — concurrency and the loop both.** Background fan-out is capped
+   (`maxConcurrentBuilds` for builds, `maxConcurrentReviews` for reviews) so a busy backlog can't
+   spawn an unbounded swarm; the overflow is held for later ticks. And pass `/loop` an interval and
+   let the user stop it. A lookout that never sleeps and never reports is just noise.
 
 ## 1. Resolve config and scope
 
@@ -64,10 +87,18 @@ Read `.armada/config.json` from the target repo:
 - `autoMerge` — whether the ready-PR pipeline may perform the final merge. **Default `false`**: with
   it off the pipeline reviews, addresses, and re-validates but **stops before merging** (§4.5). Only
   `true` lets the lookout merge, and only when every other gate passes. See [Safety](#7-stopping-and-safety).
-- `maxConcurrentBuilds` — how many background builds the new-issue watch may have in flight at once
+- `maxConcurrentBuilds` — how many background **builds** (issue track) may be in flight at once
   (**default 1**). The autonomous path dispatches builds in the background (§2d), so a tick never
   blocks on one; this caps how many run in parallel and queues the overflow. Default 1 = one build
   at a time (still non-blocking); raise it to fan out across more isolated worktrees.
+- `maxConcurrentReviews` — how many background **review→merge pipelines** (PR track) may be in
+  flight at once (**default 1**). The scheduler launches PR pipelines in the background too (§3/§4),
+  so a tick never blocks on one; this caps how many PRs are driven concurrently and queues the
+  overflow. Default 1 = one pipeline at a time (still non-blocking); raise it to review several PRs
+  at once. This is **independent of** `maxConcurrentBuilds` — builds and reviews each have their own
+  budget, so the issue track and the PR track run **concurrently**, neither starving the other.
+  (Each `muster` review already fans its two lenses out in parallel internally; this bound is on top
+  of that — how many *PRs* are reviewed at once.)
 
 **If the config or the labels are missing, the repo isn't commissioned** — run the
 [`commission`](../commission/SKILL.md) skill first (it detects commands, writes the config, and
@@ -110,24 +141,48 @@ tracks** — one for issues moving through the build, one for PRs moving through
 `armada:reviewing`, `armada:merged`, and the issue-track terminal `armada:shipped` are all created
 by [`commission`](../commission/SKILL.md) alongside the other labels.
 
-## 2. One tick of the new-issue watch
+## 2. One tick of the unified scheduler
 
-Each tick does exactly this, then returns:
+Each tick scans **both tracks at once**, graphs them **together**, dispatches every independent
+runnable unit it can — builds *and* reviews, concurrently, up to the bounds — holds the rest with a
+reason, reports the unified schedule, and **returns** (it never blocks on an in-flight build or
+review). The steps:
 
-### 2a. List eligible issues
+> **2a** scan both tracks (one batched scan) → **2b** build the cross-track dependency/conflict
+> graph → **2c** schedule for maximum parallelism → **2d** dispatch issue builds (and §3 dispatches
+> PR pipelines) → **2e** report.
+
+### 2a. Scan both tracks in one batched scan
+
+Pull armed issues *and* armed PRs together, in as few `gh` calls as possible — one issue list and
+one PR list per tick, each `--json`-projected so the whole scan is two round-trips, not a fan of
+per-item calls:
 
 ```bash
 gh issue list --label "<triggerLabel>" --state open \
-  --json number,title,labels,createdAt,assignees,author --limit 50
+  --json number,title,labels,createdAt,assignees,author,body --limit 50
+gh pr list --label "<triggerLabel>" --state open \
+  --json number,title,isDraft,labels,headRefName,baseRefName,files,body,mergeable,statusCheckRollup,updatedAt --limit 50
 ```
 
-Filter **out** any issue that is already:
+Project everything the graph (§2b) and the eligibility gates need in these two calls — including
+PR `files` (for same-file conflict detection) and `body` (for explicit dependency signals) — so the
+graph is built **once** from this single scan, with no redundant round-trips per item.
+
+**Issue eligibility.** Filter **out** any issue that is already:
 - labelled `armada:underway`, `armada:done`, or `armada:blocked`, **or**
-- has an open PR that references it (`gh pr list --search "<number> in:body" --state open`), **or**
+- has an open PR that references it (detectable from the PR `body` set already pulled above —
+  no extra `gh pr list --search` round-trip needed), **or**
 - already has a worktree/branch named for it locally.
 
-That dedup check is what keeps the loop idempotent — a tick that fires while the previous build is
-still running must not double-pick.
+**PR eligibility** is the ready-PR gate from §3a — open, not draft, carries `<triggerLabel>`, CI not
+failing, and not already `armada:reviewing` / `armada:merged` / `armada:blocked`. Evaluate it here
+against the same scan rather than re-listing.
+
+Those dedup checks keep the loop idempotent — a tick that fires while a previous build or review is
+still running must not double-pick. An already-claimed unit (`armada:underway` / `armada:reviewing`)
+is filtered out here, so it stays invisible to every intervening tick until its background dispatch
+completes and reconciles (§2d / §3e).
 
 #### Author allowlist
 
@@ -152,29 +207,84 @@ After the dedup filter above, apply the `authors` allowlist from §1 (config →
 This is a second gate on top of the trigger label: the label decides *which* issues are in play;
 `authors` decides *whose* issues the lookout will act on.
 
-### 2b. Pick the next issue
+### 2b. Build the cross-track dependency/conflict graph
 
-Order the remaining issues oldest-first (FIFO on `createdAt`) unless a `priority`/`P0` label
-suggests otherwise. How many you dispatch is bounded by `maxConcurrentBuilds` (config, **default
-1**): a tick dispatches eligible issues — newest claim first off the FIFO order — only up to the
-number of background builds currently free, then **returns** (it does not wait for any build to
-finish). With the default of 1 that's effectively one build in flight at a time, with the rest of
-the backlog left for later ticks; raise it to let several isolated background builds run at once.
-The in-flight guard (§2a) is what keeps this safe — an issue already `armada:underway` is skipped,
-so a tick that fires while a build is still running won't double-pick it. See §2d for how the
-dispatch runs in the background and how completions are reconciled.
+From the single scan (§2a), build **one graph over both tracks at once** — issues and PRs are nodes
+in the same graph, because a dependency can cross tracks (a PR can depend on an issue's build, an
+issue can extend a PR). The graph's edges are the **only** thing that forces serialisation; absent
+an edge, two units are independent and run concurrently. Derive edges from:
 
-If nothing is eligible, log `crows-nest: horizon clear` and return — the loop will check again next
-interval. Don't invent work to look busy.
+- **Explicit signals** (cheap, unambiguous — read from the `body` text already pulled in §2a):
+  - `depends on #N`, `blocked by #N`, `extends #N`, `builds on #N`, `after #N` → a hard
+    prerequisite edge: this unit can't start until `#N`'s work has landed.
+  - GitHub's own linked-issue / linked-PR references and "Closes #N" relationships.
+- **Implicit signals** (judgment — inferred, stated as the *reason* so it's auditable):
+  - **Same file/skill surface (conflict-prone).** Two units that touch the **same files** are
+    conflict-prone; building both in parallel risks a merge conflict. Use issue text/paths and PR
+    `files` from §2a to detect overlap. A same-file edge **serialises** the pair (build one, let it
+    land, then the other rebases cleanly) rather than racing them.
+  - **Foundation work others build on.** A unit that lays a base others extend (data model, shared
+    surface) is a prerequisite for its dependents even without an explicit `depends on`.
+  - **A PR whose base is about to move.** If an in-flight merge will change another open PR's base
+    branch, that PR's review/merge should wait for — or be re-based after — the merge, so it isn't
+    reviewed against a base that's about to shift. This is a cross-unit edge from the merging PR to
+    the dependent PR.
 
-### 2c. Claim it
+Record each edge with its **reason** (`explicit: depends on #N` / `implicit: same file
+skills/foo/SKILL.md` / `implicit: base #12 about to move`). The reason is what §2e reports for held
+units and what makes a judgment call reviewable rather than opaque.
+
+**FIFO fallback when there are no signals.** If a unit has no edges, it's independent — there's
+nothing to order it against, so it falls back to plain FIFO (issues oldest-first on `createdAt`, PRs
+oldest-update-first on `updatedAt`), exactly as before. The graph only *adds* ordering where a
+signal justifies it; with no signals at all the scheduler degrades to the original FIFO behaviour.
+
+### 2c. Schedule for maximum parallelism across both tracks
+
+Walk the graph and select the **runnable frontier**: every unit with **no unsatisfied prerequisite
+edge** (its dependencies have landed) and **no same-file conflict with a unit already in flight**.
+That frontier is dispatched **concurrently**, across both tracks at once, up to the per-track bounds:
+
+- **Issue builds** fill up to `maxConcurrentBuilds` (minus builds already in flight) — §2d.
+- **PR review→merge pipelines** fill up to `maxConcurrentReviews` (minus pipelines already in
+  flight) — dispatched via §3 as background Workflows.
+
+The two budgets are **independent**, so builds and reviews run **at the same time** — the issue
+track is never drained before the PR track starts, and neither starves the other. Within a track,
+the frontier is ordered FIFO (oldest-first) and priority labels (`priority`/`P0`) jump the queue.
+
+**Order merges to minimise forced rebases.** When the frontier holds several PRs that *will* merge,
+order them so a merge that changes another PR's base lands **first**, and PRs sharing a file are
+sequenced rather than merged in a race — so each subsequent PR rebases against an already-updated
+base instead of being invalidated mid-flight. (The actual rebase, when needed, is the pipeline's
+make-mergeable stage, §4.4b; the scheduler's job is just to *order* the merges to minimise it.)
+
+**Hold the rest, with a reason.** Every unit **not** on the frontier is **held** — not dropped:
+- **blocked by a prerequisite** → "waiting on #N" (the edge from §2b);
+- **same-file conflict with an in-flight unit** → "conflicts with #M on `<file>`";
+- **base about to move** → "base #K merging first";
+- **over the bound** → "queued (N/​M builds|reviews in flight)".
+
+Held units keep their current labels (an undispatched issue stays on `<triggerLabel>`, an
+undispatched PR stays eligible) so a later tick re-evaluates them once the blocker clears. **A held
+unit is never lost and never silently skipped** — it's reported in §2e with its reason, and the loop
+picks it up next interval when its prerequisite has landed or a slot frees.
+
+If the frontier is empty and nothing is in flight, log `crows-nest: horizon clear · harbour clear`
+and return — the loop checks again next interval. Don't invent work to look busy.
+
+### 2d. Dispatch the scheduled issue builds
+
+For each issue on the frontier (§2c), within the `maxConcurrentBuilds` budget:
+
+#### 2d.i Claim it
 
 ```bash
 gh issue edit <number> --add-label "armada:underway" --remove-label "<triggerLabel>"
 gh issue comment <number> --body "🔭 crows-nest: picked up by ARMADA — dispatching to <dispatch target>."
 ```
 
-### 2d. Dispatch it
+#### 2d.ii Dispatch it
 
 Hand the claimed issue to the dispatch target. **How** you dispatch depends on whether the tick is
 running autonomously or under a watching human — the two modes trade approval gates for context
@@ -188,8 +298,9 @@ isolation:
   the build and returns immediately** instead of blocking the whole `/loop` tick until the build
   finishes. The subagent runs in **its own context and its own worktree**, so the lookout never
   carries the build transcript and concurrent builds don't fight over files. This keeps the watch
-  live — the lookout goes straight back to watching (and may dispatch other eligible issues up to
-  `maxConcurrentBuilds`, §2b) — keeps it cheap and legible across hundreds of ticks, and is the
+  live — the lookout goes straight back to watching (and may dispatch other frontier issues up to
+  `maxConcurrentBuilds`, §2c, plus PR pipelines up to `maxConcurrentReviews`) — keeps it cheap and
+  legible across hundreds of ticks, and is the
   multi-agent shape ARMADA is named for. A slow or stuck build no longer freezes the loop: it runs
   off to one side while ticks keep firing. The completion is handled **asynchronously** when the
   background build returns its structured result — see *Reconciling a background completion* below.
@@ -242,52 +353,63 @@ both the lookout and a human. (On the inline path — the supervised single pick
 shipwright is foreground and opens the PR directly in the turn; apply the same label swap and
 comment from its outcome.)
 
-#### Concurrency is bounded, not unbounded
+#### Concurrency is bounded, not unbounded — per track
 
-Background dispatch is what lets the lookout run several builds at once without blocking, and
-worktree isolation is what makes that safe — each subagent builds in **its own worktree**, so
-concurrent builds don't trample a shared tree. But background fan-out must still be **bounded**, or a
-busy backlog could spawn an unbounded swarm of builds. `maxConcurrentBuilds` (config, **default 1**)
-caps how many background builds may be in flight: a tick dispatches up to `(maxConcurrentBuilds −
-in-flight)` eligible issues and **queues the rest** for later ticks (they keep their claim state —
-an undispatched issue stays on `<triggerLabel>`, only a dispatched one is moved to
-`armada:underway`). With the default of 1 the behaviour is one build at a time — sequential in
-effect, but still non-blocking, so the watch never freezes behind it. Raise `maxConcurrentBuilds`
-to spawn multiple isolated background builds in parallel.
+Background dispatch is what lets the lookout run several builds *and* several reviews at once without
+blocking, and worktree isolation is what makes that safe — each subagent works in **its own
+worktree**, so concurrent units don't trample a shared tree. But background fan-out must still be
+**bounded**, or a busy backlog could spawn an unbounded swarm. Each track has its **own** cap, so
+the two run concurrently without either starving the other:
+
+- `maxConcurrentBuilds` (config, **default 1**) caps background **builds** (issue track): a tick
+  dispatches up to `(maxConcurrentBuilds − builds-in-flight)` frontier issues and **holds the rest**
+  for later ticks (they keep their claim state — an undispatched issue stays on `<triggerLabel>`,
+  only a dispatched one moves to `armada:underway`).
+- `maxConcurrentReviews` (config, **default 1**) caps background **review→merge pipelines** (PR
+  track): a tick launches up to `(maxConcurrentReviews − reviews-in-flight)` frontier PRs (§3) and
+  holds the rest (an undispatched PR stays eligible; a claimed one moves to `armada:reviewing`).
+
+With both defaults at 1 the behaviour is one build *and* one review at a time — sequential within
+each track, but the two tracks still run **together**, and every dispatch is non-blocking so the
+watch never freezes behind one. Raise either cap to fan that track out across more isolated
+background subagents.
 
 shipwright's **own** internal fan-out — the parallel slices of a stacked PR series (shipwright §3b) —
 should likewise spawn its slice builders as **background** agents rather than blocking serially on
 each, for the same reason: one slice shouldn't stall the others.
 
-### 2e. Report the tick
+### 2e. Report the unified schedule
 
 Print a one-line summary so the loop's history is legible. On the autonomous path the tick reports
-what it **dispatched** (the build is still running in the background; the PR isn't known yet — that
-lands later via the completion reconcile, §2d):
+what it **dispatched** across **both tracks** plus what it **held and why** (a dispatched build's PR
+isn't known yet — that lands later via the completion reconcile, §2d; a dispatched review's outcome
+lands via §3e):
 
 ```
-crows-nest tick: 3 eligible · 1/1 builds free · dispatched #142 "Add CSV export" to shipwright (background) · 2 queued · watch live
+crows-nest tick: 5 units (3 issues, 2 PRs) · dispatched build #142 "Add CSV export" + review #150 "Fix auth" (background) · held: #143 (waiting on #142) · #151 (base #150 merging first) · #144 queued (1/1 builds in flight) · watch live
 ```
 
-A separate line is logged when a background build completes and is reconciled:
+The schedule line must always surface three things: **builds running**, **reviews running**, and
+**held + why** — so a glance at the loop history shows the full picture across both tracks. Separate
+lines are logged when a background unit completes and is reconciled:
 
 ```
 crows-nest: #142 build completed → PR #150 opened (armada:done)
+crows-nest: #150 review pipeline completed → merged (armada:merged)
 ```
 
-## 3. One tick of the ready-PR watch
+## 3. The PR track — dispatch ready PRs into the review→merge pipeline
 
-The second watch is a separate tick that operates on **pull requests**, not issues. It can be armed
-on its own `/loop` or folded into the same tick as the new-issue watch (§6). Each tick:
+The PR track is **not a separate tick** — it's scheduled in the same unified tick as the issue track
+(§2), from the same batched scan. §3 is what the scheduler does for each **PR on the frontier**
+(§2c): claim it and launch its review→merge pipeline (§4) as a **background** Workflow, then return.
+PR pipelines run **concurrently with issue builds and with each other**, bounded by
+`maxConcurrentReviews` — the lookout doesn't drain the issue track before starting reviews.
 
-### 3a. List eligible PRs
+### 3a. Eligibility (evaluated in the §2a scan)
 
-```bash
-gh pr list --label "<triggerLabel>" --state open \
-  --json number,title,isDraft,labels,headRefName,mergeable,statusCheckRollup,updatedAt --limit 50
-```
-
-A PR is **ready** — eligible for the pipeline — when **all** hold:
+The ready-PR gate is applied during the unified scan (§2a), not as a second `gh pr list`. A PR is
+**ready** — eligible for the frontier — when **all** hold:
 
 - it is **open** and **not draft**;
 - it carries the `<triggerLabel>` (`armada`) — shipwright auto-arms it with this when it opens the
@@ -297,15 +419,17 @@ A PR is **ready** — eligible for the pipeline — when **all** hold:
 - it isn't **already mid-pipeline** — not labelled `armada:reviewing`, and not already
   `armada:merged` or `armada:blocked` (terminal states a future tick must not re-pick).
 
-Filter out anything that fails a condition. This eligibility check is the ready-PR analogue of §2a's
-issue dedup, and `armada:reviewing` is the idempotency guard that stops a second tick double-driving
-the same PR.
+This is the ready-PR analogue of §2a's issue dedup, and `armada:reviewing` is the idempotency guard
+that stops a second tick double-driving the same PR. The graph (§2b) may still **hold** a ready PR
+behind a base-about-to-move or same-file edge even when it passes this gate — those held PRs are
+reported in §2e, not dispatched.
 
-### 3b. Pick the next PR
+### 3b. Selection (the §2c frontier, up to `maxConcurrentReviews`)
 
-Oldest-update-first (FIFO on `updatedAt`), **one PR per tick** by default — the pipeline spawns
-subagents and merges, so sequential is safer unattended. If nothing is eligible, log
-`crows-nest: harbour clear` and return.
+The scheduler (§2c) selects which ready PRs to launch this tick — the frontier PRs, oldest-update-
+first (FIFO on `updatedAt`), up to `(maxConcurrentReviews − reviews-in-flight)`. **Multiple PRs are
+reviewed concurrently** when the budget allows and the graph permits; the rest are held for later
+ticks. If no PR is on the frontier and none is in flight, the §2e report notes the harbour is clear.
 
 ### 3c. Claim it
 
@@ -314,17 +438,26 @@ gh pr edit <n> --add-label "armada:reviewing"
 gh pr comment <n> --body "🔭 crows-nest: ready-PR pipeline started — review → address → re-validate → gated merge."
 ```
 
-### 3d. Drive the pipeline
+### 3d. Drive the pipeline (background Workflow)
 
-Hand the claimed PR to the **review→merge Workflow** (§4). The Workflow returns a single terminal
-result the lookout maps to the PR-track labels (§3e). The lookout itself stays thin: it claims,
-launches the Workflow, and records the outcome — it does **not** carry the review or build
-transcripts (those live in the subagents' own contexts).
+Hand the claimed PR to the **review→merge Workflow** (§4), launched as a **background** dispatch
+(via the **`Agent` tool**, non-interactive, isolated context, `run_in_background: true`) — exactly
+as issue builds run in §2d. Launching it in the background means the tick **kicks off the pipeline
+and returns immediately** instead of blocking the whole `/loop` tick until the review-address-merge
+finishes (which takes many minutes). The lookout goes straight back to scheduling — dispatching more
+PR pipelines up to `maxConcurrentReviews` and more issue builds up to `maxConcurrentBuilds`, all
+concurrently. The Workflow returns a single terminal result the lookout maps to the PR-track labels
+when it **completes** (§3e). The lookout itself stays thin: it claims, launches the Workflow, and
+records the outcome — it does **not** carry the review or build transcripts (those live in the
+subagents' own contexts).
 
-### 3e. Record the outcome
+### 3e. Record the outcome (on completion)
 
-Map the Workflow's terminal result to a PR-track label and a comment — a PR must **never** be left
-on `armada:reviewing`:
+The pipeline result arrives **asynchronously** — the tick that launched it has long since returned,
+so this reconcile runs when the background Workflow **completes** (the `Agent` tool surfaces its
+return). Until then the PR stays `armada:reviewing`, and the in-flight guard (§2a/§3a) keeps it out
+of every intervening tick. On completion, map the Workflow's terminal result to a PR-track label and
+a comment — a PR must **never** be left on `armada:reviewing`:
 
 - `merged` → `gh pr edit <n> --remove-label "armada:reviewing" --add-label "armada:merged"`; comment
   the merge commit. (Only reachable with `autoMerge: true` and all gates green.)
@@ -334,10 +467,14 @@ on `armada:reviewing`:
 - `blocked` → `gh pr edit <n> --remove-label "armada:reviewing" --add-label "armada:blocked"`; comment
   the reason (blocking finding, red CI, no convergence, non-mergeable, branch protection unmet).
 
-### 3f. Report the tick
+### 3f. Report
+
+The PR track's dispatch is reported as part of the **unified schedule line** (§2e), alongside the
+issue builds dispatched the same tick — builds running, reviews running, held + why, in one line.
+The per-PR pipeline outcome is logged separately when its background Workflow completes (§3e):
 
 ```
-crows-nest PR tick: 2 ready · picked #150 "Add CSV export" · 1 blocking → addressed · green · awaiting human merge (auto-merge off)
+crows-nest: #150 review pipeline completed → awaiting human merge (auto-merge off)
 ```
 
 ## 4. The review→merge pipeline (a Workflow)
@@ -551,21 +688,30 @@ crows-nest close tick: 2 in-flight · #142 "Add CSV export" → shipped (PR #150
 ## 6. Arm the loop — hand the /loop line to the user
 
 `crows-nest` can't type `/loop` itself, so compose the command and hand it over. Pick the interval
-from the user (default ~5 minutes; faster burns API for little gain on a slow backlog). Arm the
-new-issue watch, the ready-PR watch, or both:
+from the user (default ~5 minutes; faster burns API for little gain on a slow backlog). The
+**default and recommended** line runs the **unified scheduler** — both tracks in one tick:
 
 ```text
-# New-issue watch (build the backlog):
-/loop 5m Run the crows-nest skill: do one new-issue watch tick for label "armada" — list eligible open issues, claim the next one, and dispatch it to shipwright. If the horizon is clear, report that and wait.
-
-# Ready-PR watch (review → address → gated merge):
-/loop 5m Run the crows-nest skill: do one ready-PR watch tick for label "armada" — list ready PRs, claim the next one, and drive it through the review→merge Workflow. If the harbour is clear, report that and wait.
+# Unified scheduler (recommended) — both tracks, maximally parallel:
+/loop 5m Run the crows-nest skill: do one unified scheduler tick for label "armada" — scan open issues AND ready PRs in one batched scan, build the cross-track dependency/conflict graph, dispatch every independent runnable unit (builds and reviews) concurrently up to maxConcurrentBuilds / maxConcurrentReviews, hold the rest with a reason, and report the unified schedule. If both horizon and harbour are clear, report that and wait.
 ```
 
-Tell the user: *"Paste that to arm the lookout, or I can do single ticks on demand."* Note that
-`/loop` with no interval lets the model self-pace, and that they can stop it any time. Remind them
-that **auto-merge is off by default**, so the ready-PR watch stops at "awaiting human merge" until
-they set `autoMerge: true`. If `/loop` is unavailable, offer to run manual ticks (§2/§3) on demand.
+If you want to drive a single track for some reason (e.g. builds only while you triage PRs by
+hand), the scheduler still works scoped to one track via the `watch` input:
+
+```text
+# Issue track only:
+/loop 5m Run the crows-nest skill: do one scheduler tick for label "armada", watch=issues — scan and dispatch eligible issue builds up to maxConcurrentBuilds, hold the rest with a reason, report. If the horizon is clear, report that and wait.
+
+# PR track only:
+/loop 5m Run the crows-nest skill: do one scheduler tick for label "armada", watch=prs — scan and dispatch ready PR pipelines up to maxConcurrentReviews, hold the rest with a reason, report. If the harbour is clear, report that and wait.
+```
+
+Tell the user: *"Paste the unified line to arm the lookout, or I can do single ticks on demand."*
+Note that `/loop` with no interval lets the model self-pace, and that they can stop it any time.
+Remind them that **auto-merge is off by default**, so the PR track stops at "awaiting human merge"
+until they set `autoMerge: true`. If `/loop` is unavailable, offer to run manual ticks (§2) on
+demand.
 
 ## 7. Stopping and safety
 
@@ -621,15 +767,18 @@ they set `autoMerge: true`. If `/loop` is unavailable, offer to run manual ticks
 ## Inputs
 
 - `label` *(optional)* — the trigger label to watch. Defaults to `.armada/config.json` → `triggerLabel`, else `armada`.
-- `watch` *(optional)* — `issues` | `prs` | `both`. Which watch a tick runs. Defaults to `issues`.
+- `watch` *(optional)* — `both` | `issues` | `prs`. Which track(s) a scheduler tick covers.
+  **Defaults to `both`** — the unified scheduler scans and dispatches both tracks at once; scope to a
+  single track only when explicitly asked.
 - `interval` *(optional)* — poll cadence for the `/loop` line. Default ~5m.
 - `dispatch` *(optional)* — `shipwright` | `flagship`. Defaults to config, else `shipwright`.
 
 ## Output
 
-- A composed `/loop` command the user can paste to arm the new-issue and/or ready-PR watch.
-- Per new-issue tick: eligible count, the issue picked (if any), the dispatch target, the PR.
-- Per ready-PR tick: ready count, the PR picked (if any), the pipeline outcome (merged / awaiting
-  human / blocked + reason).
+- A composed `/loop` command the user can paste to arm the unified scheduler (or a single track).
+- Per tick: a **unified schedule line** — units scanned across both tracks, what was dispatched
+  (builds running / reviews running), and what was held + why (§2e).
+- On each background completion: the reconciled outcome — a build's PR opened, or a PR pipeline's
+  merge / awaiting-human / blocked result.
 - Labels kept in sync — issues `armada` → `armada:underway` → `armada:done` / `armada:blocked`;
   PRs `armada` → `armada:reviewing` → `armada:merged` / `armada:blocked`.

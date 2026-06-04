@@ -22,7 +22,7 @@ the right skill from natural language — you rarely type the name.
 | :--- | :--- | :--- |
 | **`commission`** | The bootstrap. Sets ARMADA up in a repo: detects build/test commands, writes `.armada/config.json`, creates the GitHub labels. Idempotent. | ✅ shipped |
 | **`charter`** | The work order. Turns a rough request into a well-formed, testable GitHub issue and arms it with the trigger label so the fleet picks it up. | ✅ shipped |
-| **`crows-nest`** | The lookout. Runs under `/loop` and watches for new GitHub issues, then dispatches each one into the fleet. | ✅ shipped |
+| **`crows-nest`** | The lookout. A single, maximally parallel scheduler that runs under `/loop` and watches **both tracks at once** — new issues *and* ready PRs — graphs their dependencies/conflicts together, and dispatches independent builds and reviews **concurrently** up to per-track bounds. | ✅ shipped |
 | **`shipwright`** | The builder. Takes one issue and works it end-to-end in an isolated worktree, opening a PR. | ✅ shipped |
 | **`muster`** | Inspection before sailing. Reviews a ready PR through two parallel lenses (code-review + codex-rescue), dedupes, and posts inline comments + a summary. | ✅ shipped |
 | `flagship` | The command vessel. An autonomous build → review → verify → fix loop that drives an issue all the way to merge-ready. | 🚧 roadmap |
