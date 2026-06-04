@@ -19,7 +19,7 @@ End-to-end workflow for picking up an issue, planning it, building it in an isol
 opening a pull request. `shipwright` is stack-agnostic: it discovers the project's commands from
 `.armada/config.json` (or infers them) rather than assuming any language or framework.
 
-**shipwright runs in one of two modes:**
+**shipwright runs in one of three modes:**
 
 - **Build mode** (default, §0–§10) — take an issue and produce a PR.
 - **Address-review mode** (§11) — take an **existing PR plus its review comments** and respond to
@@ -27,6 +27,12 @@ opening a pull request. `shipwright` is stack-agnostic: it discovers the project
   the stage [`crows-nest`](../crows-nest/SKILL.md) dispatches inside its ready-PR pipeline, after
   [`muster`](../muster/SKILL.md) has reviewed. If you're invoked with a PR number and review
   findings rather than an issue, jump to §11.
+- **Rebase mode** (§12) — take an **existing PR that GitHub reports `BEHIND` or `CONFLICTING`** and
+  make it mergeable: rebase its branch onto the configured base, resolve conflicts integrating both
+  sides, re-validate, and force-push (with `--force-with-lease`) to the PR's own branch. This is the
+  make-mergeable stage [`crows-nest`](../crows-nest/SKILL.md) dispatches in its ready-PR pipeline
+  (§4.4b) **only when `autoMerge: true`**. If you're invoked to rebase/make-mergeable a PR rather
+  than to build or to address review, jump to §12.
 
 ## 0. Discover the project's commands
 
@@ -409,10 +415,121 @@ In the pipeline, return a machine-readable result to the lookout so it can re-re
 back to a human rather than merge — shipwright never merges, and never resolves a blocking finding
 by fiat.
 
+## 12. Rebase mode — make a stale or conflicting PR mergeable
+
+When shipwright is dispatched to **make an existing PR mergeable** — by
+[`crows-nest`](../crows-nest/SKILL.md)'s make-mergeable stage (§4.4b) when a reviewed PR is `BEHIND`
+or `CONFLICTING` and `autoMerge: true`, or by a human pointing it at a stale PR — it rebases the PR
+branch onto the current base, resolves any conflicts, re-validates, and force-pushes. This is the
+hands-off version of the conflict resolution that otherwise has to be done by hand on a stale-branch
+PR. The work happens on the **PR's own branch** so the force-push updates the PR in place.
+
+> **Confirm the branch is fleet-owned** → **rebase onto the configured base** → **resolve conflicts
+> integrating both sides** → **re-validate** → **force-push with `--force-with-lease`** — or, if it
+> isn't mechanically resolvable, **fall back to `blocked`**.
+
+### 12a. Confirm the branch is safe to force-push
+
+Force-push is acceptable **only on a fleet-owned branch** — one whose commits are all ARMADA's. If a
+human has pushed commits to the PR branch, do **not** rewrite it: return `blocked` and let a human
+rebase, rather than risk clobbering their work.
+
+```bash
+gh pr view <n> --json headRefName,baseRefName,mergeable,author,commits
+# Inspect authorship of the branch's own commits (those not on the base):
+git log --format='%an <%ae>' origin/<baseBranch>..origin/<headRef>
+```
+
+If the branch carries non-ARMADA commits, stop here → `blocked` ("branch has human commits; rebase
+by hand"). Otherwise continue.
+
+### 12b. Check out the PR branch on its own worktree
+
+Work on the PR's branch — never a fresh one — so the force-push lands on the PR:
+
+```bash
+gh pr checkout <n>        # or: git worktree add ../<n>-rebase <prHeadRef>
+git fetch origin <baseBranch>
+```
+
+### 12c. Rebase onto the configured base and resolve conflicts
+
+Rebase the PR branch onto the **configured `baseBranch`** (from `.armada/config.json`, §0) — not an
+assumed `main`:
+
+```bash
+git rebase origin/<baseBranch>
+```
+
+When a conflict halts the rebase, resolve it by **integrating both sides** — keep the base's changes
+*and* the PR's intent. **Never resolve by dropping the base's work** (e.g. `-X ours` blindly, or
+taking the PR side wholesale) — that silently reverts whatever landed on the base since the branch
+forked, which is exactly the bug a rebase is meant to avoid. Read both sides, understand what each
+changed, and produce a resolution that preserves both. Then `git add` the resolved files and
+`git rebase --continue`.
+
+If a conflict **isn't mechanically resolvable with confidence** — the two sides made genuinely
+contradictory changes to the same logic and picking either loses correctness — **abort and fall
+back to `blocked`** rather than guessing:
+
+```bash
+git rebase --abort
+```
+
+Return `unresolved` with which file/hunk couldn't be reconciled. **Bound the attempts** — the lookout
+caps rebase rounds (`maxRebaseRounds`, default 1); don't loop on a branch that keeps re-conflicting.
+
+### 12d. Re-validate the rebased tree
+
+A clean rebase is **not** proof of a sound resolution — a mechanically-clean merge can still be
+semantically wrong. Re-run the project's checks against the rebased head and **print the outputs** —
+same gate as §6:
+
+```bash
+<commands.build> && <commands.test> && <commands.lint>   # must be green
+```
+
+If validation **fails** post-rebase, do **not** force-push a broken tree — return `blocked` with the
+failing check. A clean-conflict resolution that breaks tests must block, never merge.
+
+### 12e. Force-push with lease
+
+Push the rebased branch to the PR's own branch. Use `--force-with-lease` (not bare `--force`) so the
+push is refused if the remote moved under you — a guard against clobbering an unexpected concurrent
+push:
+
+```bash
+git push --force-with-lease origin <headRef>
+```
+
+Then comment the PR with what happened (`gh pr comment <n>`): rebased onto `<baseBranch>`, conflicts
+resolved (which files), re-validated green, new head sha.
+
+### 12f. Return the structured result
+
+Return a machine-readable result so the lookout can re-review and gate (§4.4b → §4.1 → §4.5):
+
+```json
+{
+  "pr": 11,
+  "mode": "rebase",
+  "result": "resolved",          // "resolved" | "unresolved"
+  "headSha": "<new head sha>",
+  "rebasedOnto": "<baseBranch>",
+  "validation": "pass",          // "pass" | "fail"
+  "reason": "rebased onto master; resolved conflicts in skills/foo/SKILL.md; re-validated green"
+}
+```
+
+`result: "unresolved"` (or `validation: "fail"`) tells the lookout to fall back to `armada:blocked`
+with the reason — shipwright **never** force-merges an unresolved or test-breaking rebase, and the
+final merge stays the lookout's gated decision (§4.5), never shipwright's.
+
 ## Inputs
 
 - A GitHub issue number **or** a free-text description (build mode), **or** a PR number plus its
-  review comments/findings (address-review mode, §11).
+  review comments/findings (address-review mode, §11), **or** a PR number to rebase/make-mergeable
+  (rebase mode, §12).
 - Optional: a base branch override.
 
 ## Output
@@ -423,3 +540,7 @@ by fiat.
 - **Address-review mode:** the agreed changes pushed to the PR branch; a per-thread reply on every
   review comment (triaged agree/discuss/disagree, threads left unresolved); a structured result for
   the lookout to re-review and gate on.
+- **Rebase mode:** the PR branch rebased onto the configured base with conflicts resolved
+  (integrating both sides), re-validated, and force-pushed with `--force-with-lease` to the PR's own
+  branch — or, when the conflict isn't confidently resolvable or validation fails post-rebase, an
+  `unresolved` structured result so the lookout falls back to `armada:blocked` rather than force-merge.
