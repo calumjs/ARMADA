@@ -64,6 +64,10 @@ Read `.armada/config.json` from the target repo:
 - `autoMerge` — whether the ready-PR pipeline may perform the final merge. **Default `false`**: with
   it off the pipeline reviews, addresses, and re-validates but **stops before merging** (§4.5). Only
   `true` lets the lookout merge, and only when every other gate passes. See [Safety](#7-stopping-and-safety).
+- `maxConcurrentBuilds` — how many background builds the new-issue watch may have in flight at once
+  (**default 1**). The autonomous path dispatches builds in the background (§2d), so a tick never
+  blocks on one; this caps how many run in parallel and queues the overflow. Default 1 = one build
+  at a time (still non-blocking); raise it to fan out across more isolated worktrees.
 
 **If the config or the labels are missing, the repo isn't commissioned** — run the
 [`commission`](../commission/SKILL.md) skill first (it detects commands, writes the config, and
@@ -151,9 +155,14 @@ This is a second gate on top of the trigger label: the label decides *which* iss
 ### 2b. Pick the next issue
 
 Order the remaining issues oldest-first (FIFO on `createdAt`) unless a `priority`/`P0` label
-suggests otherwise. Process **one issue per tick** by default — sequential is safer for an
-unattended loop sharing one working tree. (Only raise concurrency if the user asks and each build
-runs in its own worktree.)
+suggests otherwise. How many you dispatch is bounded by `maxConcurrentBuilds` (config, **default
+1**): a tick dispatches eligible issues — newest claim first off the FIFO order — only up to the
+number of background builds currently free, then **returns** (it does not wait for any build to
+finish). With the default of 1 that's effectively one build in flight at a time, with the rest of
+the backlog left for later ticks; raise it to let several isolated background builds run at once.
+The in-flight guard (§2a) is what keeps this safe — an issue already `armada:underway` is skipped,
+so a tick that fires while a build is still running won't double-pick it. See §2d for how the
+dispatch runs in the background and how completions are reconciled.
 
 If nothing is eligible, log `crows-nest: horizon clear` and return — the loop will check again next
 interval. Don't invent work to look busy.
@@ -171,13 +180,19 @@ Hand the claimed issue to the dispatch target. **How** you dispatch depends on w
 running autonomously or under a watching human — the two modes trade approval gates for context
 isolation:
 
-- **Autonomous (`/loop`) path — dispatch into a subagent.** When the tick is firing under `/loop`,
-  the lookout commands and a subagent works. Spawn the dispatch target (`shipwright`, default — or
-  `flagship` when that ship is in the fleet) via the **`Agent` tool**, non-interactive, with
-  `isolation: "worktree"`. The subagent runs the full build (worktree → implement → validate → open
-  PR) in **its own context and its own worktree**, then returns a structured result (below); the
-  lookout never carries the build transcript. This keeps the lookout cheap and legible across
-  hundreds of ticks, and it's the multi-agent shape ARMADA is named for.
+- **Autonomous (`/loop`) path — dispatch into a *background* subagent.** When the tick is firing
+  under `/loop`, the lookout commands and a subagent works. Spawn the dispatch target (`shipwright`,
+  default — or `flagship` when that ship is in the fleet) via the **`Agent` tool**, non-interactive,
+  with `isolation: "worktree"` **and `run_in_background: true`**. The build (worktree → implement →
+  validate → open PR) takes many minutes; running it in the background means the tick **kicks off
+  the build and returns immediately** instead of blocking the whole `/loop` tick until the build
+  finishes. The subagent runs in **its own context and its own worktree**, so the lookout never
+  carries the build transcript and concurrent builds don't fight over files. This keeps the watch
+  live — the lookout goes straight back to watching (and may dispatch other eligible issues up to
+  `maxConcurrentBuilds`, §2b) — keeps it cheap and legible across hundreds of ticks, and is the
+  multi-agent shape ARMADA is named for. A slow or stuck build no longer freezes the loop: it runs
+  off to one side while ticks keep firing. The completion is handled **asynchronously** when the
+  background build returns its structured result — see *Reconciling a background completion* below.
 
 - **Supervised single pick — run inline.** When a human asked for one named issue ("crows-nest,
   grab #142"), run [`shipwright`](../shipwright/SKILL.md) **inline in this turn** so the user keeps
@@ -207,7 +222,15 @@ The subagent reports back a single structured result the lookout maps to labels:
 }
 ```
 
-The lookout maps that result to the claimed-state labels and the issue comment:
+#### Reconciling a background completion
+
+On the autonomous path the result arrives **asynchronously**, not inline: the tick that dispatched
+the build has long since returned, so the reconciliation runs when the background build **completes**
+(the `Agent` tool surfaces its return). Until then the issue stays `armada:underway` — the in-flight
+guard (§2a) already keeps that issue out of every intervening tick, so a long build simply sits
+`armada:underway` while the watch keeps ticking on the rest of the backlog. When a background build
+finishes, crows-nest takes its structured result and maps it to the claimed-state labels and the
+issue comment:
 
 - `status: "opened"` → `gh issue edit <issue> --add-label "armada:done" --remove-label "armada:underway"`,
   then `gh issue comment <issue> --body "🔭 crows-nest: PR opened — <pr>"`.
@@ -215,23 +238,41 @@ The lookout maps that result to the claimed-state labels and the issue comment:
   then `gh issue comment <issue> --body "🔭 crows-nest: blocked — <reason>"`.
 
 Either way the issue leaves `armada:underway`: never leave one stuck there, or it's invisible to
-both the lookout and a human. (On the inline path the running shipwright opens the PR directly;
-apply the same label swap and comment from its outcome.)
+both the lookout and a human. (On the inline path — the supervised single pick — the running
+shipwright is foreground and opens the PR directly in the turn; apply the same label swap and
+comment from its outcome.)
 
-#### Concurrency stays opt-in
+#### Concurrency is bounded, not unbounded
 
-Worktree isolation is what makes the autonomous path safe to parallelise: because each subagent
-builds in **its own worktree**, multiple issues could be dispatched in the same tick without
-trampling a shared tree. That's the enabler, **not** the default — the one-issue-per-tick rule of
-§2b is unchanged. Only raise the per-tick limit (one subagent per issue) when the user explicitly
-asks for concurrency.
+Background dispatch is what lets the lookout run several builds at once without blocking, and
+worktree isolation is what makes that safe — each subagent builds in **its own worktree**, so
+concurrent builds don't trample a shared tree. But background fan-out must still be **bounded**, or a
+busy backlog could spawn an unbounded swarm of builds. `maxConcurrentBuilds` (config, **default 1**)
+caps how many background builds may be in flight: a tick dispatches up to `(maxConcurrentBuilds −
+in-flight)` eligible issues and **queues the rest** for later ticks (they keep their claim state —
+an undispatched issue stays on `<triggerLabel>`, only a dispatched one is moved to
+`armada:underway`). With the default of 1 the behaviour is one build at a time — sequential in
+effect, but still non-blocking, so the watch never freezes behind it. Raise `maxConcurrentBuilds`
+to spawn multiple isolated background builds in parallel.
+
+shipwright's **own** internal fan-out — the parallel slices of a stacked PR series (shipwright §3b) —
+should likewise spawn its slice builders as **background** agents rather than blocking serially on
+each, for the same reason: one slice shouldn't stall the others.
 
 ### 2e. Report the tick
 
-Print a one-line summary so the loop's history is legible:
+Print a one-line summary so the loop's history is legible. On the autonomous path the tick reports
+what it **dispatched** (the build is still running in the background; the PR isn't known yet — that
+lands later via the completion reconcile, §2d):
 
 ```
-crows-nest tick: 3 eligible · picked #142 "Add CSV export" · dispatched to shipwright · PR #150 opened
+crows-nest tick: 3 eligible · 1/1 builds free · dispatched #142 "Add CSV export" to shipwright (background) · 2 queued · watch live
+```
+
+A separate line is logged when a background build completes and is reconciled:
+
+```
+crows-nest: #142 build completed → PR #150 opened (armada:done)
 ```
 
 ## 3. One tick of the ready-PR watch
@@ -496,6 +537,15 @@ they set `autoMerge: true`. If `/loop` is unavailable, offer to run manual ticks
   - The address↔review loop is **bounded** (`maxReviewRounds`, default 2); on no convergence the PR
     is labelled `armada:blocked` and handed back. Blocked PRs are always **labelled + commented**,
     never left mid-pipeline on `armada:reviewing`.
+- **Background dispatch keeps the watch live — at the cost of inline approval.** The autonomous
+  path runs each build in a **background** subagent (§2d) so a slow or stuck build can't freeze the
+  loop and the lookout can fan out up to `maxConcurrentBuilds`. The tradeoff is the same one the
+  subagent dispatch already makes: a background agent **can't prompt the user mid-build**, so
+  shipwright's approval gates collapse to **autonomous defaults** (accept the plan, take the default
+  base). The two non-negotiable guards survive unchanged and must **not** be defaulted away — use
+  `baseBranch` from config (don't merge a feature branch to resolve a base, §1a) and **never run a
+  destructive migration unattended** (return `blocked` instead, §2d). Concurrency is **bounded**
+  (`maxConcurrentBuilds`, default 1) so background fan-out never becomes an unbounded swarm.
 - **Label discipline is the safety rail.** The lookout acts only on `triggerLabel`, so you arm
   autonomy by adding `armada` and **disarm it by removing the label** — on an issue or a PR, per
   object, no code change needed. Removing `armada` from a PR takes it out of the ready-PR watch.
