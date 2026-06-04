@@ -63,6 +63,29 @@ anything — that knowledge lives in the skill, so any install self-sets-up.
 The `armada` label is the arming switch — `crows-nest` only ever touches issues that carry it, so
 you grant autonomy one issue at a time.
 
+## Releasing & versioning
+
+ARMADA ships as a Claude Code plugin, and **the plugin `version` is the install cache key.** Claude
+Code copies an installed plugin into a cache keyed by its version, so an install only picks up new or
+changed skills when `.claude-plugin/plugin.json` `version` is bumped. (We learned this the hard way
+once: a new skill didn't appear for installs until the version went `0.1.0` → `0.2.0`.)
+
+**Release rule: bump `version` on every skill add or change.** Because this repo's model is "every
+feature is a release" — a feature here *is* a new or updated skill — any PR that touches `skills/`
+(or a bundled `scripts/` file a skill invokes) must bump `.claude-plugin/plugin.json` `version` in
+the same PR. No version bump → downstream installs silently stay on the old skill.
+
+A couple of related distribution conventions:
+
+- **Bundled-file paths use `${CLAUDE_PLUGIN_ROOT}`.** Any script or asset a *skill* references at
+  runtime (e.g. `scripts/review-merge-pipeline.mjs`, `scripts/merge-gate.mjs`) is addressed as
+  `${CLAUDE_PLUGIN_ROOT}/scripts/...`, never a bare relative path — once installed, the plugin lives
+  in a cache and relative paths break. The repo-local `test`/`lint` command in `.armada/config.json`
+  is the exception: it runs against this checkout, not the installed plugin, so it intentionally uses
+  a bare path.
+- **The marketplace catalog tracks the shipped skill set.** When a skill ships, update the plugin
+  description in `.claude-plugin/marketplace.json` so the catalog doesn't drift from reality.
+
 ## Per-repo configuration
 
 `commission` writes `.armada/config.json` for you, but you can hand-edit it. Shape:
@@ -177,6 +200,10 @@ When a merge is gated off for any of these, the PR is labelled `armada:blocked`,
 reason, and handed back — it is never left half-driven. The merge, when it happens, uses your
 configured `mergeMethod` (`merge`/`squash`/`rebase`). To disarm a PR mid-flight, just remove its
 `armada` label.
+
+## License
+
+[MIT](LICENSE) © calumjs
 
 ---
 🤖 Built with [Claude Code](https://claude.com/claude-code)
