@@ -91,8 +91,10 @@ tracks** — one for issues moving through the build, one for PRs moving through
 
 **PR track (the ready-PR watch, §3):**
 
-- `armada` — on a PR, shipwright adds this when it opens the PR; it marks the PR as in-fleet and
-  eligible for the review pipeline. (Same arming switch as issues: remove it to disarm.)
+- `armada` — on a PR, shipwright **auto-arms** by adding this when it opens the PR (no manual
+  PR-arming step); it marks the PR as in-fleet and eligible for the review pipeline. Only PRs ARMADA
+  itself opens are auto-armed — arbitrary human PRs are left alone unless a human arms them. (Same
+  arming switch as issues: remove it to disarm.)
 - `armada:reviewing` — claimed by the ready-PR watch; a review → address → verify → merge pipeline
   is running against it. Mid-pipeline PRs are skipped by future ticks (the idempotency guard).
 - `armada:merged` — the pipeline merged it. Only ever set when `autoMerge` is enabled **and** every
@@ -247,7 +249,8 @@ gh pr list --label "<triggerLabel>" --state open \
 A PR is **ready** — eligible for the pipeline — when **all** hold:
 
 - it is **open** and **not draft**;
-- it carries the `<triggerLabel>` (`armada`) — shipwright adds this when it opens the PR;
+- it carries the `<triggerLabel>` (`armada`) — shipwright auto-arms it with this when it opens the
+  PR, so ARMADA-created PRs enter the pipeline automatically with no manual PR-arming gate;
 - **CI is not failing** — `statusCheckRollup` has no `FAILURE`/`ERROR`/`TIMED_OUT` checks (pending
   is fine to re-check next tick; a green or not-yet-failing rollup passes this stage);
 - it isn't **already mid-pipeline** — not labelled `armada:reviewing`, and not already
@@ -482,6 +485,10 @@ they set `autoMerge: true`. If `/loop` is unavailable, offer to run manual ticks
   - `autoMerge` defaults **false**. With it off the pipeline reviews, addresses, and re-validates,
     then **stops at "ready to merge, awaiting human"** — it **never merges**. The original rail is
     the default; you opt in.
+  - **`autoMerge` is the sole gate on the final merge.** Because review and address never merge,
+    ARMADA-created PRs are **auto-armed** by shipwright on creation (no manual PR-arming step) — the
+    pipeline reviews and addresses them regardless of `autoMerge`, and only the merge itself waits on
+    the gate. One gate is enough; there is no second human "arm this PR" step to clear.
   - Even with `autoMerge: true`, the lookout **never** merges on **red CI**, an **unresolved
     blocking finding**, a **draft**, a **non-`mergeable`** PR, or when **branch protections /
     required reviews aren't satisfied** (§4.5). GitHub is the source of truth for protections —

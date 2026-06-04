@@ -239,6 +239,29 @@ EOF
 gh issue comment <number> --body "Implementation PR: #<pr-number> — <one-line summary>"
 ```
 
+### Auto-arm the PR for the ready-PR watch
+
+A PR ARMADA opens is part of the fleet's work, so **arm it for review on creation** — add the
+configured `triggerLabel` (`triggerLabel` from `.armada/config.json`, default `armada`) to the PR
+so [`crows-nest`](../crows-nest/SKILL.md)'s ready-PR watch (§3) picks it up with no manual labelling
+step:
+
+```bash
+gh pr edit <pr-number> --add-label "<triggerLabel>"   # default "armada"
+```
+
+This is deliberate and safe: the ready-PR pipeline's only *consequential* action is the final
+merge, and that is **already gated by `autoMerge` (default `false`)** — review and address never
+merge. So one gate is enough; auto-arming doesn't add risk, it just removes a redundant second gate.
+Specifically:
+
+- **Only arm PRs ARMADA itself opens** (build mode). Don't reach out and label arbitrary human PRs.
+- With `autoMerge: false` the pipeline reviews → addresses → re-validates and **stops before
+  merging** anyway; with `autoMerge: true` the user has already opted into autonomous merge. The
+  sole gate on the final merge is `autoMerge`.
+- A human can still **disarm** the PR by removing the `<triggerLabel>` label — the arming switch
+  works both ways, per object.
+
 If an automated reviewer (e.g. Copilot) is configured and can be requested via CLI, request it;
 if not, note it in the handoff so the user can add it manually — don't block on it.
 
@@ -385,7 +408,8 @@ by fiat.
 ## Output
 
 - **Build mode:** an isolated worktree with the implementation committed; an open, non-draft PR
-  linking the issue with a structured summary body; a comment on the issue linking the PR.
+  linking the issue with a structured summary body, **armed with the `triggerLabel` so the ready-PR
+  watch picks it up automatically**; a comment on the issue linking the PR.
 - **Address-review mode:** the agreed changes pushed to the PR branch; a per-thread reply on every
   review comment (triaged agree/discuss/disagree, threads left unresolved); a structured result for
   the lookout to re-review and gate on.

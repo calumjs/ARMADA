@@ -109,6 +109,15 @@ backlog.
 human action. The ready-PR review pipeline (`muster` review → `shipwright` address → re-validate)
 runs to completion and then **stops at "ready to merge, awaiting human"**.
 
+**`autoMerge` is the single gate — PRs ARMADA opens are auto-armed.** When `shipwright` opens a PR
+it adds the `armada` label itself, so the ready-PR watch picks it up with no manual PR-arming step.
+This is safe because review and address **never merge**: the *only* consequential action is the
+final merge, and that is already gated by `autoMerge`. With `autoMerge: false` the pipeline reviews,
+addresses, and re-validates, then stops before merging; with `autoMerge: true` you've already opted
+in. One gate is enough, so there's no redundant second "arm this PR" step. Only PRs ARMADA itself
+opens are auto-armed — human PRs are left alone unless you arm them, and removing the `armada` label
+still disarms any PR.
+
 **Gated auto-merge is opt-in.** Setting `autoMerge: true` in `.armada/config.json` lets the pipeline
 perform the merge itself — a deliberate reversal of the never-merges rail, so it is fenced on every
 side. `commission` always writes `autoMerge: false`; turning it on is a hand edit you make

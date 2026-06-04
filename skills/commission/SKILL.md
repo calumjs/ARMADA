@@ -126,7 +126,7 @@ and don't arm the loop for them** (both are the user's call):
   base branch : <base>
   build/test  : <commands, or "none detected — skills will infer">
   authors     : <"" = anyone, or the configured allowlist>
-  auto-merge  : off (default) — ready-PR pipeline stops at "awaiting human merge"
+  auto-merge  : off (default) — the sole merge gate; ready-PR pipeline stops at "awaiting human merge"
   labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked ✓
 
 Next:
