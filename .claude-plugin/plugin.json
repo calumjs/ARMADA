@@ -1,7 +1,7 @@
 {
   "name": "armada",
   "description": "Autonomous Recursive Multi-Agent Development Assembler — a fleet of Claude Code skills that watch for GitHub issues and drive them to a reviewed, verified, merge-ready PR.",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "author": {
     "name": "calumjs"
   },

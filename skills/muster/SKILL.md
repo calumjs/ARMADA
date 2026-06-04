@@ -9,6 +9,7 @@ description: >
   "run a review pass", "review PR #123", or invokes /muster. Also the review stage that
   crows-nest dispatches inside its ready-PR pipeline. Accepts a PR number (or the current
   branch's PR) and an optional review effort level.
+disallowed-tools: Write, Edit
 ---
 
 # muster — dual-lens review of a ready PR

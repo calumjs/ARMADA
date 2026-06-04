@@ -8,6 +8,7 @@ description: >
   up armada", "initialise armada", "armada bootstrap", "get armada ready", just installed the
   ARMADA plugin, or invokes /commission. Also auto-invoked by crows-nest and shipwright when they
   find the repo isn't commissioned yet. Safe to re-run.
+allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 
 # commission — bring ARMADA into service in this repo
