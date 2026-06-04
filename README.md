@@ -87,6 +87,11 @@ you grant autonomy one issue at a time.
   "mergeMethod": "squash",
   // Bound on the address↔review loop before crows-nest hands a PR back to a human.
   "maxReviewRounds": 2,
+  // The ARMADA home repo. When a skill hits a defect in ARMADA itself it files the fix here
+  // (never the host project). Omit to derive it from the plugin source. See Self-improvement loop.
+  "armadaRepo": "calumjs/ARMADA",
+  // May self-raised fleet-defect fixes be armed? Default false: filed for human triage, not built.
+  "autoArmSelfFixes": false,
   // Your project's commands. Any can be omitted; skills will infer or ask.
   "commands": {
     "build":  "npm run build",
@@ -97,6 +102,33 @@ you grant autonomy one issue at a time.
   }
 }
 ```
+
+## The self-improvement loop (the "Recursive" in ARMADA)
+
+The fleet improves *itself*. When any ARMADA skill hits a defect in **ARMADA's own skills** — a step
+was wrong or missing, a guard didn't fire, or the skill had to **guess** because guidance was absent
+— it routes a fix back into the fleet rather than silently working around it. This is the literal
+**R**ecursive in *Autonomous Recursive Multi-Agent Development Assembler*: the fleet learning from its
+own runs.
+
+The reflex is a single shared convention (documented once in `charter` §9, referenced by every
+skill):
+
+1. **Triage first.** A broken test or wrong requirement in the *target project* is task work, handled
+   in the build — it is **never** filed as an ARMADA defect. Only ARMADA's own gaps qualify.
+2. **File via `charter`** a concise defect report (what went wrong, why it's ARMADA's fault, a
+   suggested fix) **against the ARMADA repo** (`armadaRepo`, or derived from the plugin source) — so a
+   skill running in your project never pollutes your tracker with ARMADA's bugs.
+3. **De-dupe** against existing open `fleet-defect` issues; a repeat occurrence adds a comment/reaction
+   instead of a twin.
+4. **Best-effort, side-channel.** Filing never blocks or derails the primary build or review — it's
+   surfaced in the run summary and nothing more.
+
+**Self-raised fixes are unarmed by default.** A `fleet-defect` issue modifies ARMADA's own skills, so
+with arming + `autoMerge` on it becomes a loop that could rewrite and merge its own skills unattended
+— the dream and the hazard. So `fleet-defect` issues are **filed for human triage, not armed**, even
+though `charter` auto-arms human-authored issues. Set **`autoArmSelfFixes: true`** to opt into the
+fleet fixing itself end-to-end; it defaults `false`, and `commission` never turns it on.
 
 ## Safety
 
