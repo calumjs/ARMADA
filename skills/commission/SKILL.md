@@ -101,6 +101,7 @@ gh label create "armada"           --color "1d76db" --description "Eligible for 
 # Issue track (the new-issue watch):
 gh label create "armada:underway"  --color "fbca04" --description "Claimed by crows-nest; a build is in progress"       --force
 gh label create "armada:done"      --color "0e8a16" --description "ARMADA opened a PR for this issue"                   --force
+gh label create "armada:shipped"   --color "006b75" --description "PR merged and acceptance criteria met; issue closed by crows-nest" --force
 # PR track (the ready-PR review→merge pipeline):
 gh label create "armada:reviewing" --color "fbca04" --description "Claimed by crows-nest; review→merge pipeline running" --force
 gh label create "armada:merged"    --color "5319e7" --description "ARMADA merged this PR (auto-merge was enabled)"       --force
@@ -108,9 +109,12 @@ gh label create "armada:merged"    --color "5319e7" --description "ARMADA merged
 gh label create "armada:blocked"   --color "b60205" --description "ARMADA could not finish; needs a human"              --force
 ```
 
-`armada:reviewing` and `armada:merged` are the PR-pipeline labels; `armada:blocked` is reused as the
-shared "needs a human" terminal state across both tracks. (If `triggerLabel` was customised, name
-the eligible label to match and adjust the state labels' prefix accordingly.)
+`armada:reviewing` and `armada:merged` are the PR-pipeline labels; `armada:shipped` is the
+**issue-track terminal** state — crows-nest sets it (and closes the issue) once the linked PR is
+merged and the acceptance criteria are satisfied, the end of the lifecycle that `armada:done` only
+opens (see crows-nest's close-the-loop watch). `armada:blocked` is reused as the shared "needs a
+human" terminal state across both tracks. (If `triggerLabel` was customised, name the eligible label
+to match and adjust the state labels' prefix accordingly.)
 
 ## 5. Report readiness and how to set sail
 
@@ -123,7 +127,7 @@ and don't arm the loop for them** (both are the user's call):
   build/test  : <commands, or "none detected — skills will infer">
   authors     : <"" = anyone, or the configured allowlist>
   auto-merge  : off (default) — ready-PR pipeline stops at "awaiting human merge"
-  labels      : armada, armada:underway, armada:done, armada:reviewing, armada:merged, armada:blocked ✓
+  labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked ✓
 
 Next:
   1. Label the issues you want built with `armada`:
@@ -147,5 +151,5 @@ Next:
 ## Output
 
 - `.armada/config.json` written (or confirmed up-to-date), with `autoMerge: false`.
-- The six GitHub labels created/reconciled (issue track + PR track + shared blocked).
+- The seven GitHub labels created/reconciled (issue track + PR track + shared blocked).
 - A readiness summary + the two next-step commands.

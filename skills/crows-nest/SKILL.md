@@ -26,7 +26,8 @@ work for the fleet. It keeps **two watches** and does **one tick of triage** eac
 
 The two watches share the lookout's wiring (label discipline, atomic claim, bounded loop) but key
 off different objects and label tracks. The new-issue watch is §2; the ready-PR watch and its
-pipeline are §5. A single `/loop` line can arm one or both (§3).
+pipeline are §3 and §4; closing the loop on shipped issues is §5. A single `/loop` line can arm them
+(§6).
 
 ## How the watch is wired (read this first)
 
@@ -34,7 +35,7 @@ These are constraints the design is built around:
 
 1. **A skill cannot type `/loop` itself.** `/loop` is a built-in command and the Skill tool only
    runs skills — model text isn't executed as a command. So `crows-nest`'s job is to **compose the
-   exact `/loop` line and hand it to you to run** (§3). Everything after that repeats automatically.
+   exact `/loop` line and hand it to you to run** (§6). Everything after that repeats automatically.
 2. **Only act on the trigger label.** The lookout must never grab the whole backlog. It acts solely
    on open issues carrying the configured `triggerLabel` (default `armada`). No label → not its job.
 3. **Claiming must be atomic-ish and visible.** Before dispatching, mark the issue claimed (a label
@@ -61,8 +62,8 @@ Read `.armada/config.json` from the target repo:
   - **A JSON array** — e.g. `["alice", "bob"]` → same as the comma-separated form. The string form
     is the documented/primary shape; the array is accepted for convenience.
 - `autoMerge` — whether the ready-PR pipeline may perform the final merge. **Default `false`**: with
-  it off the pipeline reviews, addresses, and re-validates but **stops before merging** (§5.5). Only
-  `true` lets the lookout merge, and only when every other gate passes. See [Safety](#6-stopping-and-safety).
+  it off the pipeline reviews, addresses, and re-validates but **stops before merging** (§4.5). Only
+  `true` lets the lookout merge, and only when every other gate passes. See [Safety](#7-stopping-and-safety).
 
 **If the config or the labels are missing, the repo isn't commissioned** — run the
 [`commission`](../commission/SKILL.md) skill first (it detects commands, writes the config, and
@@ -82,10 +83,13 @@ tracks** — one for issues moving through the build, one for PRs moving through
 
 - `armada` — eligible, not yet picked up.
 - `armada:underway` — claimed; a tick is building it (or it has an open branch/PR).
-- `armada:done` — a PR has been opened (set by the dispatched skill / on handoff).
+- `armada:done` — a PR has been opened (set by the dispatched skill / on handoff). **Not terminal**:
+  the issue stays open until its PR merges and its acceptance criteria are confirmed.
+- `armada:shipped` — **terminal.** The linked PR merged *and* the acceptance criteria are satisfied;
+  the close-the-loop watch (§5) closed the issue. Created by [`commission`](../commission/SKILL.md).
 - `armada:blocked` — the fleet gave up; needs a human. Skipped by future ticks.
 
-**PR track (the ready-PR watch, §5):**
+**PR track (the ready-PR watch, §3):**
 
 - `armada` — on a PR, shipwright adds this when it opens the PR; it marks the PR as in-fleet and
   eligible for the review pipeline. (Same arming switch as issues: remove it to disarm.)
@@ -97,8 +101,8 @@ tracks** — one for issues moving through the build, one for PRs moving through
   convergence within the bounded loop, or `autoMerge` off and the PR is sitting "ready to merge,
   awaiting human".
 
-`armada:reviewing` and `armada:merged` are created by [`commission`](../commission/SKILL.md)
-alongside the issue-track labels.
+`armada:reviewing`, `armada:merged`, and the issue-track terminal `armada:shipped` are all created
+by [`commission`](../commission/SKILL.md) alongside the other labels.
 
 ## 2. One tick of the new-issue watch
 
@@ -231,7 +235,7 @@ crows-nest tick: 3 eligible · picked #142 "Add CSV export" · dispatched to shi
 ## 3. One tick of the ready-PR watch
 
 The second watch is a separate tick that operates on **pull requests**, not issues. It can be armed
-on its own `/loop` or folded into the same tick as the new-issue watch (§5). Each tick:
+on its own `/loop` or folded into the same tick as the new-issue watch (§6). Each tick:
 
 ### 3a. List eligible PRs
 
@@ -351,7 +355,7 @@ through unresolved blockers.
 
 Compute the merge decision from data. **Merge only if every one of these holds:**
 
-1. `autoMerge: true` in `.armada/config.json` (**default false** — see §6);
+1. `autoMerge: true` in `.armada/config.json` (**default false** — see §7);
 2. no unresolved **blocking** finding (`summary.blocking == 0` on the latest review);
 3. CI is **green** (`gh pr checks <n>` all passing) — never on red or pending;
 4. the PR is **not draft** and GitHub reports it **`mergeable`**;
@@ -368,7 +372,89 @@ If `autoMerge` is **false** but 2–5 all hold, the PR is genuinely ready — re
 `ready_awaiting_human` (stop-before-merge; never merge). If any of 2–5 fail, return `blocked` with
 the specific reason. Either way the Workflow yields exactly one terminal result for §3e to label.
 
-## 5. Arm the loop — hand the /loop line to the user
+## 5. Close the loop — shipped issues
+
+Opening a PR is not finishing an issue. An issue left on `armada:done` after its PR has merged is
+the lookout's blind spot: the work shipped but the backlog still shows it open. So each tick — after
+the dispatch pass (§2), or whenever a merge pipeline reports a PR merged — the lookout also walks the
+**in-flight** issues and closes the ones that are genuinely done. An issue is **done** only when
+**both** hold: its linked PR is **merged** *and* its **acceptance criteria are satisfied**. Merge
+alone is not enough; a PR can land and still leave an acceptance criterion unmet.
+
+### 5a. List in-flight issues
+
+Walk the issues ARMADA still owns that *might* be finishable — past the build but not yet terminal:
+
+```bash
+gh issue list --state open --label "armada:done" --json number,title,labels,body --limit 50
+```
+
+Skip any issue still **in motion** — labelled `armada:underway` or `armada:reviewing`. Those mean a
+build or a review pipeline is still running against it; closing one mid-flight would yank work out
+from under a subagent. **Never close while `armada:underway` / `armada:reviewing` is set** — wait for
+it to clear to `armada:done` first. (Same idempotency guard as §2/§3: a terminal action never races
+an in-progress one.)
+
+### 5b. Find the linked PR and confirm it merged
+
+shipwright links its PR to the issue with `Closes #<n>` (full) or `Relates to #<n>` (partial). Find
+that PR and read its merge state:
+
+```bash
+gh pr list --search "<number> in:body" --state all --json number,body,state,mergedAt,mergeCommit
+gh pr view <pr> --json state,mergedAt,mergeCommit --jq '.state'   # must be "MERGED"
+```
+
+- **No merged PR yet** (open, or `state != "MERGED"`) → leave the issue as-is; a later tick re-checks.
+- **`Relates to #<n>`** (partial) → the PR only chips at the issue; **do not close.** A partial PR
+  merging does not finish the issue — it outlives the PR.
+- **`Closes #<n>`** and merged → candidate for closing; proceed to the acceptance-criteria check.
+
+Capture the merge commit (`mergeCommit.oid`, abbreviated) for the closing trail.
+
+### 5c. Confirm the acceptance criteria are satisfied
+
+Do **not** close on merge alone. Read the issue body's acceptance-criteria checklist and confirm it
+is addressed, by either of:
+
+- **every `- [ ]` is now `- [x]`** in the issue body (the checklist is fully ticked), **or**
+- the merged PR / a closing comment **maps each criterion to where it was met** (e.g. "AC1 → §5b of
+  crows-nest; AC2 → label list in commission §4"), so the trail is auditable even when the boxes
+  weren't mechanically ticked.
+
+If **any** criterion is unmet or explicitly deferred, **do not close.** Either leave the issue open
+with a comment naming the gap, or open a focused follow-up for the remainder. When unsure, leave it
+open — a wrongly-closed issue is worse than a stale `armada:done`.
+
+### 5d. Close with a trail
+
+When both gates pass, close the issue with a comment that links the merged PR and maps the criteria,
+then reconcile the labels to the terminal state:
+
+```bash
+gh issue close <number> \
+  --comment "🔭 crows-nest: shipped in #<pr> (merged <sha>). ACs: <each criterion → where it was met>."
+gh issue edit <number> \
+  --add-label "armada:shipped" \
+  --remove-label "armada:done" --remove-label "armada:underway" --remove-label "armada:reviewing"
+```
+
+- **Reconcile, don't error.** A merged `Closes #<n>` PR **auto-closes the issue on merge** to the
+  default branch, so the issue may already be closed when the lookout gets here. That's expected:
+  **reconcile the labels** (add `armada:shipped`, clear the transient ones) and add the trail comment
+  — do **not** treat the already-closed state as an error or try to re-close-then-reopen. `gh issue
+  close` on an already-closed issue is a no-op; the comment + label swap is the work that remains.
+- **Clear every transient label.** `armada:done`, and defensively `armada:underway` /
+  `armada:reviewing`, come off; `armada:shipped` is the single terminal label left. An issue must
+  never sit closed while still wearing an in-flight `armada:*` label.
+
+### 5e. Report the tick
+
+```
+crows-nest close tick: 2 in-flight · #142 "Add CSV export" → shipped (PR #150 merged a1b2c3d, ACs met) · #144 left open (AC3 deferred)
+```
+
+## 6. Arm the loop — hand the /loop line to the user
 
 `crows-nest` can't type `/loop` itself, so compose the command and hand it over. Pick the interval
 from the user (default ~5 minutes; faster burns API for little gain on a slow backlog). Arm the
@@ -387,7 +473,7 @@ Tell the user: *"Paste that to arm the lookout, or I can do single ticks on dema
 that **auto-merge is off by default**, so the ready-PR watch stops at "awaiting human merge" until
 they set `autoMerge: true`. If `/loop` is unavailable, offer to run manual ticks (§2/§3) on demand.
 
-## 6. Stopping and safety
+## 7. Stopping and safety
 
 - **Stop** is the user's call (`/loop` is interruptible). The lookout never decides to stop the
   watch on its own; it only reports `horizon clear` / `harbour clear` and waits.
