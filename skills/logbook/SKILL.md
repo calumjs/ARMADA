@@ -1,0 +1,227 @@
+---
+name: logbook
+description: >
+  The ARMADA voyage record. Turns a shipped change into a short, narrated, chaptered walkthrough
+  video for stakeholders and attaches it to the PR — stack-agnostic and configured per repo. On
+  first use in a repo it establishes a reusable staging recipe (launch / stage / reach) saved under
+  .armada/logbook/ and reuses it on later runs; it supports web UIs, CLIs/TUIs, and APIs, launching
+  the app via the repo's own `commands.run`. Plans 3-6 product-owner-facing chapters, records and
+  narrates them with a provider-pluggable, env-keyed, hash-cached TTS pipeline, muxes to one video,
+  uploads it as a per-PR GitHub release asset, and comments the link. Trigger when the user says
+  "record a walkthrough", "make a demo video", "record a done video for PR X", "record a
+  walkthrough video for the stakeholders", or invokes /logbook. Also the walkthrough shipwright
+  offers to hand off to for user-visible features.
+argument-hint: "<PR number | feature> [--setup]"
+allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Skill
+---
+
+# logbook — record a narrated "done" walkthrough video
+
+`logbook` is ARMADA's voyage record: it turns a finished, user-visible change into a short narrated
+screen-capture — typically ~2:30, chaptered, with a spoken voice-over aimed at stakeholders — and
+attaches it to the PR so reviewers and product owners can **watch** the outcome instead of reading a
+diff. It is the skill [`shipwright`](../shipwright/SKILL.md) §9 offers to hand off to once a
+user-visible feature is built.
+
+`logbook` is **stack-agnostic and configured per repo.** It assumes nothing about the app — not the
+language, not a browser, not a login, not a port, not a sample dataset. The original walkthrough
+methodology was wired to one specific app; `logbook` instead **derives a repo-specific staging
+recipe once, saves it in the repo, and reuses it** on every later recording. That recipe — *how to
+launch this app, how to stage it into a demo-ready state, how to reach the feature* — is the thing
+that makes one generic recorder work for a web UI, a CLI, or an API.
+
+> **Two modes.** First use in a repo (or `--setup`) runs **§1 setup** to establish the staging
+> recipe, then records. Subsequent runs **reuse** the saved recipe and go straight to **§2 record**.
+
+## 0. Discover the project and check prerequisites
+
+Read `.armada/config.json` → `commands.run` (how this repo starts its app) and `baseBranch`. If the
+file is absent the repo isn't commissioned — run [`commission`](../commission/SKILL.md) first (it
+detects and writes `commands.run`). `logbook` **launches the app via `commands.run`**, never an
+assumed `npm start`/`dotnet run`/etc.
+
+Identify the target PR (the argument, or the current branch's PR via `gh pr view --json number`).
+The recording attaches to this PR.
+
+Check the recording toolchain is present and **degrade gracefully** — name what's missing rather
+than failing silently:
+
+- A screen/surface capture appropriate to the project type (see §1 *Launch/Reach*): a browser
+  driver for web, a terminal recorder for CLI/TUI, a request runner for APIs.
+- `ffmpeg` (mux audio + video, concatenate chapters, burn in titles/lower-thirds).
+- A TTS provider reachable via an **environment variable** (see §3). If no TTS key is configured,
+  fall back to **silent captions** (burned-in chapter text and narration as subtitles) and say so —
+  never block the whole walkthrough on a missing voice key.
+
+If a hard prerequisite (e.g. `ffmpeg`) is missing, report it as a blocker with the install hint
+rather than producing a broken artifact.
+
+## 1. Establish (or load) the repo-specific staging recipe
+
+The staging recipe is saved at **`.armada/logbook/staging.json`** (config) alongside any helper
+scripts the repo needs under `.armada/logbook/` (e.g. a seed script, a Playwright stage helper).
+**If it already exists, load it and skip to §2** unless invoked with `--setup` (which re-derives /
+edits it). It is **edited, not re-derived** each run — set up once, reused thereafter.
+
+If it doesn't exist, derive it **with the user** (this is the one interactive step; ask, don't
+guess) and persist it. The recipe has three parts:
+
+### Launch — how to start the app for recording
+Start from `commands.run`. Capture any extra flags, env, a ready-signal to wait for (a URL that
+returns 200, a log line, a prompt), and the **surface type**:
+
+- **`web`** — a URL to open and drive with a browser driver (Playwright/Puppeteer).
+- **`cli` / `tui`** — a terminal to capture (e.g. `asciinema`/VHS, or xterm.js + Playwright for a
+  polished terminal); record the shell/command to run.
+- **`api`** — no GUI; drive request→response (curl/httpie/a REST client) and render the
+  request/response pairs as the visual.
+
+### Stage — how to get to a demo-ready state
+The setup the demo needs before the feature is visible, expressed as **repo-owned, parameterised
+steps** — never hardcoded credentials or fixtures baked into this skill:
+
+- Authentication / login flow (read credentials from **env**, e.g. `LOGBOOK_DEMO_USER` /
+  `LOGBOOK_DEMO_PASS`; never commit them).
+- Seed / reset demo data (point at the repo's own seed/reset command or a helper saved under
+  `.armada/logbook/`).
+- Any required env vars or feature flags, and the entry **surface** (start URL, CLI command, or base
+  API URL).
+
+### Reach — the steps to navigate to the feature under demo
+The concrete navigation from the staged state to the feature: clicks/routes for web, commands/keys
+for CLI/TUI, the request sequence for API. Keep these as data the recorder replays, so a later run
+re-records the same path after an edit.
+
+Persist all three to `.armada/logbook/staging.json`, for example:
+
+```jsonc
+{
+  "surface": "web",                       // "web" | "cli" | "tui" | "api"
+  "launch": {
+    "command": "<from commands.run>",     // reuse .armada/config.json commands.run
+    "extraFlags": [],
+    "readySignal": { "type": "httpUrl", "value": "http://localhost:${PORT}/health" },
+    "env": ["PORT"]                        // names only — values come from the environment
+  },
+  "stage": {
+    "auth": { "type": "form", "userEnv": "LOGBOOK_DEMO_USER", "passEnv": "LOGBOOK_DEMO_PASS" },
+    "seed": "<repo seed/reset command, or .armada/logbook/seed.*>",
+    "entry": "http://localhost:${PORT}/"   // start URL | CLI command | API base
+  },
+  "reach": [
+    { "action": "goto", "target": "/" },
+    { "action": "click", "target": "<selector or label>" }
+  ]
+}
+```
+
+**Document (re)configuration:** tell the user the recipe lives at `.armada/logbook/staging.json`,
+that they can hand-edit it, and that `/logbook --setup` re-derives it interactively. `.armada/` is
+safe to commit (it's config, not secrets) — **secrets stay in env and are referenced by name only.**
+
+## 2. Plan the chapters
+
+Plan **3-6 chapters**, one role or action each, targeting **~2:30 total**. Derive them from the PR /
+issue and the *Reach* steps: each chapter is a coherent thing a stakeholder cares about (a role
+doing a task, an outcome being produced), not a screen-by-screen tour. Present the chapter plan for
+a quick confirm before recording — it's cheap to reorder now, expensive after capture.
+
+For each chapter capture: a title, the role/action for the lower-third, the *Reach* steps that drive
+it, and the narration script (see §3 for the rules).
+
+## 3. Write narration — product-owner-facing
+
+Narration speaks to **stakeholders**, so it describes **features and outcomes, not implementation**:
+
+- **Say:** what the user can now do, why it matters, the result they see.
+- **Ban:** PR/issue numbers, endpoints/URLs, class/function/file names, framework names, ticket IDs
+  — anything that reads as engineering rather than product value.
+- Keep each chapter's script tight (a few sentences) so the whole video lands near the ~2:30 target.
+
+### Provider-pluggable, env-keyed, hash-cached TTS
+
+Synthesise narration through a **pluggable TTS provider** selected by config/env, with **API keys
+read only from the environment — never committed.** Cache each clip by a **content hash** of
+`(provider, voice, text)`: editing one chapter's script changes only that chapter's hash, so **only
+that clip regenerates** — the rest are reused from cache. If no provider key is present, fall back to
+silent captions (§0). The bundled recorder implements this; see
+[references/recorder.md](references/recorder.md).
+
+## 4. Record each chapter
+
+For each planned chapter, **stage via the recipe** (launch the app with `commands.run`, run the
+*Stage* steps), then **drive the *Reach* steps** for that chapter while capturing the surface:
+
+- **web** — Playwright drives the page; capture video of the viewport.
+- **cli / tui** — capture the terminal session running the chapter's commands.
+- **api** — render request→response pairs as the on-screen visual.
+
+Capture each chapter as its own clip so a later edit re-records just that chapter. Use the recipe's
+*ready-signal* to wait for the app before driving it, and tear the app down between runs cleanly.
+
+## 5. Assemble the video
+
+Compose the chapters into **one** video with `ffmpeg`:
+
+- A **chapter divider** card between chapters (chapter title).
+- A **persistent lower-third** showing the current role/action.
+- **Bookends:** an **agenda** card up front (the chapter list) and a **recap** card at the end (what
+  was shown).
+- Mux each chapter's narration (or caption track) against its clip, then concatenate to a single
+  file.
+
+The bundled recorder ([references/recorder.md](references/recorder.md)) performs synthesis, caching,
+capture orchestration, and the mux; keep this skill the procedure and let the script do the work.
+
+## 6. Attach to the PR — a per-PR release asset
+
+Upload the finished video as a **GitHub release asset scoped to this PR** (release assets host
+binaries that PR comments can't), then comment the link on the PR:
+
+```bash
+TAG="logbook-pr-${PR}"
+gh release create "$TAG" --title "Walkthrough — PR #${PR}" --notes "Narrated walkthrough for #${PR}." 2>/dev/null \
+  || gh release edit "$TAG" --title "Walkthrough — PR #${PR}"   # idempotent: reuse the per-PR tag on re-record
+gh release upload "$TAG" "<video file>" --clobber
+ASSET_URL=$(gh release view "$TAG" --json assets --jq '.assets[] | select(.name | endswith(".mp4")) | .url')
+gh pr comment "$PR" --body "🎬 Walkthrough video: ${ASSET_URL}"
+```
+
+The per-PR tag (`logbook-pr-<n>`) makes re-recording idempotent — a new take replaces the asset on
+the same release rather than littering tags. If release creation is denied by permissions, fall back
+to attaching the file to the PR comment / a Gist and say which path was used — don't fail the run.
+
+## 7. Handoff
+
+Report the PR comment link, the video duration and chapter list, which TTS provider (or captions)
+was used, and where the staging recipe lives (`.armada/logbook/staging.json`) so the next run reuses
+it. Note any degraded path taken (captions instead of voice, comment instead of release).
+
+## Bundled recorder
+
+The capture/synthesis/mux logic ships as a bundled script the skill invokes. **Reference it via
+`${CLAUDE_PLUGIN_ROOT}`**, never a relative path — installed plugins are copied into a cache, so a
+relative path breaks once installed:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/logbook-recorder.mjs" --staging .armada/logbook/staging.json --plan <chapters.json>
+```
+
+See [references/recorder.md](references/recorder.md) for the recorder's contract: the staging recipe
+it consumes, the provider-pluggable env-keyed hash-cached TTS, the per-chapter capture, and the
+ffmpeg mux (dividers, lower-third, agenda/recap bookends).
+
+## Inputs
+
+- A PR number (or the current branch's PR), or a free-text feature description.
+- Optional `--setup` to (re)derive the repo-specific staging recipe interactively.
+- The repo's `.armada/config.json` (`commands.run`, `baseBranch`) and, once established,
+  `.armada/logbook/staging.json`.
+- TTS provider keys **from the environment only** (optional — falls back to captions).
+
+## Output
+
+- One narrated, chaptered walkthrough video (~2:30) with agenda/recap bookends, chapter dividers,
+  and a persistent role/action lower-third.
+- The video uploaded as a **per-PR GitHub release asset** and its link **commented on the PR**.
+- A persisted, reusable `.armada/logbook/staging.json` (launch / stage / reach) for the repo.
