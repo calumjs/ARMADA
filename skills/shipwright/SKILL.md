@@ -269,7 +269,7 @@ decision should be recorded. The worktree stays available for review iteration.
 ## 9. Optionally offer a walkthrough video
 
 For user-visible features — new workflows, multi-step UX, role-based behaviour, anything harder to
-read than to watch — offer a short demo video via `logbook` (when it's in the fleet). **Skip** for
+read than to watch — offer a short demo video via [`logbook`](../logbook/SKILL.md). **Skip** for
 refactors, dependency bumps, infra-only changes, or one-line fixes. Phrase it as one question and
 don't auto-record:
 

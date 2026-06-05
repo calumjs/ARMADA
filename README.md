@@ -25,9 +25,9 @@ the right skill from natural language — you rarely type the name.
 | **`crows-nest`** | The lookout. A single, maximally parallel scheduler that runs under `/loop` and watches **both tracks at once** — new issues *and* ready PRs — graphs their dependencies/conflicts together, and dispatches independent builds and reviews **concurrently** up to per-track bounds. | ✅ shipped |
 | **`shipwright`** | The builder. Takes one issue and works it end-to-end in an isolated worktree, opening a PR. | ✅ shipped |
 | **`muster`** | Inspection before sailing. Reviews a ready PR through two parallel lenses (code-review + codex-rescue), dedupes, and posts inline comments + a summary. | ✅ shipped |
+| **`logbook`** | The voyage record. Turns a shipped change into a short narrated, chaptered walkthrough video and attaches it to the PR — stack-agnostic, driven by a reusable per-repo staging recipe (launch / stage / reach) that works for web, CLI, or API. | ✅ shipped |
 | `flagship` | The command vessel. An autonomous build → review → verify → fix loop that drives an issue all the way to merge-ready. | 🚧 roadmap |
 | `sea-trial` | The shakedown run. Launches the app and drives a real flow with Playwright to verify a change works at runtime. | 🚧 roadmap |
-| `logbook` | The voyage record. Records a narrated "done" walkthrough video for stakeholders. | 🚧 roadmap |
 | `signal-flags` | Signals back. Addresses reviewer comments on a PR and replies to each thread. | 🚧 roadmap |
 | `cargo-manifest` | The manifest. Writes task/PR documentation for completed work. | 🚧 roadmap |
 
