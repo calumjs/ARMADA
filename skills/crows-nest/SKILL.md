@@ -427,8 +427,8 @@ reconciliation (§3e), and reporting (§3f) — lives in
 ## 4. The review→merge pipeline (a Workflow)
 
 A scheduled PR (§3) runs through a deterministic **Workflow**: **parallel review fan-out → consolidate
-→ address → verify → make-mergeable → gated merge**, with explicit state between stages and a single
-terminal result. It reuses the **parallel-reviewers + dedupe** pattern that
+→ address → verify → make-mergeable → gated merge → reap merged branch**, with explicit state between
+stages and a single terminal result. It reuses the **parallel-reviewers + dedupe** pattern that
 [`muster`](../muster/SKILL.md) implements internally.
 
 **This Workflow is bundled as a script, not prose the model re-derives each tick** — that's what
@@ -451,7 +451,9 @@ The full pipeline — review (§4.1), address (§4.2), verify (§4.3), the bound
 > a fully-green PR returns `ready_awaiting_human` — the pipeline **never merges**. The address↔review
 > loop is bounded (`maxReviewRounds`); auto-rebase (§4.4b) runs only when `autoMerge: true`, is bounded
 > and re-validated, force-pushes only fleet-owned branches, and falls back to `blocked` — never a forced
-> merge.
+> merge. On a successful merge the head branch is **reaped** (`gh pr merge --delete-branch` + a
+> fail-soft local worktree/branch cleanup), best-effort and never able to fail the merge — see §4.5
+> "Branch cleanup on merge".
 
 ## 5. Close the loop — shipped issues
 

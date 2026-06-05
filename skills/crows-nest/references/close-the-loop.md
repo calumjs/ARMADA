@@ -79,6 +79,29 @@ gh issue edit <number> \
   `armada:reviewing`, come off; `armada:shipped` is the single terminal label left. An issue must
   never sit closed while still wearing an in-flight `armada:*` label.
 
+### Reap a lingering head branch (fallback safety net)
+
+The merge step already deletes the head branch atomically (`gh pr merge --delete-branch`, see
+[review-merge-pipeline.md §4.5 "Branch cleanup on merge"](review-merge-pipeline.md)). This is just a
+**fallback** for the case where it didn't — a PR merged outside the pipeline, a merge that predated
+the cleanup, or an atomic delete that was refused at the time. When the loop confirms a PR `MERGED`
+(§5b), check for and best-effort reap its head branch — **with the same guardrails and fail-soft
+posture as the merge step**:
+
+```bash
+head=$(gh pr view <pr> --json headRefName,state --jq 'select(.state=="MERGED")|.headRefName')
+# Only if the branch still exists, isn't the base/default, and no other open PR uses it:
+if [ -n "$head" ] && [ "$head" != "<baseBranch>" ] \
+   && git ls-remote --exit-code --heads origin "$head" >/dev/null 2>&1 \
+   && [ "$(gh pr list --state open --head "$head" --json number --jq 'length')" = "0" ]; then
+  git push origin --delete "$head" || echo "branch reap skipped (protection/permission?) — non-fatal"
+fi
+```
+
+- **Never** delete the base/default or a protected branch; **skip** a branch still backing another
+  open PR; treat a refused delete as **logged-and-continue**, never an error. A branch that can't be
+  dropped just stays for a human — closing the issue does not depend on the reap succeeding.
+
 ## 5e. Report the tick
 
 ```

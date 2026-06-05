@@ -176,10 +176,11 @@ plus the **convergence bound** (§4.4): if blocking findings or red CI persist o
 
 Acting on the decision:
 
-- **`merge`** → merge with the **configured method** and record `merged`:
+- **`merge`** → merge with the **configured method**, **reap the merged head branch**, and record
+  `merged`:
 
   ```bash
-  gh pr merge <n> --<mergeMethod>   # merge | squash | rebase, from config (default: repo default)
+  gh pr merge <n> --<mergeMethod> --delete-branch   # merge | squash | rebase, from config
   ```
 - **`ready_awaiting_human`** (gates 2–5 hold but `autoMerge` is off) → stop before merge; never
   merge.
@@ -187,3 +188,36 @@ Acting on the decision:
 
 Either way the Workflow yields exactly one terminal result for
 [ready-pr-watch.md §3e](ready-pr-watch.md) to label.
+
+### Branch cleanup on merge — reap the head branch (best-effort, fail-soft)
+
+A merge that leaves its head branch behind lets stale branches pile up (we once hand-deleted 8 at
+once). So the **merge step reaps the merged head branch as part of finishing the PR**, not as a
+later chore. This is encoded in `runReviewMergePipeline`'s merge action (the `reapMergedBranch`
+helper) so it runs identically every time:
+
+1. **Remote — atomic with the merge.** The merge passes `--delete-branch`, so GitHub drops the
+   remote head branch in the same call. This works for **squash- and rebase-merges** too because it
+   keys off the PR's `MERGED` state, **not** `git branch --merged` (which mis-reports a
+   squash-merged branch as unmerged).
+2. **Local — fail-soft reap.** After the merge, any local leftovers are cleaned: if a **worktree**
+   still has the branch checked out it's removed **first** (a checked-out branch can't be deleted),
+   then the local branch is force-deleted (`git branch -D` — a squash/rebase merge leaves the local
+   branch looking "unmerged" to git). If the remote branch somehow lingers (a stale merge predating
+   this, or the atomic delete was refused), one more `git push origin --delete` is attempted.
+
+**Guardrails — the cleanup never deletes the wrong thing and never fails the merge:**
+
+- **Only `MERGED` PRs, only the head branch.** It re-reads the PR state and reaps only its
+  `headRefName`; a non-`MERGED` PR is left alone.
+- **Never the base/default or a protected branch.** If the head ref equals the configured
+  `baseBranch` (or `master`/`main`) it is skipped outright.
+- **Best-effort and fail-soft — a failed delete never fails the merge.** Deleting the *remote*
+  branch can be refused by branch protections or a permission layer; the branch may also still be
+  checked out in a worktree. **None of these abort the merge or the pipeline** — the PR is already
+  merged. Each failure is logged into the merge trail (e.g. "remote branch delete refused
+  (protection?)", "worktree remove failed (left in place)") and the Workflow carries on. The whole
+  reap is wrapped so even an unexpected error degrades to a logged note, never a thrown failure.
+
+A branch the cleanup can't drop (protection, or a worktree it couldn't remove) simply remains for a
+human — the lifecycle is **best-effort, not guaranteed-deletable**.
