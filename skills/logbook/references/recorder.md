@@ -1,16 +1,21 @@
 # logbook recorder — the generic capture/synthesis/mux contract
 
-This is the contract for the bundled recorder the [`logbook`](../SKILL.md) skill drives. It is
-**generic**: it takes a repo-specific staging recipe and a chapter plan as *data* and produces one
-video — it hardcodes **no** login, no port, no sample file, no app type, and no TTS vendor. Anything
-app-specific comes from `.armada/logbook/staging.json` (the recipe) or the environment.
+This is the **contract** the [`logbook`](../SKILL.md) skill fulfils, whether it runs the steps
+directly with host tooling (`commands.run` + a capture backend + TTS + `ffmpeg`) or hands off to an
+optional bundled script that implements the same contract. It is **generic**: it takes a
+repo-specific staging recipe and a chapter plan as *data* and produces one video — it hardcodes
+**no** login, no port, no sample file, no app type, and no TTS vendor. Anything app-specific comes
+from `.armada/logbook/staging.json` (the recipe) or the environment.
 
-> **Reference the bundled script via `${CLAUDE_PLUGIN_ROOT}/scripts/logbook-recorder.mjs`**, never a
-> relative path — installed plugins are copied into a cache and relative paths break there. (The
-> repo-local `node scripts/validate-skills.mjs` is the only exception: it is ARMADA's own test gate,
-> run against this checkout, not via the installed plugin.)
+> **If a bundled implementation is present**, reference it via
+> `${CLAUDE_PLUGIN_ROOT}/scripts/logbook-recorder.mjs`, never a relative path — installed plugins are
+> copied into a cache and relative paths break there. The script is an **optional accelerator**, not
+> a hard dependency: if it (or `ffmpeg`/a capture backend) is absent, perform these steps directly
+> and degrade to captions/storyboard. (The repo-local `node scripts/validate-skills.mjs` is a
+> separate thing — ARMADA's own test gate, run against this checkout, not via the installed plugin.)
 
 ```bash
+# Optional accelerator if present; otherwise drive the equivalent steps below by hand:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/logbook-recorder.mjs" \
   --staging .armada/logbook/staging.json \
   --plan    <chapters.json> \

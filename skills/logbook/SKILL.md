@@ -197,19 +197,27 @@ Report the PR comment link, the video duration and chapter list, which TTS provi
 was used, and where the staging recipe lives (`.armada/logbook/staging.json`) so the next run reuses
 it. Note any degraded path taken (captions instead of voice, comment instead of release).
 
-## Bundled recorder
+## Recording: the contract, and an optional bundled accelerator
 
-The capture/synthesis/mux logic ships as a bundled script the skill invokes. **Reference it via
-`${CLAUDE_PLUGIN_ROOT}`**, never a relative path — installed plugins are copied into a cache, so a
-relative path breaks once installed:
+The capture/synthesis/mux work follows the **contract** in
+[references/recorder.md](references/recorder.md): it consumes the staging recipe and the chapter plan
+as *data* and produces one muxed video, hardcoding no login/port/app-type/TTS-vendor. The skill
+fulfils that contract by driving the host's own tooling — the repo's `commands.run` to launch the
+app, a surface-appropriate capture (screen/page recorder for `web`/`tui`, scripted transcript for
+`cli`/`api`), the env-keyed TTS provider (or captions when no key is set), and `ffmpeg` to mux.
+
+If a bundled recorder script is **present**, invoke it as a turnkey accelerator instead of running
+the steps by hand — **reference it via `${CLAUDE_PLUGIN_ROOT}`**, never a relative path (installed
+plugins are copied into a cache, so relative paths break once installed):
 
 ```bash
+# Optional accelerator — only if the script exists in this install:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/logbook-recorder.mjs" --staging .armada/logbook/staging.json --plan <chapters.json>
 ```
 
-See [references/recorder.md](references/recorder.md) for the recorder's contract: the staging recipe
-it consumes, the provider-pluggable env-keyed hash-cached TTS, the per-chapter capture, and the
-ffmpeg mux (dividers, lower-third, agenda/recap bookends).
+If it isn't present (or `ffmpeg`/a capture backend is unavailable), **degrade gracefully** — perform
+the contract's steps directly, and fall back to captions-over-stills or a storyboard rather than
+failing. A walkthrough is a nice-to-have; never let its absence block the PR.
 
 ## Inputs
 
