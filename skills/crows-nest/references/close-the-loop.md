@@ -81,10 +81,10 @@ gh issue edit <number> \
 
 ### Reap a lingering head branch (fallback safety net)
 
-The merge step already deletes the head branch atomically (`gh pr merge --delete-branch`, see
+The merge step already reaps the head branch (see
 [review-merge-pipeline.md §4.5 "Branch cleanup on merge"](review-merge-pipeline.md)). This is just a
 **fallback** for the case where it didn't — a PR merged outside the pipeline, a merge that predated
-the cleanup, or an atomic delete that was refused at the time. When the loop confirms a PR `MERGED`
+the cleanup, or a delete that was refused at the time. When the loop confirms a PR `MERGED`
 (§5b), check for and best-effort reap its head branch — **with the same guardrails and fail-soft
 posture as the merge step**:
 

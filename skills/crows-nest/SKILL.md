@@ -451,9 +451,9 @@ The full pipeline — review (§4.1), address (§4.2), verify (§4.3), the bound
 > a fully-green PR returns `ready_awaiting_human` — the pipeline **never merges**. The address↔review
 > loop is bounded (`maxReviewRounds`); auto-rebase (§4.4b) runs only when `autoMerge: true`, is bounded
 > and re-validated, force-pushes only fleet-owned branches, and falls back to `blocked` — never a forced
-> merge. On a successful merge the head branch is **reaped** (`gh pr merge --delete-branch` + a
-> fail-soft local worktree/branch cleanup), best-effort and never able to fail the merge — see §4.5
-> "Branch cleanup on merge".
+> merge. On a successful merge the head branch is **reaped** (remote + local worktree/branch),
+> best-effort and never able to fail the merge, and **never** when the branch still backs another open
+> PR — see §4.5 "Branch cleanup on merge".
 
 ## 5. Close the loop — shipped issues
 

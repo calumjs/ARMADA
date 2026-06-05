@@ -246,11 +246,12 @@ export async function runReviewMergePipeline(ctx, deps) {
 
     if (gate.decision === 'merge') {
       const method = gate.mergeMethod ? `--${gate.mergeMethod}` : '';
-      // --delete-branch makes the merge and the remote-branch cleanup atomic, so
-      // merged head branches don't pile up (issue #38). It's safe to pass even on
-      // squash/rebase merges — gh keys off the PR's MERGED state, not
-      // `git branch --merged` (which mis-reports squash-merged branches).
-      const res = sh(`gh pr merge ${pr} ${method} --delete-branch`.trim());
+      // Merge WITHOUT --delete-branch, then reap the head branch via
+      // reapMergedBranch (issue #38). The reap path applies a guard that
+      // --delete-branch can't: it never deletes a head branch that still backs
+      // another open PR. Keeping deletion in one guarded, fail-soft helper is
+      // safer than gh's atomic delete, which has no such guard.
+      const res = sh(`gh pr merge ${pr} ${method}`.trim());
       if (res.code !== 0) {
         // A refused merge (e.g. unmet protection) is a block, not a retry.
         return terminal(pr, 'blocked', `gh pr merge refused: ${(res.stdout || '').trim()}`, headSha);
@@ -298,11 +299,22 @@ function reapMergedBranch(sh, pr, baseBranch, log = () => {}) {
       return `branch ${headRef} not reaped (base/default branch)`;
     }
 
+    // Guardrail: never delete a head branch that still backs ANOTHER open PR
+    // (two open PRs can share a head). If we can't determine this, fail safe and
+    // skip the reap rather than risk orphaning the other PR.
+    const others = sh(`gh pr list --head ${headRef} --state open --json number --jq "length"`);
+    if (others.code !== 0) {
+      return `branch ${headRef} not reaped (could not confirm no other open PR uses it)`;
+    }
+    if ((others.stdout || '').trim() !== '0') {
+      return `branch ${headRef} not reaped (still backs another open PR)`;
+    }
+
     const notes = [];
 
-    // The remote branch is normally gone via --delete-branch; if it lingers
-    // (protection refused the atomic delete, or the merge predated this change),
-    // try once more, fail-soft.
+    // Delete the remote head branch (the merge no longer passes --delete-branch,
+    // so the reap owns this — and only reaches here once the open-PR guard above
+    // has cleared). Fail-soft: branch protection / a permission layer may refuse.
     const remote = sh(`git ls-remote --exit-code --heads origin ${headRef}`);
     if (remote.code === 0) {
       const del = sh(`git push origin --delete ${headRef}`);

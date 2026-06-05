@@ -180,7 +180,7 @@ Acting on the decision:
   `merged`:
 
   ```bash
-  gh pr merge <n> --<mergeMethod> --delete-branch   # merge | squash | rebase, from config
+  gh pr merge <n> --<mergeMethod>   # merge | squash | rebase, from config — then reap (below)
   ```
 - **`ready_awaiting_human`** (gates 2–5 hold but `autoMerge` is off) → stop before merge; never
   merge.
@@ -196,15 +196,17 @@ once). So the **merge step reaps the merged head branch as part of finishing the
 later chore. This is encoded in `runReviewMergePipeline`'s merge action (the `reapMergedBranch`
 helper) so it runs identically every time:
 
-1. **Remote — atomic with the merge.** The merge passes `--delete-branch`, so GitHub drops the
-   remote head branch in the same call. This works for **squash- and rebase-merges** too because it
-   keys off the PR's `MERGED` state, **not** `git branch --merged` (which mis-reports a
-   squash-merged branch as unmerged).
-2. **Local — fail-soft reap.** After the merge, any local leftovers are cleaned: if a **worktree**
-   still has the branch checked out it's removed **first** (a checked-out branch can't be deleted),
-   then the local branch is force-deleted (`git branch -D` — a squash/rebase merge leaves the local
-   branch looking "unmerged" to git). If the remote branch somehow lingers (a stale merge predating
-   this, or the atomic delete was refused), one more `git push origin --delete` is attempted.
+The merge call deliberately **omits** `--delete-branch` — the reap owns deletion instead, because it
+applies a guard `--delete-branch` can't (see the open-PR guardrail below). It works for **squash- and
+rebase-merges** too because it keys off the PR's `MERGED` state, **not** `git branch --merged` (which
+mis-reports a squash-merged branch as unmerged).
+
+1. **Remote.** Once the guardrails clear, `git push origin --delete <head>` drops the remote head
+   branch, fail-soft.
+2. **Local — fail-soft reap.** Any local leftovers are cleaned: if a **worktree** still has the
+   branch checked out it's removed **first** (a checked-out branch can't be deleted), then the local
+   branch is force-deleted (`git branch -D` — a squash/rebase merge leaves the local branch looking
+   "unmerged" to git).
 
 **Guardrails — the cleanup never deletes the wrong thing and never fails the merge:**
 
@@ -212,6 +214,10 @@ helper) so it runs identically every time:
   `headRefName`; a non-`MERGED` PR is left alone.
 - **Never the base/default or a protected branch.** If the head ref equals the configured
   `baseBranch` (or `master`/`main`) it is skipped outright.
+- **Never a branch that still backs another open PR.** Before deleting, it checks
+  `gh pr list --head <head> --state open`; if another open PR shares the head branch (or the check
+  can't be confirmed) the reap is skipped, so a shared branch is never orphaned. This is exactly the
+  guard `gh pr merge --delete-branch` lacks, and the reason the merge omits that flag.
 - **Best-effort and fail-soft — a failed delete never fails the merge.** Deleting the *remote*
   branch can be refused by branch protections or a permission layer; the branch may also still be
   checked out in a worktree. **None of these abort the merge or the pipeline** — the PR is already
