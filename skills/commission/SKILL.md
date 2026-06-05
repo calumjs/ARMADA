@@ -67,6 +67,7 @@ overwriting** — the user may have hand-tuned it.
   "baseBranch": "<detected default>",
   "authors": "",                   // "" = act on anyone; "alice" or "alice,bob" to restrict by author
   "autoMerge": false,              // ready-PR pipeline may merge? Default false: stop-before-merge.
+  "notify": "terminal",            // ship's bell: "off" | "blocked" | "terminal" | "all". Default "terminal" (shipped + blocked).
   "mergeMethod": "squash",         // merge | squash | rebase, when autoMerge is true
   "maxReviewRounds": 2,            // bound on the address↔review loop before handing back
   "armadaRepo": "calumjs/ARMADA",  // where self-raised fleet-defect fixes are filed (charter §9)
@@ -91,6 +92,14 @@ Add `.armada/` is fine to commit (it's project config, not secrets). Mention tha
 auto-merge on; opting into autonomous merging is a deliberate, explicit choice the user makes later
 by hand (see the README Safety section). `mergeMethod`/`maxReviewRounds` only take effect once the
 user turns `autoMerge` on.
+
+Write `notify` as `"terminal"` (the default) so the **ship's bell** is on for the events that
+matter — a PR merged / an issue shipped, and any block — without pinging on routine ticks. It's the
+fleet's observability: crows-nest rings a one-line notification at terminal/exception events instead
+of you polling the `armada:*` labels (see crows-nest §8). The user can dial it down to `"blocked"`
+(only "needs a human" events) or `"off"`, or up to `"all"` (also notify when a build opens a PR and
+when a green PR awaits a human merge). The bell is best-effort and side-channel — it degrades to a
+log line if the notifier isn't available and never affects the build/review/merge outcome.
 
 `armadaRepo` and `autoArmSelfFixes` wire the **self-improvement loop** (see
 [`charter`](../charter/SKILL.md) §9): when a skill hits a defect in ARMADA *itself*, it files a fix
@@ -145,6 +154,7 @@ and don't arm the loop for them** (both are the user's call):
   build/test  : <commands, or "none detected — skills will infer">
   authors     : <"" = anyone, or the configured allowlist>
   auto-merge  : off (default) — the sole merge gate; ready-PR pipeline stops at "awaiting human merge"
+  notify      : terminal (default) — ship's bell on shipped + blocked; off | blocked | terminal | all
   self-fixes  : armadaRepo=<owner/repo> · autoArmSelfFixes off (default) — fleet-defects filed for human triage
   labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked, fleet-defect ✓
 

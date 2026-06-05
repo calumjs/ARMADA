@@ -106,6 +106,12 @@ A couple of related distribution conventions:
   "authors": "",
   // May the ready-PR pipeline perform the final merge? Default false (stop-before-merge). See Safety.
   "autoMerge": false,
+  // Ship's bell — which terminal/exception fleet events emit a one-line notification.
+  //   "off"      → never notify
+  //   "blocked"  → only "needs a human" blocks
+  //   "terminal" → shipped + blocked (default)
+  //   "all"      → terminal events plus "PR opened" and "awaiting human merge"
+  "notify": "terminal",
   // Merge method when autoMerge is true: "merge" | "squash" | "rebase".
   "mergeMethod": "squash",
   // Bound on the address↔review loop before crows-nest hands a PR back to a human.
