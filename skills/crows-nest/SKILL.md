@@ -95,7 +95,8 @@ Read `.armada/config.json` from the target repo:
   - `"off"` — never notify (silent; back to watching labels by hand).
   - `"blocked"` — only when a unit hits `armada:blocked` (the event you most need to hear about).
   - `"terminal"` *(default)* — **shipped + blocked**: a PR merged / an issue shipped, **and** any block.
-  - `"all"` — the terminal events **plus** the optional "build opened a PR" event (§8).
+  - `"all"` — the terminal events **plus** the optional progress events: "build opened a PR" and
+    "reviewed & awaiting human merge" (§8).
 
   Read it now; you ring the bell at the reconciliation points (§2d, §3e, §5), all governed by the
   single ship's-bell convention in §8.
