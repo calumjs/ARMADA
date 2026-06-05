@@ -246,12 +246,21 @@ export async function runReviewMergePipeline(ctx, deps) {
 
     if (gate.decision === 'merge') {
       const method = gate.mergeMethod ? `--${gate.mergeMethod}` : '';
-      const res = sh(`gh pr merge ${pr} ${method}`.trim());
+      // --delete-branch makes the merge and the remote-branch cleanup atomic, so
+      // merged head branches don't pile up (issue #38). It's safe to pass even on
+      // squash/rebase merges — gh keys off the PR's MERGED state, not
+      // `git branch --merged` (which mis-reports squash-merged branches).
+      const res = sh(`gh pr merge ${pr} ${method} --delete-branch`.trim());
       if (res.code !== 0) {
         // A refused merge (e.g. unmet protection) is a block, not a retry.
         return terminal(pr, 'blocked', `gh pr merge refused: ${(res.stdout || '').trim()}`, headSha);
       }
-      return terminal(pr, 'merged', 'all gates satisfied — merged', headSha);
+      // Best-effort, fail-soft local cleanup: the remote delete may have been
+      // refused by branch protection / a permission layer, and the branch may
+      // still be checked out in a worktree. None of that may fail the merge —
+      // the PR is already merged. Log what couldn't be reaped and carry on.
+      const reap = reapMergedBranch(sh, pr, config.baseBranch, log);
+      return terminal(pr, 'merged', `all gates satisfied — merged${reap ? ` (${reap})` : ''}`, headSha);
     }
     if (gate.decision === 'ready_awaiting_human') {
       return terminal(pr, 'ready_awaiting_human', gate.reasons.join('; '), headSha);
@@ -264,6 +273,83 @@ export async function runReviewMergePipeline(ctx, deps) {
 
 function terminal(pr, decision, reason, headSha) {
   return { pr, decision, reason, headSha: headSha ?? null };
+}
+
+// Best-effort, fail-soft cleanup of a merged PR's head branch (issue #38).
+// The atomic `gh pr merge --delete-branch` already tries to drop the *remote*
+// branch; this reaps any *local* leftovers (worktree + local branch) and never
+// throws — a failed delete must not fail the merge. Returns a short status
+// string for the merge trail. Guardrails:
+//   - only acts on a PR confirmed MERGED;
+//   - never deletes the base/default branch;
+//   - removes the local worktree first (a branch checked out in a worktree
+//     can't be branch-deleted), tolerating failure either way.
+function reapMergedBranch(sh, pr, baseBranch, log = () => {}) {
+  try {
+    // Confirm MERGED and learn the head branch — don't reap on anything else.
+    const meta = sh(`gh pr view ${pr} --json state,headRefName --jq "[.state,.headRefName]|@tsv"`);
+    const [state, headRef] = (meta.stdout || '').trim().split('\t');
+    if ((state || '').toUpperCase() !== 'MERGED') return 'branch not reaped (PR not MERGED)';
+    if (!headRef) return 'branch not reaped (no head ref)';
+
+    // Guardrail: never touch the base/default branch.
+    const base = (baseBranch || '').trim();
+    if (headRef === base || headRef === 'master' || headRef === 'main') {
+      return `branch ${headRef} not reaped (base/default branch)`;
+    }
+
+    const notes = [];
+
+    // The remote branch is normally gone via --delete-branch; if it lingers
+    // (protection refused the atomic delete, or the merge predated this change),
+    // try once more, fail-soft.
+    const remote = sh(`git ls-remote --exit-code --heads origin ${headRef}`);
+    if (remote.code === 0) {
+      const del = sh(`git push origin --delete ${headRef}`);
+      notes.push(del.code === 0 ? 'remote branch deleted' : 'remote branch delete refused (protection?)');
+    }
+
+    // Remove any local worktree backing the branch BEFORE deleting it — a branch
+    // checked out in a worktree can't be deleted. Tolerate either failing.
+    const wt = sh('git worktree list --porcelain');
+    const wtPath = worktreePathForBranch(wt.stdout || '', headRef);
+    if (wtPath) {
+      const rm = sh(`git worktree remove --force "${wtPath}"`);
+      if (rm.code === 0) notes.push('worktree removed');
+      else notes.push('worktree remove failed (left in place)');
+    }
+
+    // Delete the local branch if present. -D (force) because a squash/rebase
+    // merge leaves the local branch looking "unmerged" to git.
+    const local = sh(`git rev-parse --verify --quiet refs/heads/${headRef}`);
+    if (local.code === 0) {
+      const dl = sh(`git branch -D ${headRef}`);
+      notes.push(dl.code === 0 ? 'local branch deleted' : 'local branch delete failed (left in place)');
+    }
+
+    const msg = notes.length ? `reaped ${headRef}: ${notes.join(', ')}` : `branch ${headRef} already clean`;
+    log(`§4.5 cleanup → ${msg}`);
+    return msg;
+  } catch (e) {
+    // Fail-soft: cleanup must never fail the merge.
+    const msg = `branch cleanup skipped (non-fatal: ${e && e.message ? e.message : e})`;
+    log(`§4.5 cleanup → ${msg}`);
+    return msg;
+  }
+}
+
+// Parse `git worktree list --porcelain` for the worktree path whose checked-out
+// branch is `headRef` (refs/heads/<headRef>), if any.
+function worktreePathForBranch(porcelain, headRef) {
+  let curPath = null;
+  for (const line of porcelain.split('\n')) {
+    if (line.startsWith('worktree ')) curPath = line.slice('worktree '.length).trim();
+    else if (line.startsWith('branch ')) {
+      const ref = line.slice('branch '.length).trim();
+      if (ref === `refs/heads/${headRef}`) return curPath;
+    }
+  }
+  return null;
 }
 
 // --- Small shell helpers (read-only probes + the gate's inputs). They expect
@@ -317,6 +403,7 @@ if (isMain) {
         '  §4.4 loop       → re-review until converged (≤ maxReviewRounds)',
         '  §4.4b mergeable → agent(shipwright, REBASE_SCHEMA)    only if autoMerge && BEHIND/CONFLICTING',
         '  §4.5 gate       → merge-gate.mjs(state) → merge | ready_awaiting_human | blocked',
+        '  §4.5 cleanup    → on merge: gh pr merge --delete-branch + fail-soft reap of local worktree/branch',
         '',
         'Reference from a skill via ${CLAUDE_PLUGIN_ROOT}/scripts/review-merge-pipeline.mjs',
         'Inspect schemas: node scripts/review-merge-pipeline.mjs --schemas',
