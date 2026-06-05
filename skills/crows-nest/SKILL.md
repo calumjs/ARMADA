@@ -13,7 +13,7 @@ description: >
   optional trigger label (default from .armada/config.json, else "armada") and an optional poll
   interval.
 argument-hint: "[label] [interval]"
-allowed-tools: Bash, Read, Grep, Glob, Skill, Agent, Workflow
+allowed-tools: Bash, Read, Grep, Glob, Skill, Agent, Workflow, PushNotification
 ---
 
 # crows-nest — a unified, maximally parallel scheduler for issues and PRs
@@ -89,6 +89,16 @@ Read `.armada/config.json` from the target repo:
 - `autoMerge` — whether the ready-PR pipeline may perform the final merge. **Default `false`**: with
   it off the pipeline reviews, addresses, and re-validates but **stops before merging** (§4.5). Only
   `true` lets the lookout merge, and only when every other gate passes. See [Safety](#7-stopping-and-safety).
+- `notify` — the **ship's bell**: which terminal/exception fleet events emit a one-line
+  `PushNotification`, so you're *told* what the fleet did instead of polling labels. One of
+  `"off" | "blocked" | "terminal" | "all"`, **default `"terminal"`**:
+  - `"off"` — never notify (silent; back to watching labels by hand).
+  - `"blocked"` — only when a unit hits `armada:blocked` (the event you most need to hear about).
+  - `"terminal"` *(default)* — **shipped + blocked**: a PR merged / an issue shipped, **and** any block.
+  - `"all"` — the terminal events **plus** the optional "build opened a PR" event (§8).
+
+  Read it now; you ring the bell at the reconciliation points (§2d, §3e, §5), all governed by the
+  single ship's-bell convention in §8.
 - `maxConcurrentBuilds` — how many background **builds** (issue track) may be in flight at once
   (**default 1**). The autonomous path dispatches builds in the background (§2d), so a tick never
   blocks on one; this caps how many run in parallel and queues the overflow. Default 1 = one build
@@ -352,9 +362,12 @@ finishes, crows-nest takes its structured result and maps it to the claimed-stat
 issue comment:
 
 - `status: "opened"` → `gh issue edit <issue> --add-label "armada:done" --remove-label "armada:underway"`,
-  then `gh issue comment <issue> --body "🔭 crows-nest: PR opened — <pr>"`.
+  then `gh issue comment <issue> --body "🔭 crows-nest: PR opened — <pr>"`. **Ring the bell** for the
+  *opened* event (§8) — fired **only** when `notify: "all"`: `⚓ #<issue> → PR opened: <pr>`.
 - `status: "blocked"` → `gh issue edit <issue> --add-label "armada:blocked" --remove-label "armada:underway"`,
-  then `gh issue comment <issue> --body "🔭 crows-nest: blocked — <reason>"`.
+  then `gh issue comment <issue> --body "🔭 crows-nest: blocked — <reason>"`. **Ring the bell** for the
+  *blocked* event (§8) — fired when `notify` is `"blocked"`, `"terminal"`, or `"all"`:
+  `⛔ #<issue> blocked: <reason>`.
 
 Either way the issue leaves `armada:underway`: never leave one stuck there, or it's invisible to
 both the lookout and a human. (On the inline path — the supervised single pick — the running
@@ -424,6 +437,18 @@ reconciliation (§3e), and reporting (§3f) — lives in
 > on completion to `armada:merged` / `ready_awaiting_human` / `armada:blocked` — a PR is **never** left
 > on `armada:reviewing`.
 
+**Ring the ship's bell on the PR track's terminal outcomes** (§8) when reconciling a completed
+pipeline (§3e):
+
+- `armada:merged` → a *shipped* event: `⚓ Shipped: PR #<pr> merged` — fired when `notify` is
+  `"terminal"` or `"all"`.
+- `armada:blocked` → a *blocked* event, **with the reason**: `⛔ PR #<pr> blocked: <reason>` — fired
+  when `notify` is `"blocked"`, `"terminal"`, or `"all"`.
+- `ready_awaiting_human` is **not** a terminal failure and **not** a routine clear — it's a
+  green-but-gated stop. Treat it as a *blocked-class* "needs a human" event for the bell: ring it
+  only at `notify: "all"` (`🔔 PR #<pr> ready — awaiting human merge`), and stay silent at the
+  narrower levels so a deliberate `autoMerge: false` setup isn't pinged on every green PR.
+
 ## 4. The review→merge pipeline (a Workflow)
 
 A scheduled PR (§3) runs through a deterministic **Workflow**: **parallel review fan-out → consolidate
@@ -469,6 +494,10 @@ lives in **[references/close-the-loop.md](references/close-the-loop.md)**. The r
 > An issue is **done** only when **both** hold: its linked `Closes #<n>` PR is **merged** *and* its
 > **acceptance criteria are satisfied**. Merge alone is not enough. Never close while `armada:underway`
 > / `armada:reviewing` is set; on close, reconcile to the single terminal label `armada:shipped`.
+
+When an issue closes as `armada:shipped` (§5d), **ring the ship's bell** for the *shipped* event
+(§8) — fired when `notify` is `"terminal"` or `"all"`:
+`⚓ Shipped #<issue> → PR #<pr> merged`.
 
 ## 6. Arm the loop — hand the /loop line to the user
 
@@ -549,6 +578,63 @@ demand.
   unattended). It's best-effort and side-channel: note it in the tick summary, **never** block or
   derail the watch on it.
 
+## 8. The ship's bell — notify on fleet events
+
+The fleet runs unattended, so meaningful outcomes — a PR merged, a unit blocked — would otherwise go
+unnoticed until you next poll the `armada:*` labels. The **ship's bell** closes that gap: at the
+terminal/exception reconciliation points the lookout already passes through (§2d, §3e, §5), it emits
+**one line** via the `PushNotification` tool so you're *told* what happened. This is the single,
+shared convention every ring above refers back to — read it once here.
+
+### 8a. What rings, and at which `notify` level
+
+The bell fires **only** on the events below, governed by `notify` from §1 (default `"terminal"`).
+Each line is one sentence and actionable — what happened, the issue/PR number, and (for a block) the
+reason:
+
+| Event | When it fires | `notify` levels | Example line |
+| :--- | :--- | :--- | :--- |
+| **Shipped** | a PR merged (`armada:merged`, §3e) or an issue shipped (`armada:shipped`, §5) | `terminal`, `all` | `⚓ Shipped #12 → PR #17 merged` |
+| **Blocked** | any unit hits `armada:blocked` (§2d / §3e) — CI red, unresolved blocking finding, no convergence, rebase couldn't resolve, destructive-migration refusal, etc. | `blocked`, `terminal`, `all` | `⛔ #9 blocked: CI red on head` |
+| **Opened** *(optional)* | a build opened a PR (`armada:done`, §2d) | `all` only | `⚓ #14 → PR opened: #21` |
+| **Awaiting human** *(optional)* | a green PR stops at the merge gate (`ready_awaiting_human`, `autoMerge: false`, §3e) | `all` only | `🔔 PR #21 ready — awaiting human merge` |
+
+A **blocked** ring **must include the reason** (the `reason` from the subagent/pipeline result) — a
+bare "blocked" isn't actionable. Map the `notify` level to the set of events once, at the top of the
+tick, and gate each ring against it:
+
+- `"off"` → ring nothing.
+- `"blocked"` → ring **Blocked** only.
+- `"terminal"` *(default)* → ring **Shipped** and **Blocked**.
+- `"all"` → ring **Shipped**, **Blocked**, **Opened**, and **Awaiting human**.
+
+### 8b. What never rings (no noise)
+
+The bell is for terminal/exception events, **never** for routine progress. Do **not** ring on:
+
+- routine clear ticks — `horizon clear` / `harbour clear` (§2c) never notify;
+- per-step / mid-pipeline progress — claiming a unit (`armada:underway` / `armada:reviewing`),
+  dispatching a build, a review round, an address pass, a rebase attempt;
+- the per-tick **schedule line** (§2e) and the reconcile **log lines** (§2e) — those stay as logs.
+
+This is the guardrail: a watch that pings on every tick trains you to mute it, so the bell only
+sounds when something actually finished or actually needs you.
+
+### 8c. Degrade gracefully — best-effort, side-channel, never fatal
+
+A notification is a **side-channel courtesy**, never part of the build/review/merge outcome. So:
+
+- **If `PushNotification` isn't available** in the run context (the tool isn't present, or the call
+  throws), **fall back to a logged line** in the tick output — the same one-liner, prefixed
+  `crows-nest bell:` — and carry on. A missing notifier degrades to a log, it never errors the tick.
+- **A failed ring never affects the outcome.** Wrap the ring so any failure is swallowed (logged at
+  most once) — the label swap, the PR comment, the merge, and the issue close have **already
+  happened** before the bell rings; the bell is the last, optional step. Never re-order it ahead of
+  the consequential action, and never let it block, retry-spin, or fail the tick.
+- **Best-effort de-dup.** Each terminal event rings **once** — it fires at the reconciliation that
+  sets the terminal label, and the in-flight guards (§2a) mean a reconciled unit isn't re-picked, so
+  the same event won't re-ring on a later tick.
+
 ## Inputs
 
 - `label` *(optional)* — the trigger label to watch. Defaults to `.armada/config.json` → `triggerLabel`, else `armada`.
@@ -567,3 +653,6 @@ demand.
   merge / awaiting-human / blocked result.
 - Labels kept in sync — issues `armada` → `armada:underway` → `armada:done` / `armada:blocked`;
   PRs `armada` → `armada:reviewing` → `armada:merged` / `armada:blocked`.
+- On terminal/exception events (shipped / blocked, plus opened / awaiting-human at `notify: "all"`):
+  a one-line **ship's bell** `PushNotification` per the `notify` level — degrading to a logged line
+  when the notifier is unavailable, never fatal to the tick (§8).
