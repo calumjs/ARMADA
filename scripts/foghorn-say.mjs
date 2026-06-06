@@ -55,6 +55,14 @@ import process from 'node:process';
 
 function parseArgs(argv) {
   const args = { _: [] };
+  // Read the value for a valued flag, but only consume the next token when it
+  // looks like a real value — a following token that starts with '--' is the
+  // NEXT flag, not this flag's value, so we leave it for the loop to parse.
+  // This keeps `--provider --check` from swallowing `--check` (which would
+  // bypass doctor mode's no-audio guarantee). Returns undefined when no value
+  // follows (e.g. the flag is the last arg); callers treat that as "unset".
+  const valueFor = (i) =>
+    argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--help' || a === '-h') args.help = true;
@@ -63,15 +71,15 @@ function parseArgs(argv) {
     else if (a === '--check' || a === '--doctor') args.check = true;
     else if (a === '--print-only') args.printOnly = true;
     else if (a === '--no-cache') args.noCache = true;
-    else if (a === '--line') args.line = argv[++i];
-    else if (a === '--event') args.event = argv[++i];
-    else if (a === '--number') args.number = argv[++i];
-    else if (a === '--reason') args.reason = argv[++i];
-    else if (a === '--flavour' || a === '--flavor') args.flavour = argv[++i];
-    else if (a === '--verbosity') args.verbosity = argv[++i];
-    else if (a === '--state') args.state = argv[++i];
-    else if (a === '--voice') args.voice = argv[++i];
-    else if (a === '--provider') args.provider = argv[++i];
+    else if (a === '--line') { const v = valueFor(i); if (v !== undefined) { args.line = v; i++; } }
+    else if (a === '--event') { const v = valueFor(i); if (v !== undefined) { args.event = v; i++; } }
+    else if (a === '--number') { const v = valueFor(i); if (v !== undefined) { args.number = v; i++; } }
+    else if (a === '--reason') { const v = valueFor(i); if (v !== undefined) { args.reason = v; i++; } }
+    else if (a === '--flavour' || a === '--flavor') { const v = valueFor(i); if (v !== undefined) { args.flavour = v; i++; } }
+    else if (a === '--verbosity') { const v = valueFor(i); if (v !== undefined) { args.verbosity = v; i++; } }
+    else if (a === '--state') { const v = valueFor(i); if (v !== undefined) { args.state = v; i++; } }
+    else if (a === '--voice') { const v = valueFor(i); if (v !== undefined) { args.voice = v; i++; } }
+    else if (a === '--provider') { const v = valueFor(i); if (v !== undefined) { args.provider = v; i++; } }
     else if (a.startsWith('--')) args[a.slice(2)] = argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : true;
     else args._.push(a);
   }
@@ -396,19 +404,39 @@ const KEY_VAR_BY_PROVIDER = {
 // out of committed config while letting the non-secret provider/voice live there
 // and survive restarts with no OS env propagation. The .env loader (loadLocalEnv)
 // runs first so the key can also be supplied per-repo via .armada/foghorn/.env.
+// First non-EMPTY wins: trim each candidate and skip whitespace-only values so
+// a blank `--provider "  "` (or blank env/config) doesn't block a real value
+// further down the chain. Returns { value, source } so --check can label the
+// source by what actually resolved, not by the raw (possibly-blank) flag.
+function firstNonEmpty(candidates) {
+  for (const [raw, source] of candidates) {
+    const v = (raw ?? '').trim();
+    if (v) return { value: v, source };
+  }
+  return { value: '', source: null };
+}
+
+function resolveProvider(args, cfg) {
+  const { value, source } = firstNonEmpty([
+    [args.provider, '--provider'],
+    [process.env.FOGHORN_TTS_PROVIDER, 'env FOGHORN_TTS_PROVIDER'],
+    [cfg?.foghorn?.provider, 'config foghorn.provider'],
+  ]);
+  return { value: value.toLowerCase(), source: value ? source : 'default (local)' };
+}
+
+function resolveVoice(args, cfg) {
+  const { value, source } = firstNonEmpty([
+    [args.voice, '--voice'],
+    [process.env.FOGHORN_VOICE, 'env FOGHORN_VOICE'],
+    [cfg?.foghorn?.voice, 'config foghorn.voice'],
+  ]);
+  return { value: value || 'default', source: value ? source : 'default' };
+}
+
 function ttsProviderConfig(args, cfg) {
-  const provider = (
-    args.provider ||
-    process.env.FOGHORN_TTS_PROVIDER ||
-    cfg?.foghorn?.provider ||
-    ''
-  ).toLowerCase().trim();
-  const voice = (
-    args.voice ||
-    process.env.FOGHORN_VOICE ||
-    cfg?.foghorn?.voice ||
-    'default'
-  );
+  const provider = resolveProvider(args, cfg).value;
+  const voice = resolveVoice(args, cfg).value;
   if (!provider) {
     return { provider: null, key: null, voice, reason: 'no provider (FOGHORN_TTS_PROVIDER / foghorn.provider unset)' };
   }
@@ -665,21 +693,12 @@ function runCheck(args, cfg, env) {
     mode: 'check',
     resolved: {
       provider: tts.provider || '(none — free local OS voice)',
-      providerSource: args.provider
-        ? '--provider'
-        : process.env.FOGHORN_TTS_PROVIDER
-          ? 'env FOGHORN_TTS_PROVIDER'
-          : cfg?.foghorn?.provider
-            ? 'config foghorn.provider'
-            : 'default (local)',
+      // Source labels reflect what ACTUALLY resolved (trimmed, non-empty),
+      // not the raw flag — so a blank `--provider "  "` that fell back to
+      // env/config/local is reported as such, not as '--provider'.
+      providerSource: resolveProvider(args, cfg).source,
       voice: tts.voice,
-      voiceSource: args.voice
-        ? '--voice'
-        : process.env.FOGHORN_VOICE
-          ? 'env FOGHORN_VOICE'
-          : cfg?.foghorn?.voice
-            ? 'config foghorn.voice'
-            : 'default',
+      voiceSource: resolveVoice(args, cfg).source,
       keyVar: tts.keyVar || null,
       keyPresent: !!tts.key,
       keyMasked: maskKey(tts.key),
