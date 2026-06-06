@@ -1,1 +1,6 @@
 .claude/
+
+# logbook recorder — host-matched ffmpeg and content-hashed narration clips are
+# machine-/content-specific, provisioned by `logbook --setup`; don't commit them.
+.armada/logbook/bin/
+.armada/logbook/cache/

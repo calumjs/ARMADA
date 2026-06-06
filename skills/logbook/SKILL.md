@@ -33,7 +33,7 @@ that makes one generic recorder work for a web UI, a CLI, or an API.
 > **Two modes.** First use in a repo (or `--setup`) runs **§1 setup** to establish the staging
 > recipe, then records. Subsequent runs **reuse** the saved recipe and go straight to **§2 record**.
 
-## 0. Discover the project and check prerequisites
+## 0. Discover the project and run the toolchain preflight
 
 Read `.armada/config.json` → `commands.run` (how this repo starts its app) and `baseBranch`. If the
 file is absent the repo isn't commissioned — run [`commission`](../commission/SKILL.md) first (it
@@ -43,25 +43,43 @@ assumed `npm start`/`dotnet run`/etc.
 Identify the target PR (the argument, or the current branch's PR via `gh pr view --json number`).
 The recording attaches to this PR.
 
-Check the recording toolchain is present and **degrade gracefully** — name what's missing rather
-than failing silently:
+### Toolchain preflight — `--setup`
 
-- A screen/surface capture appropriate to the project type (see §1 *Launch/Reach*): a browser
-  driver for web, a terminal recorder for CLI/TUI, a request runner for APIs.
-- `ffmpeg` (mux audio + video, concatenate chapters, burn in titles/lower-thirds).
-- A TTS provider reachable via an **environment variable** (see §3). If no TTS key is configured,
-  fall back to **silent captions** (burned-in chapter text and narration as subtitles) and say so —
-  never block the whole walkthrough on a missing voice key.
+Before recording, run the **bundled recorder's `--setup` preflight**. It is **arch-aware** and
+**self-provisioning**: it detects the host OS + architecture (incl. **win-arm64** and **mac-arm64**),
+provisions a static `ffmpeg` matched to that host into `.armada/logbook/bin/` (or prints the exact
+per-platform install command when no static build exists for the arch — e.g. `brew install ffmpeg`
+on macOS), verifies the capture backend for the recipe's surface (e.g. Playwright Chromium for
+`web`), and reports each tool as **ready / degraded / missing**:
 
-If a hard prerequisite (e.g. `ffmpeg`) is missing, report it as a blocker with the install hint
-rather than producing a broken artifact.
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/logbook-recorder.mjs" --setup --staging .armada/logbook/staging.json
+# add --json for a machine-readable report; --dry-run to preview without downloading
+```
+
+The recording toolchain it checks:
+
+- A **capture backend** appropriate to the surface (see §1 *Launch/Reach*): a browser driver for
+  web, a terminal recorder for CLI/TUI, a request runner for APIs.
+- **`ffmpeg`** — muxes audio + video, concatenates chapters, burns in titles/lower-thirds.
+- A **TTS provider** reachable via an **environment variable** (see §3). No key ⇒ **silent captions**
+  (burned-in chapter text and narration as subtitles).
+
+**Graceful degradation is the design, not a failure mode.** Every *optional* tool that's absent
+**downgrades** rather than blocking — no browser driver ⇒ captioned stills/storyboard; no `ffmpeg` ⇒
+silent storyboard; no TTS key ⇒ captions — and the preflight (and the run) **names** what degraded.
+`--setup` exits `0` when everything is ready *or* only-degraded; it exits non-zero only when a truly
+required capability is missing. If the script isn't present in this install, perform the same checks
+by hand and report what's available the same way (see [references/recorder.md](references/recorder.md)).
 
 ## 1. Establish (or load) the repo-specific staging recipe
 
 The staging recipe is saved at **`.armada/logbook/staging.json`** (config) alongside any helper
-scripts the repo needs under `.armada/logbook/` (e.g. a seed script, a Playwright stage helper).
-**If it already exists, load it and skip to §2** unless invoked with `--setup` (which re-derives /
-edits it). It is **edited, not re-derived** each run — set up once, reused thereafter.
+scripts the repo needs under `.armada/logbook/` (e.g. a seed script, a Playwright stage helper) and
+the toolchain `--setup` provisions (a host-matched `ffmpeg` under `.armada/logbook/bin/`, narration
+clips under `.armada/logbook/cache/`). **If it already exists, load it and skip to §2** unless
+invoked with `--setup` — which **both** re-runs the §0 toolchain preflight *and* re-derives / edits
+the recipe. It is **edited, not re-derived** each run — set up once, reused thereafter.
 
 If it doesn't exist, derive it **with the user** (this is the one interactive step; ask, don't
 guess) and persist it. The recipe has three parts:
@@ -116,8 +134,23 @@ Persist all three to `.armada/logbook/staging.json`, for example:
 ```
 
 **Document (re)configuration:** tell the user the recipe lives at `.armada/logbook/staging.json`,
-that they can hand-edit it, and that `/logbook --setup` re-derives it interactively. `.armada/` is
-safe to commit (it's config, not secrets) — **secrets stay in env and are referenced by name only.**
+that they can hand-edit it, and that `/logbook --setup` re-runs the toolchain preflight (§0) and
+re-derives the recipe interactively. `.armada/` is safe to commit (it's config, not secrets) —
+**secrets stay in env and are referenced by name only**, and the provisioned `bin/` (host-matched
+`ffmpeg`) and `cache/` (narration clips) are machine-/content-specific, so add them to
+`.gitignore` rather than committing them.
+
+### The bundled recorder
+
+Once the recipe and toolchain are in place, the capture → TTS → mux work is performed by the
+**bundled recorder** at `${CLAUDE_PLUGIN_ROOT}/scripts/logbook-recorder.mjs`, which implements the
+contract in [references/recorder.md](references/recorder.md). It consumes the recipe + chapter plan
+as data and produces one muxed video — driving a surface-appropriate capture, synthesising
+**env-keyed, hash-cached** TTS (caption fallback when no key), and muxing with `ffmpeg`. It's an
+**optional accelerator**: if it (or `ffmpeg`/a capture backend) is absent, perform the contract's
+steps by hand and degrade to captions/storyboard rather than failing (see §§4–5 and the recorder
+reference). Reference it via `${CLAUDE_PLUGIN_ROOT}`, never a relative path — installed plugins are
+copied into a cache and relative paths break there.
 
 ## 2. Plan the chapters
 

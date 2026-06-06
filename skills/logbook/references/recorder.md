@@ -7,12 +7,14 @@ repo-specific staging recipe and a chapter plan as *data* and produces one video
 **no** login, no port, no sample file, no app type, and no TTS vendor. Anything app-specific comes
 from `.armada/logbook/staging.json` (the recipe) or the environment.
 
-> **If a bundled implementation is present**, reference it via
-> `${CLAUDE_PLUGIN_ROOT}/scripts/logbook-recorder.mjs`, never a relative path — installed plugins are
-> copied into a cache and relative paths break there. The script is an **optional accelerator**, not
-> a hard dependency: if it (or `ffmpeg`/a capture backend) is absent, perform these steps directly
-> and degrade to captions/storyboard. (The repo-local `node scripts/validate-skills.mjs` is a
-> separate thing — ARMADA's own test gate, run against this checkout, not via the installed plugin.)
+> **A bundled implementation ships** at `${CLAUDE_PLUGIN_ROOT}/scripts/logbook-recorder.mjs` — always
+> reference it via `${CLAUDE_PLUGIN_ROOT}`, never a relative path (installed plugins are copied into a
+> cache and relative paths break there). It also exposes an arch-aware `--setup` toolchain preflight
+> (provisions a host-matched `ffmpeg`, verifies the capture backend, reports ready/degraded/missing —
+> see SKILL §0). The script is an **optional accelerator**, not a hard dependency: if it (or
+> `ffmpeg`/a capture backend) is absent, perform these steps directly and degrade to
+> captions/storyboard. (The repo-local `node scripts/validate-skills.mjs` is a separate thing —
+> ARMADA's own test gate, run against this checkout, not via the installed plugin.)
 
 ```bash
 # Optional accelerator if present; otherwise drive the equivalent steps below by hand:
