@@ -27,6 +27,7 @@ the right skill from natural language — you rarely type the name.
 | **`muster`** | Inspection before sailing. Reviews a ready PR through two parallel lenses (code-review + codex-rescue), dedupes, and posts inline comments + a summary. | ✅ shipped |
 | **`logbook`** | The voyage record. Turns a shipped change into a short narrated, chaptered walkthrough video and attaches it to the PR — stack-agnostic, driven by a reusable per-repo staging recipe (launch / stage / reach) that works for web, CLI, or API. | ✅ shipped |
 | **`cartographer`** | The mapmaker. Mines completed runs for actionable *per-repo* heuristics (`heuristic / evidence / confidence`) and maintains a reviewable knowledge base under `.armada/cartography/`, so the fleet specialises to a repo over time. shipwright reads it before building; crows-nest auto-runs it (best-effort, gated by `cartography`) at its reconcile points. | ✅ shipped |
+| **`lighthouse`** | The reconnaissance. The fleet's only *proactive* ship: surveys the repo for **future** work (failing/skipped tests, TODO/FIXME, missing coverage, stale docs, dependency smells, gaps) — and explores the running app with Playwright when it's runnable — then charters each high-value, de-duped finding as a well-formed issue, **unarmed** so a human review is the gate. crows-nest dispatches it opportunistically as low-priority background work when the fleet is idle (gated by `lighthouse.enabled`); existing build/review work always wins. | ✅ shipped |
 | `flagship` | The command vessel. An autonomous build → review → verify → fix loop that drives an issue all the way to merge-ready. | 🚧 roadmap |
 | `sea-trial` | The shakedown run. Launches the app and drives a real flow with Playwright to verify a change works at runtime. | 🚧 roadmap |
 | `signal-flags` | Signals back. Addresses reviewer comments on a PR and replies to each thread. | 🚧 roadmap |
@@ -127,6 +128,15 @@ A couple of related distribution conventions:
   //   "proposal" → auto-runs at crows-nest's reconcile points but only proposes a diff for approval
   //   "on"       → auto-runs and commits learning into the active PR (rides muster review + autoMerge)
   "cartography": "off",
+  // Autonomous reconnaissance (lighthouse) — surveys for FUTURE work and charters it, unarmed.
+  "lighthouse": {
+    "enabled": false,          // crows-nest auto-dispatch on/off. Default false (opt-in). Manual /lighthouse always works.
+    "autoArm": false,          // the ONLY way generated issues get armed. Default false — human review is the gate.
+    "intervalHours": 24,       // trigger: min hours since the last lighthouse run
+    "commitsSinceScan": 20,    // trigger: N commits landed since the last scan
+    "minIdleToDispatch": true, // only dispatch when the runnable frontier is free (existing work always wins)
+    "budget": { "maxRuntimeSec": 300, "maxPlaywrightSec": 120, "maxIssuesPerRun": 3, "maxFindings": 20 }
+  },
   // Your project's commands. Any can be omitted; skills will infer or ask.
   "commands": {
     "build":  "npm run build",

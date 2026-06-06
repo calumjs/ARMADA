@@ -9,7 +9,7 @@
     {
       "name": "armada",
       "source": "./",
-      "description": "Autonomous Recursive Multi-Agent Development Assembler. Install, then run /armada:commission to self-set-up in any repo. Skills: commission, charter, crows-nest, shipwright, muster, logbook, cartographer (more on the way)."
+      "description": "Autonomous Recursive Multi-Agent Development Assembler. Install, then run /armada:commission to self-set-up in any repo. Skills: commission, charter, crows-nest, shipwright, muster, logbook, cartographer, lighthouse (more on the way)."
     }
   ]
 }

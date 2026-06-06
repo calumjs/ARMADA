@@ -81,6 +81,19 @@ overwriting** — the user may have hand-tuned it.
     "provider": "",                // NON-SECRET cloud TTS provider: "" (free local OS voice) | "elevenlabs" | "openai" | …
     "voice": ""                    // NON-SECRET voice id for that provider; "" = the provider/OS default. The SECRET key is NEVER here — env / .env only.
   },
+  "lighthouse": {                  // autonomous reconnaissance (lighthouse skill) — surveys for FUTURE work, charters it unarmed.
+    "enabled": false,              // crows-nest AUTO-dispatch on/off. Default false (opt-in). Manual /lighthouse always works.
+    "autoArm": false,              // the ONLY way generated issues get armed. Default false — human review is the gate.
+    "intervalHours": 24,           // trigger: min hours since the last lighthouse run
+    "commitsSinceScan": 20,        // trigger: N commits landed since the last scan
+    "minIdleToDispatch": true,     // only dispatch when the runnable frontier is empty (existing work always wins)
+    "budget": {                    // every run is bounded — recon, not exhaustive analysis
+      "maxRuntimeSec": 300,        // hard cap on the whole run
+      "maxPlaywrightSec": 120,     // hard cap on the dynamic (Playwright) survey
+      "maxIssuesPerRun": 3,        // most issues a single run will file
+      "maxFindings": 20            // most candidate findings a run collects before it stops surveying
+    }
+  },
   "commands": {
     "build":  "<detected or omitted>",
     "test":   "<detected or omitted>",
@@ -158,6 +171,19 @@ itself. To actually **hear** the bell, the user also points `bellCommand` at it 
 [`foghorn`](../foghorn/SKILL.md) §3):
 `"bellCommand": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/foghorn-say.mjs\""`.
 
+`lighthouse` configures the fleet's autonomous **reconnaissance** ([`lighthouse`](../lighthouse/SKILL.md)
+— the ship that surveys the repo for *future* work and charters it). Write the block with safe
+defaults: **`enabled: false`** so crows-nest never auto-dispatches lighthouse (manual `/lighthouse`
+still works any time) — like `autoMerge` / `cartography`, turning on autonomous discovery is a
+deliberate hand edit, never something commissioning enables. **`autoArm: false`** is the safety
+mechanism: issues lighthouse generates are filed **unarmed** (`charter --no-arm`) for human review, and
+`autoArm` is the *only* way they're ever auto-armed — reserved for trusted repos. The trigger
+thresholds (`intervalHours`, `commitsSinceScan`, `minIdleToDispatch`) and the `budget`
+(`maxRuntimeSec` / `maxPlaywrightSec` / `maxIssuesPerRun` / `maxFindings`) bound the
+**opportunistic, low-priority** dispatch so recon only runs in spare capacity and never preempts
+build/review work (see crows-nest §2f and lighthouse §0/§7). Left at the defaults, lighthouse never
+auto-runs and nothing it would discover is ever auto-built.
+
 ## 4. Create the GitHub labels
 
 The fleet tracks state entirely through labels, so they must exist. There are two tracks — issues
@@ -208,6 +234,7 @@ and don't arm the loop for them** (both are the user's call):
   self-fixes  : armadaRepo=<owner/repo> · autoArmSelfFixes off (default) — fleet-defects filed for human triage
   cartography : off (default) — cartographer never auto-runs; off | proposal | on (run /cartographer by hand any time)
   foghorn     : flavour="a gruff, proud nautical harbourmaster" · verbosity=normal · gate=terminal · provider="" · voice="" — spoken narrator (set provider/voice for a cloud voice, key via env/.env; set bellCommand to hear it)
+  lighthouse  : enabled=false · autoArm=false (defaults) — autonomous recon never auto-runs; run /lighthouse by hand any time (files unarmed backlog issues for human review)
   labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked, fleet-defect ✓
 
 Next:

@@ -117,6 +117,14 @@ Read `.armada/config.json` from the target repo:
   subagent — but **only when this key is not `"off"`**. Default `"off"` = never auto-runs (manual
   `/cartographer` still works); `"proposal"` = auto-runs but only proposes a diff; `"on"` = auto-runs
   and commits the learning into the active PR. The full convention is §8d.
+- `lighthouse` — gates [`lighthouse`](../lighthouse/SKILL.md), the fleet's autonomous **reconnaissance**:
+  it surveys the repo for *future* work and charters it (unarmed). A block with `enabled` (**default
+  `false`** = opt-in), `autoArm` (default `false`), the trigger thresholds (`intervalHours`,
+  `commitsSinceScan`, `minIdleToDispatch`) and a `budget`. The lookout dispatches lighthouse as
+  **opportunistic, low-priority background work** — **only** when `enabled` is true, the runnable
+  frontier is free (existing build/review work always wins), **and** a trigger condition holds. It's a
+  fire-and-forget background dispatch under the same best-effort discipline as cartographer; it never
+  preempts real work or holds a tick. The full convention is §2f.
 - `maxConcurrentBuilds` — how many background **builds** (issue track) may be in flight at once
   (**default 1**). The autonomous path dispatches builds in the background (§2d), so a tick never
   blocks on one; this caps how many run in parallel and queues the overflow. Default 1 = one build
@@ -446,6 +454,51 @@ lines are logged when a background unit completes and is reconciled:
 crows-nest: #142 build completed → PR #150 opened (armada:done)
 crows-nest: #150 review pipeline completed → merged (armada:merged)
 ```
+
+### 2f. Opportunistic background recon — dispatch lighthouse when capacity is free
+
+Every dispatch above is **reactive** — it acts on work a human already filed (issues) or a PR that
+already exists. [`lighthouse`](../lighthouse/SKILL.md) is the fleet's **proactive** ship: it surveys
+the repo for *future* work and charters it. crows-nest can dispatch it **autonomously**, but **only
+as the lowest-priority, spare-capacity background activity** — it must **never** preempt, block, or
+compete with real build/review work, and **never hold a tick**. It is a fire-and-forget background
+dispatch under the **identical best-effort/side-channel discipline as cartographer (§8d) and the
+ship's bell (§8c)**: bounded, never fatal, reconciled when it returns.
+
+Dispatch lighthouse on a tick **only when every one of these holds**:
+
+1. **`lighthouse.enabled` is `true`.** Read the `lighthouse` block from `.armada/config.json`
+   (§1). **Default `false`** → crows-nest **never** auto-dispatches lighthouse (manual `/lighthouse`
+   still works for a human any time). This is the master switch, exactly like `cartography` and
+   `autoMerge` — off by default, opt-in.
+2. **Existing work always wins — the runnable frontier is free.** Dispatch lighthouse **only** when
+   the frontier this tick is empty (**horizon clear · harbour clear** — §2c: no issue build and no PR
+   review is runnable *or* in flight), or utilisation is below the configured threshold
+   (`lighthouse.minIdleToDispatch`, default = require fully idle). If **any** build or review is
+   runnable or in flight, **skip or defer lighthouse this tick** — it is the last thing the fleet
+   does, never a competitor for a concurrency slot. lighthouse uses **no** `maxConcurrentBuilds` /
+   `maxConcurrentReviews` budget; it only ever runs when those tracks are quiet.
+3. **A trigger condition holds — there's a reason to survey.** Idle alone isn't enough. Dispatch only
+   when at least one of these is true (cheap to check from `git`/`gh` state):
+   - `lighthouse.intervalHours` has elapsed since the **last lighthouse run** (track it via the last
+     lighthouse-filed issue's timestamp, or a recon marker);
+   - `lighthouse.commitsSinceScan` commits have landed on `baseBranch` since the last scan;
+   - a **major merge/release** just completed this tick (a PR reached `armada:merged`, §3e).
+
+When all three hold, dispatch lighthouse exactly like the §2d/§8d background subagents — via the
+`Agent` tool with `run_in_background: true`, in its own context, **after** the tick's consequential
+work has landed — and **return immediately**; the tick never waits on it. lighthouse files its
+(unarmed, `--no-arm`) backlog issues itself and reports; crows-nest does **not** claim, arm, or
+relabel anything for it. If lighthouse errors, finds nothing, or isn't available, the tick is
+**completely unaffected** — swallow any failure (log at most once, prefixed `crows-nest recon:`) and
+carry on. A failed recon never turns a green tick red, and lighthouse's generated issues stay
+**unarmed** unless `lighthouse.autoArm` is on (lighthouse §5c) — so nothing it discovers is ever
+auto-built without a human arming it.
+
+**Why opportunistic and not on a timer:** binding lighthouse to free capacity means the fleet only
+spends cycles *generating* work when it has no *committed* work to do. The instant a real issue or PR
+appears, the next tick's frontier is non-empty and lighthouse is skipped — existing work wins, every
+time.
 
 ## 3. The PR track — dispatch ready PRs into the review→merge pipeline
 
