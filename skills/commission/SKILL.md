@@ -74,6 +74,11 @@ overwriting** — the user may have hand-tuned it.
   "armadaRepo": "calumjs/ARMADA",  // where self-raised fleet-defect fixes are filed (charter §9)
   "autoArmSelfFixes": false,       // arm self-raised fleet-defects? Default false: human triage.
   "cartography": "off",            // cartographer auto-learn per-repo heuristics? "off" | "proposal" | "on". Default "off".
+  "foghorn": {                     // the spoken narrator (foghorn skill). All optional — defaults shown.
+    "flavour": "a gruff, proud nautical harbourmaster",  // free-text tone steering the spoken line
+    "verbosity": "normal",         // spoken length: "terse" | "normal" | "rich"
+    "gate": "terminal"             // which events speak: "off" | "blocked" | "terminal" | "all" (routine ticks quiet)
+  },
   "commands": {
     "build":  "<detected or omitted>",
     "test":   "<detected or omitted>",
@@ -134,6 +139,16 @@ learning is a deliberate hand edit, never something commissioning enables. The u
 gate). This is distinct from the fleet-defect loop above: `cartography` learns about the *host* repo;
 `autoArmSelfFixes` is about defects in *ARMADA itself*.
 
+`foghorn` holds the defaults for the spoken narrator ([`foghorn`](../foghorn/SKILL.md) — the fleet's
+**voice**, which speaks activity aloud). All three keys are optional with sensible defaults, so write
+the block as a convenience: `flavour` is a short free-text tone (default a gruff, proud **nautical
+harbourmaster**) that steers the wording of what's spoken; `verbosity` (`terse | normal | rich`)
+controls spoken length; `gate` (`off | blocked | terminal | all`, default `terminal`) keeps routine
+ticks quiet, mirroring `notify`. These set *tone*, not behaviour — foghorn is read-only w.r.t. the
+fleet and writing them turns nothing on by itself. To actually **hear** the bell, the user also
+points `bellCommand` at it (see [`foghorn`](../foghorn/SKILL.md) §3):
+`"bellCommand": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/foghorn-say.mjs\""`.
+
 ## 4. Create the GitHub labels
 
 The fleet tracks state entirely through labels, so they must exist. There are two tracks — issues
@@ -183,6 +198,7 @@ and don't arm the loop for them** (both are the user's call):
   bellCommand : "" (default, off) — optional local command the bell also runs (focus-independent alert)
   self-fixes  : armadaRepo=<owner/repo> · autoArmSelfFixes off (default) — fleet-defects filed for human triage
   cartography : off (default) — cartographer never auto-runs; off | proposal | on (run /cartographer by hand any time)
+  foghorn     : flavour="a gruff, proud nautical harbourmaster" · verbosity=normal · gate=terminal — spoken narrator (set bellCommand to hear it)
   labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked, fleet-defect ✓
 
 Next:

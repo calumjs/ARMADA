@@ -4,3 +4,7 @@
 # machine-/content-specific, provisioned by `logbook --setup`; don't commit them.
 .armada/logbook/bin/
 .armada/logbook/cache/
+
+# foghorn — hash-cached spoken clips are machine-/content-specific scratch, keyed
+# by (text + voice + provider); regenerated on demand, never part of the plugin.
+.armada/foghorn/cache/
