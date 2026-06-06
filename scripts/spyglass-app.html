@@ -42,6 +42,16 @@
   .zone-label { position: fixed; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(232,226,207,0.6); pointer-events: none; text-shadow: 0 1px 3px #000; }
   a { color: #d6b878; }
 
+  /* Narrow viewports: the three bottom panels (vantage left, activity centre,
+     status right) crowd each other, so lift the centred activity panel above
+     the bottom row and tighten the side panels' widths. Keeps the readout
+     legible and clear of the vantage/status panels (no overlap). */
+  @media (max-width: 1100px) {
+    #activity { bottom: auto; top: 92px; }
+    #ticker { max-width: 300px; font-size: 12px; }
+    #status { max-width: 240px; }
+  }
+
   /* Keyboard-focusable ship hotspots — an invisible DOM overlay tracking the
      canvas ship positions, so ships are tabbable and announceable. */
   #hotspots { position: fixed; inset: 0; pointer-events: none; }
