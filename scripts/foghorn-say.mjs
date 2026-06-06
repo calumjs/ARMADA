@@ -379,12 +379,13 @@ function playFile(file) {
   let cmd = null;
   let cmdArgs = [];
   if (plat === 'win32') {
-    // PowerShell can play mp3 via the WMP COM object without extra tools.
+    // Play mp3 via System.Windows.Media.MediaPlayer (PresentationCore, in-box).
+    // BOUNDED by design: we open the clip, wait briefly for its NaturalDuration,
+    // then sleep for that length (plus a short tail) clamped to a HARD CAP — so
+    // the player can NEVER busy-wait forever the way the old WMPlayer.OCX
+    // `while ($p.playState -ne 1)` loop could when WMP never raised Stopped.
     cmd = 'powershell';
-    cmdArgs = [
-      '-NoProfile', '-Command',
-      `$p=New-Object -ComObject WMPlayer.OCX; $p.URL='${file.replace(/'/g, "''")}'; $p.controls.play(); Start-Sleep -Seconds 1; while($p.playState -ne 1){Start-Sleep -Milliseconds 200}`,
-    ];
+    cmdArgs = ['-NoProfile', '-Command', windowsPlayScript(file)];
   } else if (plat === 'darwin') {
     cmd = resolveExe('afplay');
     cmdArgs = [file];
@@ -395,13 +396,46 @@ function playFile(file) {
   }
   if (!cmd) return false;
   try {
-    const p = spawn(cmd, cmdArgs, { stdio: 'ignore', detached: plat !== 'win32' });
-    if (plat !== 'win32') p.unref();
+    // Fire-and-forget on EVERY platform: detach + unref so the parent process
+    // (foghorn-say, possibly a crows-nest bellCommand) returns promptly and is
+    // never held open by the player child — satisfies the §8e "never stall a
+    // tick" contract even if audio can't actually play.
+    const p = spawn(cmd, cmdArgs, { stdio: 'ignore', detached: true, windowsHide: true });
+    p.unref();
     p.on('error', () => {});
     return true;
   } catch {
     return false;
   }
+}
+
+// Hard upper bound (seconds) on how long the Windows player may run. Backstops
+// any clip: even if NaturalDuration never resolves, the player self-terminates
+// by this cap, so it can never spin indefinitely.
+const WIN_PLAY_CAP_SECONDS = 30;
+
+// Build the bounded PowerShell one-liner that plays `file` via MediaPlayer.
+// Single-quoted PS literal: escape embedded quotes by doubling them.
+function windowsPlayScript(file) {
+  const psFile = file.replace(/'/g, "''");
+  return [
+    'Add-Type -AssemblyName PresentationCore;',
+    '$p = New-Object System.Windows.Media.MediaPlayer;',
+    `$p.Open([uri]'${psFile}');`,
+    // Wait up to ~2s (20 * 100ms) for the media to open and expose its duration.
+    '$dur = $null;',
+    'for ($i = 0; $i -lt 20; $i++) {',
+    '  if ($p.NaturalDuration.HasTimeSpan) { $dur = $p.NaturalDuration.TimeSpan; break }',
+    '  Start-Sleep -Milliseconds 100',
+    '};',
+    '$p.Play();',
+    // Bounded wait: clip length + 0.5s tail, clamped to the hard cap. If the
+    // duration never resolved, fall back to the cap so we still exit.
+    `$cap = ${WIN_PLAY_CAP_SECONDS};`,
+    'if ($dur) { $wait = [Math]::Min($dur.TotalSeconds + 0.5, $cap) } else { $wait = $cap };',
+    'Start-Sleep -Seconds $wait;',
+    '$p.Stop(); $p.Close()',
+  ].join(' ');
 }
 
 // Speak with the FREE LOCAL OS voice (no cloud key). Windows SAPI/System.Speech,
