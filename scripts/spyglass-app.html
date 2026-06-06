@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ARMADA spyglass — the lookout's view</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0a1622; font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; color: #e8e2cf; overflow: hidden; }
+  #chart { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .panel {
+    position: fixed; backdrop-filter: blur(3px);
+    background: rgba(10, 22, 34, 0.62); border: 1px solid rgba(198, 168, 106, 0.45);
+    border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.5;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.45);
+  }
+  #legend { top: 14px; right: 14px; max-width: 260px; }
+  #legend h2, #ticker h2 { margin: 0 0 6px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #c6a86a; }
+  .leg { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
+  .swatch { width: 14px; height: 14px; border-radius: 50%; flex: none; box-shadow: 0 0 6px rgba(0,0,0,0.6); }
+  #ticker { bottom: 14px; left: 14px; max-width: 420px; }
+  #ticker .held { color: #e7b86a; }
+  #ticker .dispatch { color: #8fd6a0; }
+  #title { top: 14px; left: 14px; padding: 8px 14px; }
+  #title h1 { margin: 0; font-size: 18px; letter-spacing: 0.14em; color: #f0e6c8; }
+  #title .sub { font-size: 11px; opacity: 0.7; letter-spacing: 0.05em; }
+  #status { bottom: 14px; right: 14px; font-size: 11px; opacity: 0.8; }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; margin-left: 6px; }
+  .badge.calm { background: #1d4d3a; color: #9fe6bf; }
+  .badge.choppy { background: #4d451d; color: #e6d79f; }
+  .badge.storm { background: #5a1d1d; color: #e69f9f; }
+  .zone-label { position: fixed; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(232,226,207,0.55); pointer-events: none; text-shadow: 0 1px 3px #000; }
+  a { color: #c6a86a; }
+</style>
+</head>
+<body>
+<canvas id="chart"></canvas>
+
+<div id="title" class="panel">
+  <h1>SPYGLASS</h1>
+  <div class="sub">the lookout's view of the fleet</div>
+</div>
+
+<div id="legend" class="panel">
+  <h2>Legend — ships &amp; states</h2>
+  <div class="leg"><span class="swatch" style="background:#d9c48a"></span>issue · drifting (armada)</div>
+  <div class="leg"><span class="swatch" style="background:#7fb8e6"></span>issue · set sail (underway)</div>
+  <div class="leg"><span class="swatch" style="background:#8fd6a0"></span>issue · reached port (done)</div>
+  <div class="leg"><span class="swatch" style="background:#9fc4e6"></span>PR · arrived (armada)</div>
+  <div class="leg"><span class="swatch" style="background:#c9a0e6"></span>PR · at the docks (reviewing)</div>
+  <div class="leg"><span class="swatch" style="background:#e6c97f"></span>PR · docking (merged)</div>
+  <div class="leg"><span class="swatch" style="background:#8fe6c4"></span>PR · safely arrived (shipped)</div>
+  <div class="leg"><span class="swatch" style="background:#e66a6a"></span>wrecked / storm-bound (blocked)</div>
+</div>
+
+<div id="ticker" class="panel">
+  <h2>Crows-nest vantage — this tick</h2>
+  <div id="tick-body">waiting for first snapshot…</div>
+</div>
+
+<div id="status" class="panel">initialising…</div>
+
+<script>
+"use strict";
+
+// ===========================================================================
+// Spyglass — self-contained, no-server fleet visualisation.
+// Reads ./fleet-state.json (written next to this file by spyglass-snapshot.mjs)
+// and renders four zones: horizon (issues), harbour (PRs), the crows-nest
+// vantage (current tick), and an optional cartography layer. Procedural,
+// repo-seeded coastline; animated water + ship motion; weather = fleet health.
+// ===========================================================================
+
+const canvas = document.getElementById("chart");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0, DPR = 1;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + "px"; canvas.style.height = H + "px";
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  placeZoneLabels();
+}
+window.addEventListener("resize", resize);
+
+// --- Seeded RNG (mulberry32) — deterministic from the repo seed ------------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// --- Value-noise (2D), seeded — gives a stable, recognisable coastline -----
+function makeNoise(seed) {
+  const rng = mulberry32(seed >>> 0);
+  const size = 256;
+  const perm = new Uint8Array(size * 2);
+  const grad = new Float32Array(size);
+  for (let i = 0; i < size; i++) { grad[i] = rng() * 2 - 1; }
+  const p = new Uint8Array(size);
+  for (let i = 0; i < size; i++) p[i] = i;
+  for (let i = size - 1; i > 0; i--) { const j = (rng() * (i + 1)) | 0; const t = p[i]; p[i] = p[j]; p[j] = t; }
+  for (let i = 0; i < size * 2; i++) perm[i] = p[i & (size - 1)];
+  function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function val(ix, iy) { return grad[perm[(ix + perm[iy & 255]) & 255]]; }
+  return function (x, y) {
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const fx = fade(x - x0), fy = fade(y - y0);
+    const v00 = val(x0, y0), v10 = val(x0 + 1, y0);
+    const v01 = val(x0, y0 + 1), v11 = val(x0 + 1, y0 + 1);
+    return lerp(lerp(v00, v10, fx), lerp(v01, v11, fx), fy);
+  };
+}
+
+function fbm(noise, x, y, oct) {
+  let amp = 1, freq = 1, sum = 0, norm = 0;
+  for (let i = 0; i < oct; i++) { sum += amp * noise(x * freq, y * freq); norm += amp; amp *= 0.5; freq *= 2; }
+  return sum / norm;
+}
+
+// --- State -----------------------------------------------------------------
+let state = null;
+let seed = 12345;
+let noise = makeNoise(seed);
+let coastCache = null;        // cached coastline polyline (stable per seed)
+let ships = [];               // animated ship objects
+let t0 = performance.now();
+let lastFetch = 0;
+const POLL_MS = 4000;
+
+// Ship colour by classified state.
+const SHIP_COLORS = {
+  // issues
+  queued: "#d9c48a", underway: "#7fb8e6", done: "#8fd6a0",
+  // prs
+  ready: "#9fc4e6", reviewing: "#c9a0e6", merged: "#e6c97f", shipped: "#8fe6c4", draft: "#b9b29a",
+  // both
+  blocked: "#e66a6a",
+};
+
+// ---------------------------------------------------------------------------
+// Build the animated fleet from a snapshot. Each issue/PR becomes a ship whose
+// home X is its zone band and whose state sets colour + behaviour.
+// ---------------------------------------------------------------------------
+function buildShips(snap) {
+  const out = [];
+  const rng = mulberry32((snap.seed || seed) ^ 0x9e3779b9);
+
+  // Horizon band: issues sail from the far horizon (top) toward port.
+  // X positions by state: drifting far out, underway mid-sea, done near port.
+  (snap.issues || []).forEach((it, i) => {
+    const st = it.ship.state;
+    const depth = st === "queued" ? 0.18 : st === "underway" ? 0.42 : st === "done" ? 0.62 : 0.30;
+    out.push({
+      kind: "issue", number: it.number, title: it.title,
+      state: st, label: it.ship.label, zone: "horizon",
+      baseX: 0.10 + (i % 6) * 0.085 + rng() * 0.03,
+      baseY: depth + rng() * 0.05,
+      phase: rng() * Math.PI * 2, speed: 0.2 + rng() * 0.3,
+      size: 16, color: SHIP_COLORS[st] || "#ccc",
+    });
+  });
+
+  // Harbour band: PRs cluster near the bottom-right coastline / docks.
+  (snap.prs || []).forEach((pr, i) => {
+    const st = pr.ship.state;
+    const depth = st === "ready" ? 0.74 : st === "reviewing" ? 0.82 : 0.90;
+    out.push({
+      kind: "pr", number: pr.number, title: pr.title,
+      state: st, label: pr.ship.label, zone: "harbour",
+      baseX: 0.58 + (i % 5) * 0.075 + rng() * 0.03,
+      baseY: depth + rng() * 0.04,
+      phase: rng() * Math.PI * 2, speed: 0.15 + rng() * 0.2,
+      size: 18, color: SHIP_COLORS[st] || "#ccc",
+    });
+  });
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Fetch the snapshot (live polling). file:// fetch of a sibling JSON works in
+// most browsers; if it's blocked, we keep the last good state and note it.
+// ---------------------------------------------------------------------------
+async function poll() {
+  try {
+    const res = await fetch("./fleet-state.json?_=" + Date.now(), { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const snap = await res.json();
+    applySnapshot(snap);
+    setStatus(snap, true);
+  } catch (e) {
+    setStatus(state, false, e.message);
+  }
+}
+
+function applySnapshot(snap) {
+  const newSeed = (snap.seed >>> 0) || 12345;
+  if (newSeed !== seed) { seed = newSeed; noise = makeNoise(seed); coastCache = null; }
+  state = snap;
+  ships = buildShips(snap);
+  renderTicker(snap);
+}
+
+function setStatus(snap, ok, err) {
+  const el = document.getElementById("status");
+  if (!snap) { el.textContent = err ? ("no snapshot — " + err) : "no snapshot yet"; return; }
+  const w = snap.tick ? snap.tick.weather : "calm";
+  const cart = snap.cartography && snap.cartography.present ? "cartography on" : "cartography off";
+  const deg = snap.degraded ? " · " + snap.degraded : "";
+  el.innerHTML = `${snap.repo || "?"} · seed ${snap.seed} · ${cart}` +
+    `<span class="badge ${w}">${w}</span>` +
+    `<br>updated ${new Date(snap.generatedAt).toLocaleTimeString()} · poll ${ok ? "live" : "stale"}${deg}`;
+}
+
+function renderTicker(snap) {
+  const body = document.getElementById("tick-body");
+  if (!snap || !snap.tick) { body.textContent = "no tick data"; return; }
+  const tk = snap.tick;
+  let html = `<div>${tk.summary}</div>`;
+  if (snap.degraded) html += `<div class="held">${snap.degraded}</div>`;
+  if (tk.dispatched && tk.dispatched.length) {
+    html += `<div class="dispatch">▸ dispatching:</div>`;
+    for (const d of tk.dispatched.slice(0, 5))
+      html += `<div class="dispatch">&nbsp;&nbsp;${d.kind} #${d.number} — ${d.action}</div>`;
+  }
+  if (tk.held && tk.held.length) {
+    html += `<div class="held">▾ held:</div>`;
+    for (const h of tk.held.slice(0, 5))
+      html += `<div class="held">&nbsp;&nbsp;${h.kind} #${h.number} — ${h.reason}</div>`;
+  }
+  if ((!tk.dispatched || !tk.dispatched.length) && (!tk.held || !tk.held.length))
+    html += `<div>horizon clear · harbour clear</div>`;
+  body.innerHTML = html;
+}
+
+// ---------------------------------------------------------------------------
+// Zone labels (DOM, positioned over the canvas).
+// ---------------------------------------------------------------------------
+function placeZoneLabels() {
+  const defs = [
+    { id: "zl-horizon", text: "↑ Horizon — the new-issue track", x: 0.04, y: 0.30 },
+    { id: "zl-harbour", text: "Harbour — the ready-PR pipeline", x: 0.55, y: 0.70 },
+    { id: "zl-cart", text: "Cartography — learned chart", x: 0.04, y: 0.92 },
+  ];
+  for (const d of defs) {
+    let el = document.getElementById(d.id);
+    if (!el) { el = document.createElement("div"); el.id = d.id; el.className = "zone-label"; document.body.appendChild(el); }
+    el.textContent = d.text;
+    el.style.left = (d.x * W) + "px";
+    el.style.top = (d.y * H) + "px";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+function weatherOf() { return (state && state.tick && state.tick.weather) || "calm"; }
+
+function drawSky(time) {
+  const w = weatherOf();
+  let top, bot;
+  if (w === "storm") { top = "#1a1320"; bot = "#2a2030"; }
+  else if (w === "choppy") { top = "#0e2236"; bot = "#16324a"; }
+  else { top = "#0c2c44"; bot = "#15466a"; }
+  const g = ctx.createLinearGradient(0, 0, 0, H * 0.5);
+  g.addColorStop(0, top); g.addColorStop(1, bot);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H * 0.55);
+
+  // Stars / drifting clouds depending on weather.
+  if (w === "storm") {
+    // lightning flicker
+    if (Math.sin(time * 0.003) > 0.985) { ctx.fillStyle = "rgba(255,255,255,0.18)"; ctx.fillRect(0, 0, W, H * 0.55); }
+    ctx.fillStyle = "rgba(20,16,26,0.4)";
+    for (let i = 0; i < 5; i++) {
+      const cx = ((i * 0.27 + time * 0.00003) % 1) * W;
+      ctx.beginPath(); ctx.ellipse(cx, H * 0.12 + i * 14, 120, 30, 0, 0, Math.PI * 2); ctx.fill();
+    }
+  } else {
+    const rng = mulberry32(seed ^ 0xabcdef);
+    ctx.fillStyle = "rgba(232,226,207,0.5)";
+    for (let i = 0; i < 60; i++) {
+      const x = rng() * W, y = rng() * H * 0.4;
+      const tw = 0.5 + 0.5 * Math.sin(time * 0.002 + i);
+      ctx.globalAlpha = 0.2 + 0.4 * tw; ctx.fillRect(x, y, 1.6, 1.6);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Procedural coastline + islands, cached per seed (stable run-to-run).
+function buildCoast() {
+  const pts = [];
+  const steps = 220;
+  for (let i = 0; i <= steps; i++) {
+    const x = i / steps;
+    // Coastline runs along the lower-right; height modulated by fbm noise.
+    const n = fbm(noise, x * 3.2, 7.3, 4);
+    const base = 0.58 + 0.10 * n;
+    pts.push({ x, y: base });
+  }
+  // Islands: a few seeded blobs in the mid-sea.
+  const rng = mulberry32(seed ^ 0x13572468);
+  const islands = [];
+  const count = 2 + ((seed >> 3) % 3);
+  for (let i = 0; i < count; i++) {
+    islands.push({ x: 0.2 + rng() * 0.6, y: 0.42 + rng() * 0.18, r: 0.03 + rng() * 0.04, seed: (rng() * 1e9) | 0 });
+  }
+  return { pts, islands };
+}
+
+function drawSea(time) {
+  const w = weatherOf();
+  const seaTop = H * 0.34;
+  const g = ctx.createLinearGradient(0, seaTop, 0, H);
+  if (w === "storm") { g.addColorStop(0, "#1b3344"); g.addColorStop(1, "#0a1622"); }
+  else if (w === "choppy") { g.addColorStop(0, "#1d5070"); g.addColorStop(1, "#0c2436"); }
+  else { g.addColorStop(0, "#2476a0"); g.addColorStop(1, "#0e3050"); }
+  ctx.fillStyle = g; ctx.fillRect(0, seaTop, W, H - seaTop);
+
+  // Animated wave bands.
+  const amp = w === "storm" ? 9 : w === "choppy" ? 5 : 2.5;
+  const speed = w === "storm" ? 0.004 : w === "choppy" ? 0.0026 : 0.0015;
+  ctx.strokeStyle = w === "storm" ? "rgba(180,200,220,0.10)" : "rgba(200,230,255,0.10)";
+  ctx.lineWidth = 1.2;
+  for (let row = 0; row < 18; row++) {
+    const y = seaTop + (row / 18) * (H - seaTop);
+    ctx.beginPath();
+    for (let x = 0; x <= W; x += 12) {
+      const yy = y + Math.sin(x * 0.02 + time * speed + row) * amp * (0.4 + row / 18);
+      x === 0 ? ctx.moveTo(x, yy) : ctx.lineTo(x, yy);
+    }
+    ctx.stroke();
+  }
+}
+
+function drawLand() {
+  if (!coastCache) coastCache = buildCoast();
+  const { pts, islands } = coastCache;
+
+  // Mainland (lower-right coastline filled toward the corner).
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (const p of pts) ctx.lineTo(p.x * W, (p.y + 0.30) * H);
+  ctx.lineTo(W, H); ctx.closePath();
+  const lg = ctx.createLinearGradient(0, H * 0.6, 0, H);
+  lg.addColorStop(0, "#3d5a3a"); lg.addColorStop(1, "#243a26");
+  ctx.fillStyle = lg; ctx.fill();
+  // beach line
+  ctx.strokeStyle = "rgba(214,196,138,0.5)"; ctx.lineWidth = 2;
+  ctx.beginPath();
+  pts.forEach((p, i) => { const X = p.x * W, Y = (p.y + 0.30) * H; i === 0 ? ctx.moveTo(X, Y) : ctx.lineTo(X, Y); });
+  ctx.stroke();
+
+  // Islands.
+  for (const is of islands) {
+    const cx = is.x * W, cy = is.y * H, rr = is.r * Math.min(W, H);
+    const ig = ctx.createRadialGradient(cx, cy, rr * 0.2, cx, cy, rr);
+    ig.addColorStop(0, "#4a6a44"); ig.addColorStop(1, "#2a4030");
+    ctx.fillStyle = ig;
+    ctx.beginPath(); ctx.ellipse(cx, cy, rr, rr * 0.7, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "rgba(214,196,138,0.35)"; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+}
+
+// Cartography layer — optional. Drawn as a faint chart grid + compass rose when
+// .armada/cartography/ is present; omitted (and noted) when absent.
+function drawCartography() {
+  if (!(state && state.cartography && state.cartography.present)) return;
+  ctx.save();
+  ctx.strokeStyle = "rgba(198,168,106,0.10)"; ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 64) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 64) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  // compass rose, lower-left
+  const cx = W * 0.12, cy = H * 0.86, r = 34;
+  ctx.strokeStyle = "rgba(198,168,106,0.4)"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawShip(s, time) {
+  const sway = weatherOf() === "storm" ? 0.06 : weatherOf() === "choppy" ? 0.035 : 0.018;
+  const drift = Math.sin(time * 0.001 * s.speed + s.phase) * 0.012;
+  const bob = Math.sin(time * 0.0026 + s.phase) * 6;
+  const x = (s.baseX + drift) * W;
+  const y = s.baseY * H + bob;
+  const roll = Math.sin(time * 0.0022 + s.phase) * sway;
+  const sz = s.size;
+
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate(roll);
+
+  // wake
+  ctx.fillStyle = "rgba(255,255,255,0.08)";
+  ctx.beginPath(); ctx.ellipse(0, sz * 0.5, sz * 1.2, sz * 0.4, 0, 0, Math.PI * 2); ctx.fill();
+
+  // hull
+  ctx.fillStyle = s.color;
+  ctx.beginPath();
+  ctx.moveTo(-sz, 0); ctx.lineTo(sz, 0);
+  ctx.lineTo(sz * 0.6, sz * 0.55); ctx.lineTo(-sz * 0.6, sz * 0.55);
+  ctx.closePath(); ctx.fill();
+
+  // mast + sail
+  ctx.strokeStyle = "rgba(20,20,20,0.7)"; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -sz * 1.3); ctx.stroke();
+  ctx.fillStyle = s.state === "blocked" ? "rgba(120,30,30,0.9)" : "rgba(245,240,225,0.92)";
+  ctx.beginPath();
+  ctx.moveTo(2, -sz * 1.25); ctx.lineTo(sz * 0.9, -sz * 0.35); ctx.lineTo(2, -sz * 0.35);
+  ctx.closePath(); ctx.fill();
+
+  // blocked = a storm cloud + tilt
+  if (s.state === "blocked") {
+    ctx.fillStyle = "rgba(60,40,60,0.85)";
+    ctx.beginPath(); ctx.ellipse(0, -sz * 1.7, sz * 0.9, sz * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "rgba(255,240,140,0.9)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-3, -sz * 1.5); ctx.lineTo(2, -sz * 1.1); ctx.lineTo(-2, -sz * 1.1); ctx.lineTo(3, -sz * 0.7); ctx.stroke();
+  }
+
+  ctx.restore();
+
+  // label
+  ctx.fillStyle = "rgba(232,226,207,0.85)";
+  ctx.font = "11px Georgia";
+  ctx.textAlign = "center";
+  const tag = (s.kind === "issue" ? "#" : "PR#") + s.number;
+  ctx.fillText(tag, x, y - sz * 1.7 - 4);
+}
+
+function frame(now) {
+  const time = now - t0;
+  if (now - lastFetch > POLL_MS) { lastFetch = now; poll(); }
+
+  ctx.clearRect(0, 0, W, H);
+  drawSky(time);
+  drawSea(time);
+  drawCartography();
+  drawLand();
+
+  // rain streaks in a storm
+  if (weatherOf() === "storm") {
+    ctx.strokeStyle = "rgba(180,200,220,0.18)"; ctx.lineWidth = 1;
+    const rng = mulberry32((seed ^ (Math.floor(time / 60))) >>> 0);
+    for (let i = 0; i < 120; i++) {
+      const x = rng() * W, y = rng() * H;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 4, y + 14); ctx.stroke();
+    }
+  }
+
+  for (const s of ships) drawShip(s, time);
+
+  if (!ships.length) {
+    ctx.fillStyle = "rgba(232,226,207,0.6)";
+    ctx.font = "16px Georgia"; ctx.textAlign = "center";
+    const msg = state && state.degraded ? state.degraded : "an empty sea — no armed issues or PRs";
+    ctx.fillText(msg, W / 2, H * 0.45);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+// --- Boot ------------------------------------------------------------------
+resize();
+poll();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
