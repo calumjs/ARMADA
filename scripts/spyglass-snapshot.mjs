@@ -178,6 +178,41 @@ function deriveTick(issues, prs, config) {
 }
 
 // ---------------------------------------------------------------------------
+// Recent-throughput indicator (issue #54, D) — a small, read-only rollup of
+// activity derived from the `updatedAt` already pulled. Bucketed by age so the
+// view can draw a "tide" / sparkline of how busy the fleet has been lately.
+// Buckets: <6h, <24h, <3d, <7d, older. Per-zone counts plus blocked tally.
+// No extra query, no mutation — pure arithmetic over the snapshot.
+// ---------------------------------------------------------------------------
+function deriveThroughput(issues, prs) {
+  const now = Date.now();
+  const HOUR = 3600e3;
+  const edges = [6 * HOUR, 24 * HOUR, 72 * HOUR, 168 * HOUR];
+  const buckets = [0, 0, 0, 0, 0]; // <6h, <24h, <3d, <7d, older
+  const all = [...issues, ...prs];
+  for (const u of all) {
+    const ts = Date.parse(u.updatedAt || u.createdAt || '');
+    if (!Number.isFinite(ts)) { buckets[4]++; continue; }
+    const age = now - ts;
+    let i = edges.findIndex((e) => age < e);
+    if (i < 0) i = 4;
+    buckets[i]++;
+  }
+  return {
+    // sparkline-friendly: recent → older, newest bucket first
+    buckets,
+    bucketLabels: ['<6h', '<24h', '<3d', '<7d', 'older'],
+    horizon: issues.length,
+    harbour: prs.length,
+    blocked:
+      issues.filter((i) => i.ship.state === 'blocked').length +
+      prs.filter((p) => p.ship.state === 'blocked').length,
+    // "tide" mark — backlog depth, 0..1, saturating at 12 units
+    tide: Math.min(1, all.length / 12),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Seed from repo identity → a stable, recognisable coastline run-to-run.
 // A simple deterministic 32-bit hash of the repo slug.
 // ---------------------------------------------------------------------------
@@ -217,23 +252,31 @@ function snapshot({ label, repo, commissioned }) {
   const rawIssues = commissioned
     ? ghJson([
         'issue', 'list', ...repoArgs, '--label', label, '--state', 'open',
-        '--json', 'number,title,labels,createdAt,assignees,author,body', '--limit', '50',
+        '--json', 'number,title,labels,createdAt,updatedAt,assignees,author,body', '--limit', '50',
       ])
     : null;
   const rawPrs = commissioned
     ? ghJson([
         'pr', 'list', ...repoArgs, '--label', label, '--state', 'open',
-        '--json', 'number,title,isDraft,labels,headRefName,baseRefName,mergeable,statusCheckRollup,updatedAt', '--limit', '50',
+        '--json', 'number,title,isDraft,labels,headRefName,baseRefName,mergeable,statusCheckRollup,createdAt,updatedAt', '--limit', '50',
       ])
     : null;
 
   const ghOk = rawIssues !== null || rawPrs !== null;
+
+  // Read-only deep link to the unit on GitHub, derived from repo + number — no
+  // extra query, just a string composed from data already in hand. Used by the
+  // detail card (issue #54); omitted when the repo is unknown.
+  const unitUrl = (kind, n) =>
+    repo ? `https://github.com/${repo}/${kind === 'pr' ? 'pull' : 'issues'}/${n}` : null;
 
   const issues = (rawIssues || []).map((it) => ({
     number: it.number,
     title: it.title,
     author: it.author && it.author.login,
     createdAt: it.createdAt,
+    updatedAt: it.updatedAt,
+    url: unitUrl('issue', it.number),
     ship: classifyIssue(it.labels),
   }));
 
@@ -251,7 +294,9 @@ function snapshot({ label, repo, commissioned }) {
       title: pr.title,
       isDraft: pr.isDraft,
       headRefName: pr.headRefName,
+      createdAt: pr.createdAt,
       updatedAt: pr.updatedAt,
+      url: unitUrl('pr', pr.number),
       ci,
       ship: classifyPr(pr.labels, pr.isDraft),
     };
@@ -259,9 +304,10 @@ function snapshot({ label, repo, commissioned }) {
 
   const cartography = readCartography();
   const tick = deriveTick(issues, prs, {});
+  const throughput = deriveThroughput(issues, prs);
 
   return {
-    schema: 1,
+    schema: 2,
     generatedAt: new Date().toISOString(),
     repo: repo || 'unknown',
     triggerLabel: label,
@@ -276,6 +322,7 @@ function snapshot({ label, repo, commissioned }) {
     issues,
     prs,
     tick,
+    throughput,
   };
 }
 

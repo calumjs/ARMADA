@@ -68,11 +68,34 @@ the chart. Held units show their hold reason (crows-nest §2c):
 
 **Fleet health reads at a glance.** The sky/sea weather reflects overall state: **calm** seas when
 the fleet is healthy, **choppy** water when work is in flight, and a **storm** (rough water,
-lightning, rain) when any unit is `armada:blocked`.
+seizure-safe lightning, rain) when any unit is `armada:blocked`.
 
-The **landscape is procedurally generated** — sea, coastline, and islands from value-noise (fBm) —
-and **seeded from the repo identity**, so a given repo gets a stable, recognisable coastline
-run-to-run. Water and ships are animated: this is *activity you can watch*, not a static plot.
+The **landscape is procedurally generated** — sea, coastline, and islands — and **seeded from the
+repo identity**, so a given repo gets a stable, recognisable coastline run-to-run. The view is
+research-grounded and *alive*:
+
+- a **layered sum-of-sines ocean** (≈14 cascading travelling waves) with moving crests, **specular
+  glints**, **foam** at the peaks, and a subsurface depth gradient — not a flat plane;
+- an ambient **wind/current particle-trail layer** (the earth.nullschool method) for faint drifting
+  spray;
+- **ships with Kelvin-V wakes** and bow spray that **bob and pitch with the local wave height**, and
+  travel their journey with **eased enter / update / exit** motion (new units fade-and-grow in,
+  shipped/merged ones sail off and fade);
+- an optional **portolan cartography layer** — compass roses with a **rhumb-line network** (main
+  winds bold, half/quarter winds subtler), a graticule, parchment tint, and a cartouche;
+- **interaction**: hover / click / keyboard-focus a ship for a **detail card** (number, title,
+  state, age, link to the issue/PR), plus an **activity readout** (per-zone counts, a recent-
+  throughput sparkline, and a "tide" backlog mark).
+
+### Accessibility (non-negotiable)
+
+spyglass honours **`prefers-reduced-motion`** — it drops to a calm, near-static render (no drifting
+particles, no wave motion, instant state changes) conveying the same information. It uses a
+**colour-blind-safe palette** with **non-colour encoding** (each state has a distinct hull shape,
+flag, heading, and a printed label, not colour alone), provides a **text/ARIA scene summary** for
+screen readers, makes ships **keyboard-focusable**, and never flashes faster than 3/s. The canvas is
+**devicePixelRatio-crisp**, drawn on a `requestAnimationFrame` loop that throttles gracefully when
+many units are on screen.
 
 ## 0. Discover config (degrades gracefully)
 
@@ -154,11 +177,14 @@ fresh snapshot is picked up without a reload. Two ways to keep the snapshot fres
 ## 4. Cartography layer — optional enrichment
 
 If `.armada/cartography/` is present (the repo's learned chart, e.g. from a cartographer skill), the
-snapshot records it and the view draws the **cartography layer** — a faint chart grid and a compass
-rose over the sea. **This is optional and independent.** If the directory is **absent**, spyglass
-renders **fully without it**: the layer degrades to **off**, the status panel says
-`cartography off`, and nothing errors. spyglass never blocks on or assumes the cartography dir
-exists.
+snapshot records it and the view draws the **portolan cartography layer** — a parchment tint, a
+faint graticule, **compass roses with a rhumb-line network** (main winds bold, half/quarter winds
+subtler, per the historical convention), a decorative cartouche, and a few learned-heuristic
+annotations from the chart files. **This is optional and independent.** If the directory is
+**absent**, spyglass renders **fully without it**: the layer degrades to **off**, the status panel
+says `cartography off`, the "Cartography — learned chart" label is hidden (so it never collides with
+the bottom-left vantage panel, per #52), and nothing errors. spyglass never blocks on or assumes the
+cartography dir exists.
 
 ## 5. Degrades gracefully
 
@@ -180,11 +206,28 @@ plugin-cache rule — relative paths break once a plugin is installed to its cac
   write + open driver (Node built-ins + `gh` only, dependency-free to match
   `scripts/validate-skills.mjs`).
 - **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-app.html`** — the self-contained, no-server
-  HTML + `<canvas>`/JS visualisation. Copied next to the snapshot at run time so it can fetch
-  `./fleet-state.json` locally with no server.
+  HTML + `<canvas>`/JS visualisation (vanilla canvas/JS, **no external/CDN libraries, no build
+  step**). Copied next to the snapshot at run time so it can fetch `./fleet-state.json` locally with
+  no server.
 
 The **only** files written at run time are the snapshot (`fleet-state.json`) and the rendered HTML
 (`spyglass.html`), in the scratch/output dir — never the tracked repo.
+
+### Dev-only sea-trial harness (not shipped into the view)
+
+Because "beautiful" can't be asserted blind, a repeatable visual-regression harness ships alongside
+the app for re-running the closed visual-feedback loop on demand (and on future spyglass changes).
+It is **read-only** (it never touches GitHub or the repo) and writes only PNGs + a scratch copy of
+the app into an output dir — it is **not** loaded into the rendered view:
+
+- **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-fixtures.mjs`** — deterministic synthetic snapshots
+  (calm/1 unit, busy/choppy, storm-with-blocked, cartography on, narrow, empty) matching the same
+  schema the snapshot script writes, for states the live fleet doesn't currently exhibit.
+- **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-trial.mjs`** — serves the output dir over a throwaway
+  localhost server (file:// blocks the app's `fetch`) and drives the already-available Playwright
+  CLI to capture each canonical state at a wide and a narrow viewport plus a **reduced-motion**
+  render. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-trial.mjs"` (optional `--only <names>`,
+  `--channel chrome`, `--snapshot <fleet-state.json>` to also trial a real read-only snapshot).
 
 ## Inputs
 

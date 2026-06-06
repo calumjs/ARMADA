@@ -15,78 +15,154 @@
     border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.5;
     box-shadow: 0 4px 20px rgba(0,0,0,0.45);
   }
-  #legend { top: 14px; right: 14px; max-width: 260px; }
-  #legend h2, #ticker h2 { margin: 0 0 6px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #c6a86a; }
-  .leg { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
-  .swatch { width: 14px; height: 14px; border-radius: 50%; flex: none; box-shadow: 0 0 6px rgba(0,0,0,0.6); }
+  #legend { top: 14px; right: 14px; max-width: 280px; }
+  #legend h2, #ticker h2, #activity h2 { margin: 0 0 6px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #c6a86a; }
+  .leg { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+  .leg .glyph { width: 20px; height: 16px; flex: none; }
+  .leg .nm { white-space: nowrap; }
   #ticker { bottom: 14px; left: 14px; max-width: 420px; }
-  #ticker .held { color: #e7b86a; }
-  #ticker .dispatch { color: #8fd6a0; }
+  #ticker .held { color: #f0a868; }
+  #ticker .dispatch { color: #7fd0e6; }
   #title { top: 14px; left: 14px; padding: 8px 14px; }
   #title h1 { margin: 0; font-size: 18px; letter-spacing: 0.14em; color: #f0e6c8; }
   #title .sub { font-size: 11px; opacity: 0.7; letter-spacing: 0.05em; }
-  #status { bottom: 14px; right: 14px; font-size: 11px; opacity: 0.8; }
+  #status { bottom: 14px; right: 14px; font-size: 11px; opacity: 0.85; max-width: 360px; text-align: right; }
+  #activity { bottom: 14px; left: 50%; transform: translateX(-50%); min-width: 240px; text-align: center; }
+  #activity .row { display: flex; align-items: center; justify-content: center; gap: 12px; }
+  #activity .zc { font-size: 12px; letter-spacing: 0.04em; }
+  #activity .zc b { color: #f0e6c8; font-size: 15px; }
+  #spark { display: block; margin: 6px auto 0; }
+  #tide-wrap { margin-top: 5px; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: #9fb6c8; }
+  #tide { height: 5px; border-radius: 3px; background: rgba(127,182,230,0.18); overflow: hidden; margin-top: 2px; }
+  #tide > i { display: block; height: 100%; background: linear-gradient(90deg,#3d8fb0,#7fd0e6); }
   .badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; margin-left: 6px; }
   .badge.calm { background: #1d4d3a; color: #9fe6bf; }
-  .badge.choppy { background: #4d451d; color: #e6d79f; }
-  .badge.storm { background: #5a1d1d; color: #e69f9f; }
-  .zone-label { position: fixed; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(232,226,207,0.55); pointer-events: none; text-shadow: 0 1px 3px #000; }
-  a { color: #c6a86a; }
+  .badge.choppy { background: #34406a; color: #b9c8f0; }
+  .badge.storm { background: #5a2a1d; color: #f0b89f; }
+  .zone-label { position: fixed; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(232,226,207,0.6); pointer-events: none; text-shadow: 0 1px 3px #000; }
+  a { color: #d6b878; }
+
+  /* Keyboard-focusable ship hotspots — an invisible DOM overlay tracking the
+     canvas ship positions, so ships are tabbable and announceable. */
+  #hotspots { position: fixed; inset: 0; pointer-events: none; }
+  .ship-hotspot {
+    position: absolute; transform: translate(-50%,-50%); border-radius: 50%;
+    pointer-events: auto; background: transparent; border: 0; padding: 0; cursor: pointer;
+    outline-offset: 3px;
+  }
+  .ship-hotspot:focus-visible { outline: 2px solid #f0e6c8; box-shadow: 0 0 0 4px rgba(240,230,200,0.25); }
+
+  /* Detail card revealed on hover / focus / click. */
+  #card {
+    position: fixed; z-index: 20; display: none; max-width: 320px;
+    background: rgba(9,18,28,0.94); border: 1px solid rgba(198,168,106,0.6);
+    border-radius: 8px; padding: 10px 12px; box-shadow: 0 6px 26px rgba(0,0,0,0.6);
+    font-size: 13px; line-height: 1.5; pointer-events: auto;
+  }
+  #card .hd { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  #card .num { font-weight: bold; color: #f0e6c8; }
+  #card .st { font-size: 11px; padding: 1px 7px; border-radius: 9px; border: 1px solid rgba(255,255,255,0.25); }
+  #card .ttl { color: #e8e2cf; margin: 2px 0 6px; }
+  #card .meta { font-size: 11px; opacity: 0.8; }
+  #card a { font-size: 12px; }
+
+  .visually-hidden {
+    position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+  }
 </style>
 </head>
 <body>
 <canvas id="chart"></canvas>
+
+<!-- Live, screen-reader scene summary (ARIA). Updated each snapshot. -->
+<div id="scene-summary" class="visually-hidden" role="region" aria-label="Fleet scene summary" aria-live="polite"></div>
+
+<!-- Keyboard-focusable ship hotspots overlay (positions synced each frame). -->
+<div id="hotspots" aria-label="Fleet ships"></div>
 
 <div id="title" class="panel">
   <h1>SPYGLASS</h1>
   <div class="sub">the lookout's view of the fleet</div>
 </div>
 
-<div id="legend" class="panel">
+<div id="legend" class="panel" aria-label="Legend: ships and states">
   <h2>Legend — ships &amp; states</h2>
-  <div class="leg"><span class="swatch" style="background:#d9c48a"></span>issue · drifting (armada)</div>
-  <div class="leg"><span class="swatch" style="background:#7fb8e6"></span>issue · set sail (underway)</div>
-  <div class="leg"><span class="swatch" style="background:#8fd6a0"></span>issue · reached port (done)</div>
-  <div class="leg"><span class="swatch" style="background:#9fc4e6"></span>PR · arrived (armada)</div>
-  <div class="leg"><span class="swatch" style="background:#c9a0e6"></span>PR · at the docks (reviewing)</div>
-  <div class="leg"><span class="swatch" style="background:#e6c97f"></span>PR · docking (merged)</div>
-  <div class="leg"><span class="swatch" style="background:#8fe6c4"></span>PR · safely arrived (shipped)</div>
-  <div class="leg"><span class="swatch" style="background:#e66a6a"></span>wrecked / storm-bound (blocked)</div>
+  <!-- filled at runtime: glyph (shape) + label, non-colour encoding -->
 </div>
 
-<div id="ticker" class="panel">
+<div id="ticker" class="panel" aria-label="Crows-nest vantage, this tick">
   <h2>Crows-nest vantage — this tick</h2>
   <div id="tick-body">waiting for first snapshot…</div>
 </div>
 
-<div id="status" class="panel">initialising…</div>
+<div id="activity" class="panel" aria-label="Activity readout">
+  <h2 class="visually-hidden">Activity</h2>
+  <div class="row">
+    <span class="zc">Horizon <b id="ac-h">0</b></span>
+    <span class="zc">Harbour <b id="ac-p">0</b></span>
+    <span class="zc">Blocked <b id="ac-b">0</b></span>
+  </div>
+  <canvas id="spark" width="220" height="34" aria-label="Recent throughput sparkline"></canvas>
+  <div id="tide-wrap">Tide — backlog depth<div id="tide"><i style="width:0%"></i></div></div>
+</div>
+
+<div id="status" class="panel" aria-label="Snapshot status">initialising…</div>
+
+<div id="card" role="dialog" aria-label="Ship detail"></div>
 
 <script>
 "use strict";
 
 // ===========================================================================
-// Spyglass — self-contained, no-server fleet visualisation.
+// Spyglass — self-contained, no-server, dependency-free fleet visualisation.
+//
 // Reads ./fleet-state.json (written next to this file by spyglass-snapshot.mjs)
-// and renders four zones: horizon (issues), harbour (PRs), the crows-nest
-// vantage (current tick), and an optional cartography layer. Procedural,
-// repo-seeded coastline; animated water + ship motion; weather = fleet health.
+// and renders a living sea-chart of the fleet:
+//   • a layered sum-of-sines ocean (moving crests, specular glints, foam,
+//     subsurface depth gradient) — no longer a flat value-noise plane;
+//   • an ambient wind/current particle-trail layer (earth.nullschool method:
+//     draw, drift, recycle a fraction each tick) for faint sea-spray streaks;
+//   • atmosphere that reads fleet health — sky gradient + calm/choppy/storm,
+//     storm adding rain and SEIZURE-SAFE lightning (<=3 flashes/sec, ramped);
+//   • ships with Kelvin-V wakes + bow spray that bob/pitch with the local wave
+//     height, eased enter/update/exit motion, and NON-COLOUR state encoding
+//     (hull shape + flag + heading + printed label) for colour-blind safety;
+//   • an optional portolan cartography layer (compass roses + rhumb-line
+//     network, graticule, parchment tint, cartouche) — degrades cleanly to off;
+//   • interaction: hover/click/focus a ship for a detail card (number, title,
+//     state, age, link); keyboard-focusable ships; an activity readout with a
+//     throughput sparkline + a "tide" backlog mark.
+//
+// Accessibility is non-negotiable: prefers-reduced-motion -> a calm near-static
+// render; a colour-blind-safe palette + non-colour encoding; an ARIA scene
+// summary for screen readers; no flashing faster than 3/s; rAF loop;
+// devicePixelRatio-crisp canvas; graceful throttling when many units are shown.
 // ===========================================================================
 
 const canvas = document.getElementById("chart");
 const ctx = canvas.getContext("2d");
 let W = 0, H = 0, DPR = 1;
 
+// --- Reduced motion: media query OR an explicit ?reduced=1 hook (the trial
+//     harness forces it via the URL; users get it from their OS setting). -----
+const RM_QUERY = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false, addEventListener() {} };
+const RM_FORCED = /[?&]reduced=1\b/.test(location.search);
+function reducedMotion() { return RM_FORCED || RM_QUERY.matches; }
+
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
   W = window.innerWidth; H = window.innerHeight;
-  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
   canvas.style.width = W + "px"; canvas.style.height = H + "px";
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  initParticles();
   placeZoneLabels();
+  if (reducedMotion()) renderOnce();   // static render: redraw on resize
 }
 window.addEventListener("resize", resize);
 
-// --- Seeded RNG (mulberry32) — deterministic from the repo seed ------------
+// --- Seeded RNG (mulberry32) — deterministic from the repo seed -------------
 function mulberry32(a) {
   return function () {
     a |= 0; a = (a + 0x6D2B79F5) | 0;
@@ -96,7 +172,7 @@ function mulberry32(a) {
   };
 }
 
-// --- Value-noise (2D), seeded — gives a stable, recognisable coastline -----
+// --- Value-noise (2D), seeded — gives a stable, recognisable coastline ------
 function makeNoise(seed) {
   const rng = mulberry32(seed >>> 0);
   const size = 256;
@@ -125,69 +201,154 @@ function fbm(noise, x, y, oct) {
   return sum / norm;
 }
 
+// --- Colour-blind-safe palette ---------------------------------------------
+// Drawn from an Okabe-Ito-derived set (distinguishable across the common
+// dichromacies). Colour is NEVER the sole channel — each ship also carries a
+// distinct hull SHAPE, a flag, a heading, and a printed label.
+const SHIP_COLORS = {
+  queued:   "#7fb8e6", // sky blue    — drifting issue
+  underway: "#56b4e9", // bright blue — set sail
+  done:     "#2bb07f", // teal-green  — reached port
+  ready:    "#9ad0ec", // pale blue   — PR arrived
+  reviewing:"#cc79a7", // mauve       — at the docks
+  merged:   "#e6a93c", // amber       — docking
+  shipped:  "#2fae8e", // green       — safely arrived
+  draft:    "#b9b29a", // muted       — fitting out
+  blocked:  "#e05c4a", // vermilion   — wrecked / storm-bound
+};
+// Hull SHAPE per state (non-colour encoding). 0=sloop,1=cutter,2=barque,
+// 3=galleon,4=wreck.
+const SHIP_SHAPE = {
+  queued: 0, underway: 1, done: 2, ready: 1, reviewing: 2, merged: 3, shipped: 3, draft: 0, blocked: 4,
+};
+const STATE_LABEL = {
+  queued: "drifting", underway: "set sail", done: "reached port",
+  ready: "arrived", reviewing: "at the docks", merged: "docking",
+  shipped: "safely arrived", draft: "fitting out", blocked: "blocked",
+};
+
 // --- State -----------------------------------------------------------------
 let state = null;
 let seed = 12345;
 let noise = makeNoise(seed);
-let coastCache = null;        // cached coastline polyline (stable per seed)
-let ships = [];               // animated ship objects
+let coastCache = null;
+let ships = [];               // animated ship objects (persist across snapshots)
 let t0 = performance.now();
 let lastFetch = 0;
 const POLL_MS = 4000;
 
-// Ship colour by classified state.
-const SHIP_COLORS = {
-  // issues
-  queued: "#d9c48a", underway: "#7fb8e6", done: "#8fd6a0",
-  // prs
-  ready: "#9fc4e6", reviewing: "#c9a0e6", merged: "#e6c97f", shipped: "#8fe6c4", draft: "#b9b29a",
-  // both
-  blocked: "#e66a6a",
-};
-
-// ---------------------------------------------------------------------------
-// Build the animated fleet from a snapshot. Each issue/PR becomes a ship whose
-// home X is its zone band and whose state sets colour + behaviour.
-// ---------------------------------------------------------------------------
-function buildShips(snap) {
-  const out = [];
-  const rng = mulberry32((snap.seed || seed) ^ 0x9e3779b9);
-
-  // Horizon band: issues sail from the far horizon (top) toward port.
-  // X positions by state: drifting far out, underway mid-sea, done near port.
-  (snap.issues || []).forEach((it, i) => {
-    const st = it.ship.state;
-    const depth = st === "queued" ? 0.18 : st === "underway" ? 0.42 : st === "done" ? 0.62 : 0.30;
-    out.push({
-      kind: "issue", number: it.number, title: it.title,
-      state: st, label: it.ship.label, zone: "horizon",
-      baseX: 0.10 + (i % 6) * 0.085 + rng() * 0.03,
-      baseY: depth + rng() * 0.05,
-      phase: rng() * Math.PI * 2, speed: 0.2 + rng() * 0.3,
-      size: 16, color: SHIP_COLORS[st] || "#ccc",
+// Wave spectrum (sum-of-sines), seeded — stable per seed. ~14 cascading waves
+// (amplitude x0.82, frequency x1.18, varied direction + phase per wave).
+let waveSpectrum = null;
+// Build a default spectrum at boot so the very first render (before any
+// snapshot arrives, e.g. the reduced-motion static render) never touches a
+// null spectrum.
+function ensureSpectrum() { if (!waveSpectrum) waveSpectrum = buildWaves(seed); }
+function buildWaves(sd) {
+  const rng = mulberry32((sd ^ 0x27d4eb2f) >>> 0);
+  const waves = [];
+  let amp = 1, freq = 0.010;
+  const N = 14;
+  const baseDir = rng() * Math.PI * 2;
+  for (let i = 0; i < N; i++) {
+    const dir = baseDir + (rng() - 0.5) * 1.3;          // varied direction per wave
+    waves.push({
+      ax: Math.cos(dir) * freq, ay: Math.sin(dir) * freq * 0.55,
+      amp, freq, speed: 0.6 + rng() * 1.1, phase: rng() * Math.PI * 2,
     });
-  });
-
-  // Harbour band: PRs cluster near the bottom-right coastline / docks.
-  (snap.prs || []).forEach((pr, i) => {
-    const st = pr.ship.state;
-    const depth = st === "ready" ? 0.74 : st === "reviewing" ? 0.82 : 0.90;
-    out.push({
-      kind: "pr", number: pr.number, title: pr.title,
-      state: st, label: pr.ship.label, zone: "harbour",
-      baseX: 0.58 + (i % 5) * 0.075 + rng() * 0.03,
-      baseY: depth + rng() * 0.04,
-      phase: rng() * Math.PI * 2, speed: 0.15 + rng() * 0.2,
-      size: 18, color: SHIP_COLORS[st] || "#ccc",
-    });
-  });
-
-  return out;
+    amp *= 0.82; freq *= 1.18;                          // cascade
+  }
+  const norm = waves.reduce((s, w) => s + w.amp, 0);
+  for (const w of waves) w.normAmp = w.amp / norm;
+  return waves;
+}
+// Sum-of-sines height (px) at a sea point. ampScale set by weather.
+function waveHeight(x, y, time, ampScale) {
+  const ws = waveSpectrum;
+  let h = 0;
+  for (let i = 0; i < ws.length; i++) {
+    const w = ws[i];
+    h += w.normAmp * Math.sin(x * w.ax + y * w.ay + time * 0.001 * w.speed + w.phase);
+  }
+  return h * ampScale;
+}
+// Crest steepness ~ spatial derivative; used for foam/glint thresholds.
+function waveSlope(x, y, time) {
+  const ws = waveSpectrum;
+  let d = 0;
+  for (let i = 0; i < ws.length; i++) {
+    const w = ws[i];
+    d += w.normAmp * w.ax * 60 * Math.cos(x * w.ax + y * w.ay + time * 0.001 * w.speed + w.phase);
+  }
+  return d;
 }
 
 // ---------------------------------------------------------------------------
-// Fetch the snapshot (live polling). file:// fetch of a sibling JSON works in
-// most browsers; if it's blocked, we keep the last good state and note it.
+// Build / reconcile the animated fleet from a snapshot. Ships PERSIST across
+// snapshots so state changes animate (enter / update / exit) instead of
+// teleporting. Keyed by kind+number.
+// ---------------------------------------------------------------------------
+function targetFor(kind, st, idx) {
+  if (kind === "issue") {
+    // Issues sail from the far horizon (top) toward port (down) as they progress.
+    const depth = st === "queued" ? 0.20 : st === "underway" ? 0.40 : st === "done" ? 0.60 : 0.30;
+    return { x: 0.10 + (idx % 6) * 0.085, y: depth, zone: "horizon" };
+  }
+  // PRs cluster toward the harbour (lower-right), docking as they progress.
+  const depth = st === "ready" ? 0.72 : st === "reviewing" ? 0.80 : st === "merged" ? 0.88 : st === "shipped" ? 0.93 : 0.84;
+  return { x: 0.58 + (idx % 5) * 0.075, y: depth, zone: "harbour" };
+}
+
+function reconcileShips(snap) {
+  const rng = mulberry32((snap.seed || seed) ^ 0x9e3779b9);
+  const seen = new Set();
+  const want = [];
+  (snap.issues || []).forEach((it, i) => want.push({ kind: "issue", u: it, idx: i }));
+  (snap.prs || []).forEach((pr, i) => want.push({ kind: "pr", u: pr, idx: i }));
+
+  const byKey = new Map(ships.map((s) => [s.key, s]));
+  const next = [];
+  for (const { kind, u, idx } of want) {
+    const st = u.ship.state;
+    const key = kind + "#" + u.number;
+    seen.add(key);
+    const tgt = targetFor(kind, st, idx);
+    const jx = (rng() - 0.5) * 0.03, jy = (rng() - 0.5) * 0.04;
+    let s = byKey.get(key);
+    if (!s) {
+      // New unit — fade-and-grow in (issues enter from above the horizon).
+      s = {
+        key, kind, number: u.number, title: u.title,
+        x: tgt.x + jx, y: kind === "issue" ? -0.08 : tgt.y + jy,
+        tx: tgt.x + jx, ty: tgt.y + jy,
+        zone: tgt.zone, phase: rng() * Math.PI * 2, speed: 0.4 + rng() * 0.5,
+        size: kind === "issue" ? 18 : 20,
+        appear: 0, leaving: false, leaveT: 0,
+      };
+    } else {
+      s.tx = tgt.x + jx; s.ty = tgt.y + jy; s.zone = tgt.zone; s.leaving = false;
+    }
+    s.state = st; s.color = SHIP_COLORS[st] || "#ccc";
+    s.shape = SHIP_SHAPE[st] != null ? SHIP_SHAPE[st] : 0;
+    s.label = u.ship.label || STATE_LABEL[st] || st;
+    s.url = u.url || null;
+    s.createdAt = u.createdAt; s.updatedAt = u.updatedAt;
+    next.push(s);
+  }
+  // Units that vanished -> mark leaving (sail off + fade), keep until faded.
+  for (const s of ships) {
+    if (!seen.has(s.key)) {
+      if (!s.leaving) { s.leaving = true; s.leaveT = 0; s.tx = s.kind === "pr" ? 1.15 : s.tx; s.ty = s.kind === "pr" ? 0.98 : -0.1; }
+      next.push(s);
+    }
+  }
+  ships = next;
+  rebuildHotspots();
+}
+
+// ---------------------------------------------------------------------------
+// Fetch the snapshot (live polling). Served over HTTP by the trial harness or
+// the snapshot script's open flow.
 // ---------------------------------------------------------------------------
 async function poll() {
   try {
@@ -203,11 +364,22 @@ async function poll() {
 
 function applySnapshot(snap) {
   const newSeed = (snap.seed >>> 0) || 12345;
-  if (newSeed !== seed) { seed = newSeed; noise = makeNoise(seed); coastCache = null; }
+  if (newSeed !== seed || !waveSpectrum) { seed = newSeed; noise = makeNoise(seed); waveSpectrum = buildWaves(seed); coastCache = null; initParticles(); }
   state = snap;
-  ships = buildShips(snap);
+  reconcileShips(snap);
   renderTicker(snap);
-  placeZoneLabels();   // re-place so the cartography label tracks its layer's on/off state
+  renderActivity(snap);
+  renderLegend();
+  renderSceneSummary(snap);
+  placeZoneLabels();   // re-place so the cartography label tracks its layer (#52)
+  if (reducedMotion()) { snapShipsToTargets(); renderOnce(); }
+}
+
+// In reduced-motion, state changes are INSTANT — no eased travel.
+function snapShipsToTargets() {
+  for (const s of ships) { if (s.leaving) continue; s.x = s.tx; s.y = s.ty; s.appear = 1; }
+  ships = ships.filter((s) => !s.leaving);
+  rebuildHotspots();
 }
 
 function setStatus(snap, ok, err) {
@@ -216,45 +388,117 @@ function setStatus(snap, ok, err) {
   const w = snap.tick ? snap.tick.weather : "calm";
   const cart = snap.cartography && snap.cartography.present ? "cartography on" : "cartography off";
   const deg = snap.degraded ? " · " + snap.degraded : "";
-  el.innerHTML = `${snap.repo || "?"} · seed ${snap.seed} · ${cart}` +
+  const rm = reducedMotion() ? " · reduced-motion" : "";
+  el.innerHTML = `${esc(snap.repo || "?")} · seed ${snap.seed} · ${cart}` +
     `<span class="badge ${w}">${w}</span>` +
-    `<br>updated ${new Date(snap.generatedAt).toLocaleTimeString()} · poll ${ok ? "live" : "stale"}${deg}`;
+    `<br>updated ${new Date(snap.generatedAt).toLocaleTimeString()} · poll ${ok ? "live" : "stale"}${rm}${deg}`;
 }
 
 function renderTicker(snap) {
   const body = document.getElementById("tick-body");
   if (!snap || !snap.tick) { body.textContent = "no tick data"; return; }
   const tk = snap.tick;
-  let html = `<div>${tk.summary}</div>`;
-  if (snap.degraded) html += `<div class="held">${snap.degraded}</div>`;
+  let html = `<div>${esc(tk.summary)}</div>`;
+  if (snap.degraded) html += `<div class="held">${esc(snap.degraded)}</div>`;
   if (tk.dispatched && tk.dispatched.length) {
     html += `<div class="dispatch">▸ dispatching:</div>`;
     for (const d of tk.dispatched.slice(0, 5))
-      html += `<div class="dispatch">&nbsp;&nbsp;${d.kind} #${d.number} — ${d.action}</div>`;
+      html += `<div class="dispatch">&nbsp;&nbsp;${esc(d.kind)} #${d.number} — ${esc(d.action)}</div>`;
   }
   if (tk.held && tk.held.length) {
     html += `<div class="held">▾ held:</div>`;
     for (const h of tk.held.slice(0, 5))
-      html += `<div class="held">&nbsp;&nbsp;${h.kind} #${h.number} — ${h.reason}</div>`;
+      html += `<div class="held">&nbsp;&nbsp;${esc(h.kind)} #${h.number} — ${esc(h.reason)}</div>`;
   }
   if ((!tk.dispatched || !tk.dispatched.length) && (!tk.held || !tk.held.length))
     html += `<div>horizon clear · harbour clear</div>`;
   body.innerHTML = html;
 }
 
+// Activity readout — per-zone counts + a recent-throughput sparkline + a tide
+// (backlog-depth) mark, all derived from the snapshot's `throughput` rollup.
+function renderActivity(snap) {
+  const tp = snap && snap.throughput;
+  document.getElementById("ac-h").textContent = tp ? tp.horizon : (snap && snap.issues ? snap.issues.length : 0);
+  document.getElementById("ac-p").textContent = tp ? tp.harbour : (snap && snap.prs ? snap.prs.length : 0);
+  document.getElementById("ac-b").textContent = tp ? tp.blocked : 0;
+  document.querySelector("#tide > i").style.width = (tp ? Math.round(tp.tide * 100) : 0) + "%";
+
+  const c = document.getElementById("spark");
+  const g = c.getContext("2d");
+  g.clearRect(0, 0, c.width, c.height);
+  const buckets = (tp && tp.buckets) || [0, 0, 0, 0, 0];
+  const labels = (tp && tp.bucketLabels) || ["<6h", "<24h", "<3d", "<7d", "older"];
+  const max = Math.max(1, ...buckets);
+  const n = buckets.length, bw = c.width / n, pad = 4;
+  for (let i = 0; i < n; i++) {
+    const h = (buckets[i] / max) * (c.height - 12);
+    const x = i * bw + pad, y = c.height - 8 - h, w = bw - pad * 2;
+    g.fillStyle = i === 0 ? "#7fd0e6" : i === 1 ? "#56b4e9" : "#3d7fb0";
+    g.fillRect(x, y, w, h);
+    g.fillStyle = "rgba(232,226,207,0.55)"; g.font = "8px Georgia"; g.textAlign = "center";
+    g.fillText(labels[i], i * bw + bw / 2, c.height - 1);
+  }
+}
+
+function renderLegend() {
+  const el = document.getElementById("legend");
+  const rows = [
+    ["issue", "queued", "drifting (armada)"],
+    ["issue", "underway", "set sail (underway)"],
+    ["issue", "done", "reached port (done)"],
+    ["pr", "ready", "PR arrived (armada)"],
+    ["pr", "reviewing", "PR at the docks (reviewing)"],
+    ["pr", "merged", "PR docking (merged)"],
+    ["pr", "shipped", "PR safely arrived (shipped)"],
+    ["pr", "blocked", "wrecked / storm-bound (blocked)"],
+  ];
+  let html = `<h2>Legend — ships &amp; states</h2>`;
+  for (const [, st, txt] of rows) {
+    html += `<div class="leg"><span class="glyph" data-shape="${SHIP_SHAPE[st]}" data-color="${SHIP_COLORS[st]}"></span><span class="nm">${esc(txt)}</span></div>`;
+  }
+  el.innerHTML = html;
+  // draw each glyph onto a tiny inline canvas so the SHAPE (non-colour) shows
+  el.querySelectorAll(".glyph").forEach((sp) => {
+    const cv = document.createElement("canvas"); cv.width = 20; cv.height = 16;
+    drawHullShape(cv.getContext("2d"), 10, 9, 6, +sp.dataset.shape, sp.dataset.color);
+    sp.appendChild(cv);
+  });
+}
+
+// ARIA scene summary — a text description of the chart for screen readers.
+function renderSceneSummary(snap) {
+  const el = document.getElementById("scene-summary");
+  if (!snap) { el.textContent = "No fleet snapshot loaded."; return; }
+  const w = snap.tick ? snap.tick.weather : "calm";
+  const wDesc = w === "storm" ? "stormy — at least one unit is blocked"
+              : w === "choppy" ? "choppy — work is in flight" : "calm — the fleet is healthy";
+  const issues = snap.issues || [], prs = snap.prs || [];
+  const byState = {};
+  for (const u of [...issues, ...prs]) byState[u.ship.state] = (byState[u.ship.state] || 0) + 1;
+  const parts = Object.entries(byState).map(([st, n]) => `${n} ${STATE_LABEL[st] || st}`);
+  let txt = `Fleet of ${issues.length} issue${issues.length === 1 ? "" : "s"} on the horizon and ${prs.length} pull request${prs.length === 1 ? "" : "s"} in the harbour. `;
+  txt += `Weather is ${wDesc}. `;
+  if (parts.length) txt += `States: ${parts.join(", ")}. `;
+  if (snap.tick && snap.tick.dispatched && snap.tick.dispatched.length)
+    txt += `${snap.tick.dispatched.length} unit(s) would be dispatched this tick. `;
+  if (snap.tick && snap.tick.held && snap.tick.held.length) txt += `${snap.tick.held.length} held. `;
+  txt += snap.cartography && snap.cartography.present ? "Cartography chart layer is on." : "Cartography chart layer is off.";
+  if (reducedMotion()) txt += " Reduced-motion: the scene is rendered near-static.";
+  el.textContent = txt;
+}
+
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
 // ---------------------------------------------------------------------------
-// Zone labels (DOM, positioned over the canvas).
+// Zone labels (DOM). #52: the cartography label tracks its layer (shown only
+// when ON), and sits lower-centre clear of the bottom-left #ticker panel.
 // ---------------------------------------------------------------------------
 function placeZoneLabels() {
-  // The cartography label tracks its layer: it is only shown when the layer is
-  // ON (snap.cartography.present), consistent with the status panel's
-  // `cartography off`. It also sits at lower-CENTRE (near the compass rose) —
-  // clear of the bottom-left #ticker (crows-nest vantage) panel, which it used
-  // to share a corner with and smear against.
   const cartOn = !!(state && state.cartography && state.cartography.present);
   const defs = [
     { id: "zl-horizon", text: "↑ Horizon — the new-issue track", x: 0.04, y: 0.30, show: true },
-    { id: "zl-harbour", text: "Harbour — the ready-PR pipeline", x: 0.55, y: 0.70, show: true },
+    { id: "zl-harbour", text: "Harbour — the ready-PR pipeline", x: 0.55, y: 0.62, show: true },
     { id: "zl-cart", text: "Cartography — learned chart", x: 0.40, y: 0.95, show: cartOn },
   ];
   for (const d of defs) {
@@ -268,92 +512,174 @@ function placeZoneLabels() {
 }
 
 // ---------------------------------------------------------------------------
-// Rendering
+// Ambient particle-flow layer (earth.nullschool wind-map method): a field of
+// particles drifting along a seeded flow; short trail segments are drawn each
+// frame and a fraction of particles recycle, leaving faint streaks. Tuned faint.
+// ---------------------------------------------------------------------------
+let particles = [];
+let flowField = null;
+function initParticles() {
+  const count = Math.min(220, Math.round((W * H) / 9000)) || 60;
+  particles = [];
+  const rng = mulberry32((seed ^ 0x68bc21) >>> 0);
+  for (let i = 0; i < count; i++)
+    particles.push({ x: rng() * W, y: H * (0.36 + rng() * 0.60), life: rng() * 60, color: rng() });
+  flowField = (x, y, time) => fbm(noise, x / 380 + 5, y / 380 + time * 0.00002, 3) * Math.PI * 2;
+}
+function drawParticles(time, ampScale) {
+  if (!particles.length || !flowField) return;
+  const speed = ampScale > 6 ? 1.7 : ampScale > 3 ? 1.1 : 0.7;
+  ctx.save(); ctx.lineWidth = 1;
+  for (const p of particles) {
+    const a = flowField(p.x, p.y, time);
+    const nx = p.x + Math.cos(a) * speed * 1.6;
+    const ny = p.y + Math.sin(a) * speed * 0.9;
+    const alpha = 0.05 + 0.05 * Math.sin(p.life * 0.1);
+    ctx.strokeStyle = p.color > 0.5 ? `rgba(220,235,255,${alpha})` : `rgba(190,210,235,${alpha})`;
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(nx, ny); ctx.stroke();
+    p.x = nx; p.y = ny; p.life -= 1;
+    if (p.life <= 0 || p.x < 0 || p.x > W || p.y < H * 0.35 || p.y > H) {
+      p.x = Math.random() * W; p.y = H * (0.36 + Math.random() * 0.60); p.life = 30 + Math.random() * 50;
+    }
+  }
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Sky / atmosphere — gradient reads weather. Storm: rain + seizure-safe
+// lightning (<=3 flashes/sec, soft ramp, never a hard strobe).
 // ---------------------------------------------------------------------------
 function weatherOf() { return (state && state.tick && state.tick.weather) || "calm"; }
 
+let lightning = { last: -1e9, alpha: 0, nextAt: 0 };
 function drawSky(time) {
   const w = weatherOf();
-  let top, bot;
-  if (w === "storm") { top = "#1a1320"; bot = "#2a2030"; }
-  else if (w === "choppy") { top = "#0e2236"; bot = "#16324a"; }
-  else { top = "#0c2c44"; bot = "#15466a"; }
-  const g = ctx.createLinearGradient(0, 0, 0, H * 0.5);
-  g.addColorStop(0, top); g.addColorStop(1, bot);
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H * 0.55);
+  let top, mid, bot;
+  if (w === "storm") { top = "#160f1c"; mid = "#241a2c"; bot = "#332338"; }
+  else if (w === "choppy") { top = "#0c1d30"; mid = "#123047"; bot = "#16324a"; }
+  else { top = "#0b2a44"; mid = "#0f3a5a"; bot = "#16527a"; }
+  const g = ctx.createLinearGradient(0, 0, 0, H * 0.55);
+  g.addColorStop(0, top); g.addColorStop(0.6, mid); g.addColorStop(1, bot);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H * 0.58);
 
-  // Stars / drifting clouds depending on weather.
   if (w === "storm") {
-    // lightning flicker
-    if (Math.sin(time * 0.003) > 0.985) { ctx.fillStyle = "rgba(255,255,255,0.18)"; ctx.fillRect(0, 0, W, H * 0.55); }
-    ctx.fillStyle = "rgba(20,16,26,0.4)";
-    for (let i = 0; i < 5; i++) {
-      const cx = ((i * 0.27 + time * 0.00003) % 1) * W;
-      ctx.beginPath(); ctx.ellipse(cx, H * 0.12 + i * 14, 120, 30, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(18,12,22,0.5)";
+    for (let i = 0; i < 6; i++) {
+      const cx = ((i * 0.23 + time * 0.000018) % 1.2 - 0.1) * W;
+      ctx.beginPath(); ctx.ellipse(cx, H * 0.10 + i * 12, 150, 34, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    // SEIZURE-SAFE lightning: schedule a flash at most ~every 600ms (<2/s) and
+    // ramp its alpha up+down over ~260ms rather than a 1-frame strobe.
+    if (!reducedMotion()) {
+      if (time > lightning.nextAt) { lightning.last = time; lightning.nextAt = time + 600 + Math.random() * 2600; }
+      const dt = time - lightning.last;
+      lightning.alpha = dt < 260 ? Math.sin((dt / 260) * Math.PI) * 0.22 : 0;
+      if (lightning.alpha > 0.002) {
+        ctx.fillStyle = `rgba(210,220,255,${lightning.alpha})`;
+        ctx.fillRect(0, 0, W, H * 0.62);
+        if (dt < 120) {
+          ctx.strokeStyle = `rgba(235,240,255,${0.5 * lightning.alpha / 0.22})`; ctx.lineWidth = 2;
+          const bx = (0.2 + 0.6 * ((lightning.last * 0.013) % 1)) * W;
+          ctx.beginPath(); ctx.moveTo(bx, 0);
+          let yy = 0, xx = bx;
+          while (yy < H * 0.35) { yy += 24 + Math.random() * 20; xx += (Math.random() - 0.5) * 40; ctx.lineTo(xx, yy); }
+          ctx.stroke();
+        }
+      }
     }
   } else {
     const rng = mulberry32(seed ^ 0xabcdef);
-    ctx.fillStyle = "rgba(232,226,207,0.5)";
-    for (let i = 0; i < 60; i++) {
-      const x = rng() * W, y = rng() * H * 0.4;
-      const tw = 0.5 + 0.5 * Math.sin(time * 0.002 + i);
-      ctx.globalAlpha = 0.2 + 0.4 * tw; ctx.fillRect(x, y, 1.6, 1.6);
+    for (let i = 0; i < 70; i++) {
+      const x = rng() * W, y = rng() * H * 0.42;
+      const tw = reducedMotion() ? 0.6 : 0.5 + 0.5 * Math.sin(time * 0.0016 + i);
+      ctx.globalAlpha = 0.15 + 0.4 * tw; ctx.fillStyle = "rgba(232,226,207,0.7)";
+      ctx.fillRect(x, y, 1.6, 1.6);
     }
     ctx.globalAlpha = 1;
   }
 }
 
-// Procedural coastline + islands, cached per seed (stable run-to-run).
+// ---------------------------------------------------------------------------
+// Sea — a sum-of-sines ocean. Paint a depth/subsurface gradient, then a
+// scanline crest pass: per column compute wave height + slope, lighten crests
+// (specular glint) and foam-cap the steepest crests.
+// ---------------------------------------------------------------------------
+function ampScaleOf() { const w = weatherOf(); return w === "storm" ? 9 : w === "choppy" ? 5 : 2.6; }
+
+function drawSea(time) {
+  const w = weatherOf();
+  const seaTop = H * 0.36;
+  const g = ctx.createLinearGradient(0, seaTop, 0, H);
+  if (w === "storm") { g.addColorStop(0, "#244a5a"); g.addColorStop(0.5, "#143444"); g.addColorStop(1, "#081420"); }
+  else if (w === "choppy") { g.addColorStop(0, "#1d6088"); g.addColorStop(0.5, "#114766"); g.addColorStop(1, "#0a2436"); }
+  else { g.addColorStop(0, "#2a86b4"); g.addColorStop(0.5, "#1a6090"); g.addColorStop(1, "#0c3454"); }
+  ctx.fillStyle = g; ctx.fillRect(0, seaTop, W, H - seaTop);
+
+  const ampScale = ampScaleOf();
+  const tt = reducedMotion() ? 0 : time;
+  const rows = 26;
+  for (let row = 0; row < rows; row++) {
+    const f = row / rows;
+    const y = seaTop + f * (H - seaTop);
+    const persp = 0.35 + f;                 // foreshorten near the horizon
+    ctx.beginPath();
+    for (let x = 0; x <= W; x += 10) {
+      const h = waveHeight(x, y, tt, ampScale) * persp;
+      x === 0 ? ctx.moveTo(x, y + h) : ctx.lineTo(x, y + h);
+    }
+    ctx.strokeStyle = w === "storm" ? "rgba(150,175,200,0.10)" : "rgba(190,225,255,0.12)";
+    ctx.lineWidth = 1; ctx.stroke();
+
+    for (let x = 0; x <= W; x += 7) {
+      const h = waveHeight(x, y, tt, ampScale) * persp;
+      const sl = waveSlope(x, y, tt);
+      const yy = y + h;
+      if (h < -ampScale * persp * 0.55 && Math.abs(sl) < 0.6) {   // crest peak -> glint
+        ctx.fillStyle = `rgba(255,255,255,${0.10 + 0.14 * f})`;
+        ctx.fillRect(x, yy - 1, 2.2, 1.6);
+      }
+      const foamThresh = w === "storm" ? 0.45 : w === "choppy" ? 0.62 : 0.8;
+      if (h < -ampScale * persp * foamThresh) {                   // foam on sharp crests
+        ctx.fillStyle = `rgba(235,245,255,${(w === "storm" ? 0.5 : 0.32) * (0.4 + f)})`;
+        ctx.beginPath(); ctx.arc(x, yy, 1.1 + f * 1.4, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  }
+}
+
+// Local wave height at a ship anchor (for bob/pitch) — in screen px.
+function seaHeightAt(px, py, time) {
+  const seaTop = H * 0.36;
+  const f = Math.max(0, (py - seaTop) / (H - seaTop));
+  const persp = 0.35 + f;
+  return waveHeight(px, py, reducedMotion() ? 0 : time, ampScaleOf()) * persp;
+}
+function seaPitchAt(px, py, time) {
+  return Math.atan(waveSlope(px, py, reducedMotion() ? 0 : time) * 0.12) * 0.5;
+}
+
+// ---------------------------------------------------------------------------
+// Land — procedural coastline + islands, cached per seed (stable run-to-run).
+// ---------------------------------------------------------------------------
 function buildCoast() {
   const pts = [];
   const steps = 220;
   for (let i = 0; i <= steps; i++) {
     const x = i / steps;
-    // Coastline runs along the lower-right; height modulated by fbm noise.
     const n = fbm(noise, x * 3.2, 7.3, 4);
-    const base = 0.58 + 0.10 * n;
-    pts.push({ x, y: base });
+    pts.push({ x, y: 0.58 + 0.10 * n });
   }
-  // Islands: a few seeded blobs in the mid-sea.
   const rng = mulberry32(seed ^ 0x13572468);
   const islands = [];
   const count = 2 + ((seed >> 3) % 3);
-  for (let i = 0; i < count; i++) {
-    islands.push({ x: 0.2 + rng() * 0.6, y: 0.42 + rng() * 0.18, r: 0.03 + rng() * 0.04, seed: (rng() * 1e9) | 0 });
-  }
+  for (let i = 0; i < count; i++)
+    islands.push({ x: 0.2 + rng() * 0.6, y: 0.44 + rng() * 0.16, r: 0.03 + rng() * 0.04 });
   return { pts, islands };
-}
-
-function drawSea(time) {
-  const w = weatherOf();
-  const seaTop = H * 0.34;
-  const g = ctx.createLinearGradient(0, seaTop, 0, H);
-  if (w === "storm") { g.addColorStop(0, "#1b3344"); g.addColorStop(1, "#0a1622"); }
-  else if (w === "choppy") { g.addColorStop(0, "#1d5070"); g.addColorStop(1, "#0c2436"); }
-  else { g.addColorStop(0, "#2476a0"); g.addColorStop(1, "#0e3050"); }
-  ctx.fillStyle = g; ctx.fillRect(0, seaTop, W, H - seaTop);
-
-  // Animated wave bands.
-  const amp = w === "storm" ? 9 : w === "choppy" ? 5 : 2.5;
-  const speed = w === "storm" ? 0.004 : w === "choppy" ? 0.0026 : 0.0015;
-  ctx.strokeStyle = w === "storm" ? "rgba(180,200,220,0.10)" : "rgba(200,230,255,0.10)";
-  ctx.lineWidth = 1.2;
-  for (let row = 0; row < 18; row++) {
-    const y = seaTop + (row / 18) * (H - seaTop);
-    ctx.beginPath();
-    for (let x = 0; x <= W; x += 12) {
-      const yy = y + Math.sin(x * 0.02 + time * speed + row) * amp * (0.4 + row / 18);
-      x === 0 ? ctx.moveTo(x, yy) : ctx.lineTo(x, yy);
-    }
-    ctx.stroke();
-  }
 }
 
 function drawLand() {
   if (!coastCache) coastCache = buildCoast();
   const { pts, islands } = coastCache;
-
-  // Mainland (lower-right coastline filled toward the corner).
   ctx.beginPath();
   ctx.moveTo(0, H);
   for (const p of pts) ctx.lineTo(p.x * W, (p.y + 0.30) * H);
@@ -361,13 +687,10 @@ function drawLand() {
   const lg = ctx.createLinearGradient(0, H * 0.6, 0, H);
   lg.addColorStop(0, "#3d5a3a"); lg.addColorStop(1, "#243a26");
   ctx.fillStyle = lg; ctx.fill();
-  // beach line
   ctx.strokeStyle = "rgba(214,196,138,0.5)"; ctx.lineWidth = 2;
   ctx.beginPath();
   pts.forEach((p, i) => { const X = p.x * W, Y = (p.y + 0.30) * H; i === 0 ? ctx.moveTo(X, Y) : ctx.lineTo(X, Y); });
   ctx.stroke();
-
-  // Islands.
   for (const is of islands) {
     const cx = is.x * W, cy = is.y * H, rr = is.r * Math.min(W, H);
     const ig = ctx.createRadialGradient(cx, cy, rr * 0.2, cx, cy, rr);
@@ -378,111 +701,324 @@ function drawLand() {
   }
 }
 
-// Cartography layer — optional. Drawn as a faint chart grid + compass rose when
-// .armada/cartography/ is present; omitted (and noted) when absent.
+// ---------------------------------------------------------------------------
+// Cartography — portolan chart layer (when ON). Parchment tint + graticule +
+// compass rose(s) with a rhumb-line network (main winds bold, half/quarter
+// winds subtler, per the historical convention) + a decorative cartouche, and
+// a couple of learned-heuristic annotations if present. Degrades to off.
+// ---------------------------------------------------------------------------
 function drawCartography() {
   if (!(state && state.cartography && state.cartography.present)) return;
   ctx.save();
+
+  ctx.fillStyle = "rgba(196,166,108,0.07)"; ctx.fillRect(0, H * 0.34, W, H * 0.66);
+
   ctx.strokeStyle = "rgba(198,168,106,0.10)"; ctx.lineWidth = 1;
-  for (let x = 0; x < W; x += 64) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-  for (let y = 0; y < H; y += 64) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-  // compass rose, lower-left
-  const cx = W * 0.12, cy = H * 0.86, r = 34;
-  ctx.strokeStyle = "rgba(198,168,106,0.4)"; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2;
-    ctx.beginPath(); ctx.moveTo(cx, cy);
-    ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r); ctx.stroke();
+  for (let x = 0; x < W; x += 72) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 72) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+  // Rhumb-line network — roses on a circle, each radiating 32 lines; the
+  // intersections form the portolan web. 8 main winds bold, 8 half winds
+  // medium, 16 quarter winds faintest.
+  const roses = [
+    { x: W * 0.30, y: H * 0.52 },
+    { x: W * 0.70, y: H * 0.46 },
+    { x: W * 0.50, y: H * 0.72 },
+  ];
+  const reach = Math.max(W, H);
+  for (const ro of roses) {
+    for (let i = 0; i < 32; i++) {
+      const a = (i / 32) * Math.PI * 2;
+      const isMain = i % 4 === 0, isHalf = i % 2 === 0;
+      ctx.strokeStyle = isMain ? "rgba(198,168,106,0.22)"
+                       : isHalf ? "rgba(170,150,120,0.13)"
+                                : "rgba(150,135,110,0.07)";
+      ctx.lineWidth = isMain ? 1.1 : 0.7;
+      ctx.beginPath(); ctx.moveTo(ro.x, ro.y);
+      ctx.lineTo(ro.x + Math.cos(a) * reach, ro.y + Math.sin(a) * reach); ctx.stroke();
+    }
+  }
+
+  drawCompassRose(W * 0.40, H * 0.86, 38);
+  drawCartouche(W * 0.5, H * 0.07);
+
+  const files = (state.cartography.files || []).slice(0, 2);
+  if (files.length) {
+    ctx.fillStyle = "rgba(214,184,120,0.5)"; ctx.font = "italic 11px Georgia"; ctx.textAlign = "left";
+    files.forEach((f, i) => ctx.fillText("✕ learned: " + f, W * 0.04, H * 0.50 + i * 16));
   }
   ctx.restore();
 }
 
+function drawCompassRose(cx, cy, r) {
+  ctx.save();
+  ctx.strokeStyle = "rgba(214,184,120,0.55)"; ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, r * 0.62, 0, Math.PI * 2); ctx.stroke();
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 - Math.PI / 2;
+    const long = i % 2 === 0;
+    const rr = long ? r : r * 0.55;
+    ctx.fillStyle = long ? "rgba(214,184,120,0.5)" : "rgba(170,150,120,0.4)";
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(a - 0.12) * rr * 0.5, cy + Math.sin(a - 0.12) * rr * 0.5);
+    ctx.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+    ctx.lineTo(cx + Math.cos(a + 0.12) * rr * 0.5, cy + Math.sin(a + 0.12) * rr * 0.5);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = "rgba(230,200,140,0.85)"; ctx.font = "bold 12px Georgia"; ctx.textAlign = "center";
+  ctx.fillText("N", cx, cy - r - 4);
+  ctx.restore();
+}
+
+function drawCartouche(cx, cy) {
+  ctx.save();
+  ctx.strokeStyle = "rgba(214,184,120,0.35)"; ctx.lineWidth = 1.2;
+  const w = 240;
+  ctx.beginPath();
+  ctx.moveTo(cx - w / 2, cy); ctx.lineTo(cx + w / 2, cy);
+  ctx.moveTo(cx - w / 2, cy); ctx.lineTo(cx - w / 2 - 8, cy - 6);
+  ctx.moveTo(cx + w / 2, cy); ctx.lineTo(cx + w / 2 + 8, cy - 6);
+  ctx.stroke();
+  ctx.fillStyle = "rgba(230,205,150,0.6)"; ctx.font = "italic 13px Georgia"; ctx.textAlign = "center";
+  ctx.fillText("Charta Classis — " + (state.repo || "the fleet"), cx, cy - 6);
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Ships — hull shape encodes state (non-colour). Kelvin-V wake + bow spray
+// (dissipating), bob + pitch with the local wave height, eased enter/update/
+// exit motion.
+// ---------------------------------------------------------------------------
+function drawHullShape(g, x, y, sz, shape, color) {
+  g.save(); g.translate(x, y);
+  g.fillStyle = color;
+  g.beginPath();
+  if (shape === 0) {            // sloop — simple wedge
+    g.moveTo(-sz, 0); g.lineTo(sz, 0); g.lineTo(sz * 0.5, sz * 0.5); g.lineTo(-sz * 0.5, sz * 0.5);
+  } else if (shape === 1) {     // cutter — sharper bow
+    g.moveTo(-sz * 1.1, 0); g.lineTo(sz * 1.1, -sz * 0.1); g.lineTo(sz * 0.4, sz * 0.5); g.lineTo(-sz * 0.5, sz * 0.5);
+  } else if (shape === 2) {     // barque — rounded
+    g.moveTo(-sz, 0); g.quadraticCurveTo(0, sz * 0.7, sz, 0); g.lineTo(sz * 0.6, sz * 0.55); g.lineTo(-sz * 0.6, sz * 0.55);
+  } else if (shape === 3) {     // galleon — high stern
+    g.moveTo(-sz * 1.1, -sz * 0.2); g.lineTo(sz, 0); g.lineTo(sz * 0.6, sz * 0.55); g.lineTo(-sz * 0.7, sz * 0.55);
+  } else {                      // wreck — broken, tilted
+    g.moveTo(-sz, sz * 0.2); g.lineTo(sz * 0.6, -sz * 0.1); g.lineTo(sz * 0.3, sz * 0.5); g.lineTo(-sz * 0.7, sz * 0.55);
+  }
+  g.closePath(); g.fill();
+  g.strokeStyle = "rgba(20,20,20,0.7)"; g.lineWidth = Math.max(1, sz * 0.1);
+  g.beginPath(); g.moveTo(0, 0); g.lineTo(0, -sz * 1.3); g.stroke();
+  g.restore();
+}
+
 function drawShip(s, time) {
-  const sway = weatherOf() === "storm" ? 0.06 : weatherOf() === "choppy" ? 0.035 : 0.018;
-  const drift = Math.sin(time * 0.001 * s.speed + s.phase) * 0.012;
-  const bob = Math.sin(time * 0.0026 + s.phase) * 6;
-  const x = (s.baseX + drift) * W;
-  const y = s.baseY * H + bob;
-  const roll = Math.sin(time * 0.0022 + s.phase) * sway;
+  const ease = reducedMotion() ? 1 : 0.06;            // eased travel (ease-out)
+  s.x += (s.tx - s.x) * ease;
+  s.y += (s.ty - s.y) * ease;
+  s.appear = reducedMotion() ? 1 : Math.min(1, (s.appear || 0) + 0.03);
+  if (s.leaving) s.leaveT += reducedMotion() ? 1 : 0.02;
+
+  const px = s.x * W, anchorY = s.y * H;
+  const bobBase = seaHeightAt(px, anchorY, time);
+  const bob = reducedMotion() ? 0 : bobBase + Math.sin(time * 0.0024 + s.phase) * 1.5;
+  const pitch = seaPitchAt(px, anchorY, time);
+  const x = px, y = anchorY + bob;
   const sz = s.size;
 
+  const fadeIn = s.appear;
+  const fadeOut = s.leaving ? Math.max(0, 1 - s.leaveT) : 1;
+  const alpha = fadeIn * fadeOut;
+  const scale = (0.6 + 0.4 * fadeIn) * fadeOut;
+  if (alpha <= 0.01) { s.sx = null; return; }
+
   ctx.save();
-  ctx.translate(x, y); ctx.rotate(roll);
+  ctx.globalAlpha = alpha;
 
-  // wake
-  ctx.fillStyle = "rgba(255,255,255,0.08)";
-  ctx.beginPath(); ctx.ellipse(0, sz * 0.5, sz * 1.2, sz * 0.4, 0, 0, Math.PI * 2); ctx.fill();
-
-  // hull
-  ctx.fillStyle = s.color;
-  ctx.beginPath();
-  ctx.moveTo(-sz, 0); ctx.lineTo(sz, 0);
-  ctx.lineTo(sz * 0.6, sz * 0.55); ctx.lineTo(-sz * 0.6, sz * 0.55);
-  ctx.closePath(); ctx.fill();
-
-  // mast + sail
-  ctx.strokeStyle = "rgba(20,20,20,0.7)"; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -sz * 1.3); ctx.stroke();
-  ctx.fillStyle = s.state === "blocked" ? "rgba(120,30,30,0.9)" : "rgba(245,240,225,0.92)";
-  ctx.beginPath();
-  ctx.moveTo(2, -sz * 1.25); ctx.lineTo(sz * 0.9, -sz * 0.35); ctx.lineTo(2, -sz * 0.35);
-  ctx.closePath(); ctx.fill();
-
-  // blocked = a storm cloud + tilt
-  if (s.state === "blocked") {
-    ctx.fillStyle = "rgba(60,40,60,0.85)";
-    ctx.beginPath(); ctx.ellipse(0, -sz * 1.7, sz * 0.9, sz * 0.5, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = "rgba(255,240,140,0.9)"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(-3, -sz * 1.5); ctx.lineTo(2, -sz * 1.1); ctx.lineTo(-2, -sz * 1.1); ctx.lineTo(3, -sz * 0.7); ctx.stroke();
+  // Kelvin-V wake — two diverging foam arms trailing the ship, dissipating.
+  if (!reducedMotion() && !s.leaving) {
+    const trail = sz * 3.2;
+    for (let arm = -1; arm <= 1; arm += 2) {
+      ctx.beginPath();
+      for (let k = 0; k <= 10; k++) {
+        const t = k / 10;
+        const wx = x - arm * t * sz * 1.4;
+        const wy = y + sz * 0.5 + t * trail;
+        ctx.strokeStyle = `rgba(235,245,255,${0.16 * (1 - t)})`;
+        ctx.lineWidth = (1 - t) * 2 + 0.4;
+        k === 0 ? ctx.moveTo(wx, wy) : ctx.lineTo(wx, wy);
+      }
+      ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    ctx.beginPath(); ctx.ellipse(x, y + sz * 0.4, sz * 1.1, sz * 0.34, 0, 0, Math.PI * 2); ctx.fill();
+  } else {
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    ctx.beginPath(); ctx.ellipse(x, y + sz * 0.4, sz * 1.0, sz * 0.3, 0, 0, Math.PI * 2); ctx.fill();
   }
 
+  ctx.translate(x, y); ctx.rotate(pitch); ctx.scale(scale, scale);
+  drawHullShape(ctx, 0, 0, sz, s.shape, s.color);
+
+  // flag — heading via direction; blocked flies a red distress flag.
+  const heading = s.state === "shipped" ? -1 : s.state === "blocked" ? 0 : 1;
+  ctx.fillStyle = s.state === "blocked" ? "#e05c4a" : "rgba(245,240,225,0.95)";
+  ctx.beginPath();
+  ctx.moveTo(1, -sz * 1.3);
+  ctx.lineTo(1 + heading * sz * 0.9, -sz * 1.15);
+  ctx.lineTo(1, -sz * 1.0);
+  ctx.closePath(); ctx.fill();
+
+  if (s.state === "blocked") {       // storm cloud over the wreck (extra cue)
+    ctx.fillStyle = "rgba(60,40,60,0.85)";
+    ctx.beginPath(); ctx.ellipse(0, -sz * 1.8, sz * 0.9, sz * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+  }
   ctx.restore();
 
-  // label
-  ctx.fillStyle = "rgba(232,226,207,0.85)";
-  ctx.font = "11px Georgia";
-  ctx.textAlign = "center";
-  const tag = (s.kind === "issue" ? "#" : "PR#") + s.number;
-  ctx.fillText(tag, x, y - sz * 1.7 - 4);
+  // labels (printed — never colour-only)
+  ctx.save();
+  ctx.globalAlpha = alpha; ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(232,226,207,0.9)"; ctx.font = "11px Georgia";
+  ctx.fillText((s.kind === "issue" ? "#" : "PR#") + s.number, x, y - sz * 1.9 - 2);
+  ctx.fillStyle = "rgba(200,210,225,0.7)"; ctx.font = "9px Georgia";
+  ctx.fillText(s.label, x, y - sz * 1.9 - 13);
+  ctx.restore();
+
+  s.sx = x; s.sy = y;   // cache for hotspots / hit-testing
+}
+
+// ---------------------------------------------------------------------------
+// Interaction — detail card + keyboard-focusable hotspots.
+// ---------------------------------------------------------------------------
+const hotspotsEl = document.getElementById("hotspots");
+const cardEl = document.getElementById("card");
+let pinnedKey = null;
+
+function cssEsc(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => "\\" + c); }
+
+function rebuildHotspots() {
+  const live = ships.filter((s) => !s.leaving);
+  const keys = new Set(live.map((s) => s.key));
+  [...hotspotsEl.children].forEach((c) => { if (!keys.has(c.dataset.key)) c.remove(); });
+  for (const s of live) {
+    let b = hotspotsEl.querySelector(`[data-key="${cssEsc(s.key)}"]`);
+    if (!b) {
+      b = document.createElement("button");
+      b.className = "ship-hotspot"; b.dataset.key = s.key;
+      b.style.width = b.style.height = "34px";
+      b.addEventListener("focus", () => showCardFor(s.key, true));
+      b.addEventListener("blur", () => { if (pinnedKey === s.key) { pinnedKey = null; hideCard(); } });
+      b.addEventListener("mouseenter", () => showCardFor(s.key, false));
+      b.addEventListener("mouseleave", () => { if (pinnedKey !== s.key) hideCard(); });
+      b.addEventListener("click", (e) => { e.stopPropagation(); pinnedKey = s.key; showCardFor(s.key, true); });
+      b.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pinnedKey = s.key; showCardFor(s.key, true); }
+        if (e.key === "Escape") { pinnedKey = null; hideCard(); b.blur(); }
+      });
+      hotspotsEl.appendChild(b);
+    }
+    b.setAttribute("aria-label", `${s.kind === "issue" ? "Issue" : "Pull request"} ${s.number}, ${s.label}: ${s.title || ""}`);
+  }
+}
+
+function syncHotspots() {
+  for (const s of ships) {
+    if (s.leaving || s.sx == null) continue;
+    const b = hotspotsEl.querySelector(`[data-key="${cssEsc(s.key)}"]`);
+    if (b) { b.style.left = s.sx + "px"; b.style.top = (s.sy - s.size) + "px"; }
+  }
+}
+
+function age(iso) {
+  if (!iso) return "unknown age";
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms)) return "unknown age";
+  const h = ms / 3600e3;
+  if (h < 1) return Math.max(1, Math.round(h * 60)) + "m old";
+  if (h < 48) return Math.round(h) + "h old";
+  return Math.round(h / 24) + "d old";
+}
+
+function showCardFor(key) {
+  const s = ships.find((x) => x.key === key);
+  if (!s) return;
+  cardEl.innerHTML =
+    `<div class="hd"><span class="num">${s.kind === "issue" ? "#" : "PR #"}${s.number}</span>` +
+    `<span class="st" style="color:${s.color};border-color:${s.color}">${esc(s.label)}</span></div>` +
+    `<div class="ttl">${esc(s.title || "(no title)")}</div>` +
+    `<div class="meta">${s.kind === "issue" ? "Issue" : "Pull request"} · ${esc(age(s.updatedAt || s.createdAt))}</div>` +
+    (s.url ? `<div style="margin-top:6px"><a href="${esc(s.url)}" target="_blank" rel="noopener">open on GitHub ↗</a></div>` : "");
+  const cw = 320, ch = 130;
+  let left = (s.sx || W / 2) + 16, top = (s.sy || H / 2) - 10;
+  if (left + cw > W) left = (s.sx || W / 2) - cw - 16;
+  if (top + ch > H) top = H - ch - 10;
+  if (top < 10) top = 10;
+  cardEl.style.left = left + "px"; cardEl.style.top = top + "px";
+  cardEl.style.display = "block";
+}
+function hideCard() { if (!pinnedKey) cardEl.style.display = "none"; }
+canvas.addEventListener("click", () => { pinnedKey = null; hideCard(); });
+
+// ---------------------------------------------------------------------------
+// Frame loop
+// ---------------------------------------------------------------------------
+let frameSkip = 0;
+function renderScene(time) {
+  ensureSpectrum();
+  if (!coastCache) coastCache = buildCoast();
+  ctx.clearRect(0, 0, W, H);
+  drawSky(time);
+  drawSea(time);
+  if (!reducedMotion()) drawParticles(time, ampScaleOf());
+  drawCartography();
+  drawLand();
+
+  if (weatherOf() === "storm" && !reducedMotion()) {       // rain (soft, no strobe)
+    ctx.strokeStyle = "rgba(180,200,225,0.16)"; ctx.lineWidth = 1;
+    const rng = mulberry32((seed ^ Math.floor(time / 50)) >>> 0);
+    for (let i = 0; i < 130; i++) {
+      const x = rng() * W, y = H * 0.34 + rng() * H * 0.66;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 4, y + 15); ctx.stroke();
+    }
+  }
+
+  const drawList = ships.slice().sort((a, b) => (a.y - b.y));   // back-to-front
+  for (const s of drawList) drawShip(s, time);
+  ships = ships.filter((s) => !(s.leaving && s.leaveT >= 1));   // drop faded
+  syncHotspots();
+
+  if (!ships.length) {
+    ctx.fillStyle = "rgba(232,226,207,0.6)"; ctx.font = "16px Georgia"; ctx.textAlign = "center";
+    const msg = state && state.degraded ? state.degraded : "an empty sea — no armed issues or PRs";
+    ctx.fillText(msg, W / 2, H * 0.46);
+  }
 }
 
 function frame(now) {
   const time = now - t0;
   if (now - lastFetch > POLL_MS) { lastFetch = now; poll(); }
-
-  ctx.clearRect(0, 0, W, H);
-  drawSky(time);
-  drawSea(time);
-  drawCartography();
-  drawLand();
-
-  // rain streaks in a storm
-  if (weatherOf() === "storm") {
-    ctx.strokeStyle = "rgba(180,200,220,0.18)"; ctx.lineWidth = 1;
-    const rng = mulberry32((seed ^ (Math.floor(time / 60))) >>> 0);
-    for (let i = 0; i < 120; i++) {
-      const x = rng() * W, y = rng() * H;
-      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 4, y + 14); ctx.stroke();
-    }
-  }
-
-  for (const s of ships) drawShip(s, time);
-
-  if (!ships.length) {
-    ctx.fillStyle = "rgba(232,226,207,0.6)";
-    ctx.font = "16px Georgia"; ctx.textAlign = "center";
-    const msg = state && state.degraded ? state.degraded : "an empty sea — no armed issues or PRs";
-    ctx.fillText(msg, W / 2, H * 0.45);
-  }
-
+  const heavy = ships.length > 24;                  // graceful throttle (~30fps)
+  if (heavy && (frameSkip ^= 1)) { requestAnimationFrame(frame); return; }
+  renderScene(time);
   requestAnimationFrame(frame);
 }
+
+// Reduced-motion: a single static render (no rAF), redrawn only on snapshot /
+// resize. Conveys the same information without any animation.
+function renderOnce() { renderScene(performance.now() - t0); syncHotspots(); }
 
 // --- Boot ------------------------------------------------------------------
 resize();
 poll();
-requestAnimationFrame(frame);
+if (reducedMotion()) {
+  renderOnce();
+  setInterval(poll, POLL_MS);            // still refresh data; re-render is static
+  setTimeout(renderOnce, 300);
+  RM_QUERY.addEventListener && RM_QUERY.addEventListener("change", () => location.reload());
+} else {
+  requestAnimationFrame(frame);
+  RM_QUERY.addEventListener && RM_QUERY.addEventListener("change", () => location.reload());
+}
 </script>
 </body>
 </html>
