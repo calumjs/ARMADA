@@ -99,6 +99,16 @@ Run these in parallel where possible:
 - **Read the issue fully** — description, comments, labels, linked issues/PRs.
 - **Read project docs** — `README`, `CLAUDE.md`/`AGENTS.md`, `docs/`, architecture/decision records
   (`docs/adr/` or similar). Note any documented decision that constrains the approach.
+- **Read the repo's cartography** — `.armada/cartography/` (`architecture.md`, `conventions.md`,
+  `pitfalls.md`, `workflows.md`, `testing.md`, `glossary.md`, or a single `cartography.md`), the
+  per-repo heuristics [`cartographer`](../cartographer/SKILL.md) accumulates from past runs. These are
+  **actionable `heuristic / evidence / confidence` entries** the fleet learned about *this* repo, and
+  applying them is the payoff for keeping the map: a **workflow** heuristic ("run `npm run generate`
+  before the build") becomes a planned step, a **pitfall** ("don't edit `*.gen.ts`") fences the
+  change, and a **convention** ("use `FooService`, not the raw client") shapes the implementation to
+  match the grain of the repo. Apply High-confidence heuristics by default; treat Low-confidence ones
+  as considerations, not hard constraints. If the directory is absent, the repo just hasn't been
+  mapped yet — carry on.
 - **Read the existing code** in the affected area. Understand the patterns, related modules, tests,
   and the files that will need changes. Find where tests live and how they're run.
 - **Run any audit the issue calls out *first*.** If the issue says "this is only safe if X holds"

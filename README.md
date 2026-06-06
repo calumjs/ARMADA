@@ -26,6 +26,7 @@ the right skill from natural language — you rarely type the name.
 | **`shipwright`** | The builder. Takes one issue and works it end-to-end in an isolated worktree, opening a PR. | ✅ shipped |
 | **`muster`** | Inspection before sailing. Reviews a ready PR through two parallel lenses (code-review + codex-rescue), dedupes, and posts inline comments + a summary. | ✅ shipped |
 | **`logbook`** | The voyage record. Turns a shipped change into a short narrated, chaptered walkthrough video and attaches it to the PR — stack-agnostic, driven by a reusable per-repo staging recipe (launch / stage / reach) that works for web, CLI, or API. | ✅ shipped |
+| **`cartographer`** | The mapmaker. Mines completed runs for actionable *per-repo* heuristics (`heuristic / evidence / confidence`) and maintains a reviewable knowledge base under `.armada/cartography/`, so the fleet specialises to a repo over time. shipwright reads it before building; crows-nest auto-runs it (best-effort, gated by `cartography`) at its reconcile points. | ✅ shipped |
 | `flagship` | The command vessel. An autonomous build → review → verify → fix loop that drives an issue all the way to merge-ready. | 🚧 roadmap |
 | `sea-trial` | The shakedown run. Launches the app and drives a real flow with Playwright to verify a change works at runtime. | 🚧 roadmap |
 | `signal-flags` | Signals back. Addresses reviewer comments on a PR and replies to each thread. | 🚧 roadmap |
@@ -121,6 +122,11 @@ A couple of related distribution conventions:
   "armadaRepo": "calumjs/ARMADA",
   // May self-raised fleet-defect fixes be armed? Default false: filed for human triage, not built.
   "autoArmSelfFixes": false,
+  // May cartographer auto-learn per-repo heuristics into .armada/cartography/? Default "off".
+  //   "off"      → never auto-runs; only manual /cartographer works (default)
+  //   "proposal" → auto-runs at crows-nest's reconcile points but only proposes a diff for approval
+  //   "on"       → auto-runs and commits learning into the active PR (rides muster review + autoMerge)
+  "cartography": "off",
   // Your project's commands. Any can be omitted; skills will infer or ask.
   "commands": {
     "build":  "npm run build",
@@ -158,6 +164,11 @@ with arming + `autoMerge` on it becomes a loop that could rewrite and merge its 
 — the dream and the hazard. So `fleet-defect` issues are **filed for human triage, not armed**, even
 though `charter` auto-arms human-authored issues. Set **`autoArmSelfFixes: true`** to opt into the
 fleet fixing itself end-to-end; it defaults `false`, and `commission` never turns it on.
+
+> **Not to be confused with `cartographer`.** This loop learns about **ARMADA itself** (a skill was
+> wrong) and files a `fleet-defect`. `cartographer` (gated by `cartography`, default `"off"`) learns
+> about the **host repo** (a pre-build step, a convention a human keeps correcting) and maintains a
+> reviewable map under `.armada/cartography/` that future builds consult. They're independent loops.
 
 ## Safety
 

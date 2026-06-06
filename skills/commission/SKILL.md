@@ -72,6 +72,7 @@ overwriting** — the user may have hand-tuned it.
   "maxReviewRounds": 2,            // bound on the address↔review loop before handing back
   "armadaRepo": "calumjs/ARMADA",  // where self-raised fleet-defect fixes are filed (charter §9)
   "autoArmSelfFixes": false,       // arm self-raised fleet-defects? Default false: human triage.
+  "cartography": "off",            // cartographer auto-learn per-repo heuristics? "off" | "proposal" | "on". Default "off".
   "commands": {
     "build":  "<detected or omitted>",
     "test":   "<detected or omitted>",
@@ -108,6 +109,17 @@ against `armadaRepo` — the ARMADA home repo, so a host project's tracker is ne
 omitted, the skills derive it from the plugin source. **Write `autoArmSelfFixes: false`** — like
 `autoMerge`, full self-fixing autonomy is an explicit hand edit, never something commissioning turns
 on; left false, self-raised defects are filed for human triage rather than armed into the build queue.
+
+`cartography` gates [`cartographer`](../cartographer/SKILL.md) — the ship that learns *per-repo*
+heuristics (a pre-build step, a convention a human keeps correcting) from completed runs and maintains
+a reviewable knowledge base under `.armada/cartography/`. One of `"off" | "proposal" | "on"`. **Write
+`"off"`** on a fresh repo: cartographer never auto-runs, only manual `/cartographer` works, and the
+fleet behaves exactly as before — like `autoMerge` and `autoArmSelfFixes`, turning on autonomous
+learning is a deliberate hand edit, never something commissioning enables. The user can set
+`"proposal"` (auto-runs at crows-nest's reconcile points but only proposes a diff for approval) or
+`"on"` (auto-runs and commits knowledge into the active PR so it rides the muster review + autoMerge
+gate). This is distinct from the fleet-defect loop above: `cartography` learns about the *host* repo;
+`autoArmSelfFixes` is about defects in *ARMADA itself*.
 
 ## 4. Create the GitHub labels
 
@@ -156,6 +168,7 @@ and don't arm the loop for them** (both are the user's call):
   auto-merge  : off (default) — the sole merge gate; ready-PR pipeline stops at "awaiting human merge"
   notify      : terminal (default) — ship's bell on shipped + blocked; off | blocked | terminal | all
   self-fixes  : armadaRepo=<owner/repo> · autoArmSelfFixes off (default) — fleet-defects filed for human triage
+  cartography : off (default) — cartographer never auto-runs; off | proposal | on (run /cartographer by hand any time)
   labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked, fleet-defect ✓
 
 Next:
@@ -171,8 +184,9 @@ Next:
 - Config: diff-and-confirm before overwrite — never clobbers hand edits silently. Re-running never
   flips `autoMerge` back on or off behind the user's back; if it's already set, leave it.
 - Nothing here creates issues, opens PRs, or merges. Commissioning only prepares the repo, and it
-  always writes `autoMerge: false` **and `autoArmSelfFixes: false`** — neither autonomous merging
-  nor autonomous self-fixing is ever turned on by commissioning.
+  always writes `autoMerge: false`, **`autoArmSelfFixes: false`**, **and `cartography: "off"`** —
+  neither autonomous merging, autonomous self-fixing, nor autonomous learning is ever turned on by
+  commissioning.
 
 ## Inputs
 
