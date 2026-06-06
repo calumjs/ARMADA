@@ -71,6 +71,7 @@ function parseArgs(argv) {
     else if (a === '--verbosity') args.verbosity = argv[++i];
     else if (a === '--state') args.state = argv[++i];
     else if (a === '--voice') args.voice = argv[++i];
+    else if (a === '--provider') args.provider = argv[++i];
     else if (a.startsWith('--')) args[a.slice(2)] = argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : true;
     else args._.push(a);
   }
@@ -100,16 +101,18 @@ Options:
   --verbosity <level>     terse | normal | rich. Default normal (config foghorn.verbosity).
   --event/--number/--reason
                           Override the ARMADA_BELL_* context (testing).
+  --provider <id>         TTS provider id (e.g. elevenlabs, openai). Empty/unset
+                          falls back to the free local OS voice.
   --voice <id>            Voice id passed to the provider.
   --print-only            Compose + print the line; never synthesise/play.
   --no-cache              Bypass the clip cache (always re-synthesise).
   -h, --help              This help.
 
-Provider/voice resolution (first wins): --flag > env (FOGHORN_TTS_PROVIDER /
-FOGHORN_VOICE) > config (foghorn.provider / foghorn.voice in .armada/config.json)
-> default. So a NON-SECRET cloud-voice setup can live in config and survive
-restarts with no env at all. The SECRET key is read from the ENV ONLY (e.g.
-ELEVENLABS_API_KEY) — never from config.
+Provider/voice resolution (first wins): --flag (--provider / --voice) > env
+(FOGHORN_TTS_PROVIDER / FOGHORN_VOICE) > config (foghorn.provider / foghorn.voice
+in .armada/config.json) > default. So a NON-SECRET cloud-voice setup can live in
+config and survive restarts with no env at all. The SECRET key is read from the
+ENV ONLY (e.g. ELEVENLABS_API_KEY) — never from config.
 
 Repo-local .env: before resolving, a local env file is loaded if present
 (.armada/foghorn/.env, then repo-root .env) into process.env WITHOUT overriding
@@ -387,7 +390,7 @@ const KEY_VAR_BY_PROVIDER = {
 };
 
 // Resolve the TTS provider/voice with precedence: --flag > env > config > default.
-//   provider: --provider not exposed; FOGHORN_TTS_PROVIDER > foghorn.provider > '' (local)
+//   provider: --provider > FOGHORN_TTS_PROVIDER > foghorn.provider > '' (local)
 //   voice:    --voice > FOGHORN_VOICE > foghorn.voice > 'default'
 // The SECRET key is read from the ENV ONLY (never from config) — keeping the key
 // out of committed config while letting the non-secret provider/voice live there
@@ -395,6 +398,7 @@ const KEY_VAR_BY_PROVIDER = {
 // runs first so the key can also be supplied per-repo via .armada/foghorn/.env.
 function ttsProviderConfig(args, cfg) {
   const provider = (
+    args.provider ||
     process.env.FOGHORN_TTS_PROVIDER ||
     cfg?.foghorn?.provider ||
     ''
@@ -661,11 +665,13 @@ function runCheck(args, cfg, env) {
     mode: 'check',
     resolved: {
       provider: tts.provider || '(none — free local OS voice)',
-      providerSource: process.env.FOGHORN_TTS_PROVIDER
-        ? 'env FOGHORN_TTS_PROVIDER'
-        : cfg?.foghorn?.provider
-          ? 'config foghorn.provider'
-          : 'default (local)',
+      providerSource: args.provider
+        ? '--provider'
+        : process.env.FOGHORN_TTS_PROVIDER
+          ? 'env FOGHORN_TTS_PROVIDER'
+          : cfg?.foghorn?.provider
+            ? 'config foghorn.provider'
+            : 'default (local)',
       voice: tts.voice,
       voiceSource: args.voice
         ? '--voice'
