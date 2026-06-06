@@ -100,6 +100,16 @@ Read `.armada/config.json` from the target repo:
 
   Read it now; you ring the bell at the reconciliation points (§2d, §3e, §5), all governed by the
   single ship's-bell convention in §8.
+- `bellCommand` — an **optional local command hook** the ship's bell runs **in addition to**
+  `PushNotification`, at the **same** reconcile points (§2d, §3e, §5) and gated by the **same**
+  `notify` level. A string; **default `""` (off)** — nothing runs unless the operator opts in, so
+  existing setups are unchanged. It exists because `PushNotification` is **suppressed whenever the
+  terminal has focus** (it suppresses *both* the desktop notification *and* the mobile push), so an
+  operator sitting on the `/loop` gets nothing on a merge or block; a local command closes that gap
+  with a focus-independent, optionally-audible alert. When set, crows-nest runs it via its `Bash`
+  tool with the bell line as an argument and the event exposed via env vars — best-effort, bounded,
+  side-channel, never able to block or fail the tick. The full convention (the arg/env contract, the
+  platform examples, the discipline) is §8e. Read it now; you fire it everywhere the bell rings.
 - `cartography` — gates [`cartographer`](../cartographer/SKILL.md), which learns *per-repo* heuristics
   from completed runs into `.armada/cartography/`. One of `"off" | "proposal" | "on"`, **default
   `"off"`**: at the **same reconcile points** the bell rings (§2d, §3e, §5), and under the **same
@@ -377,6 +387,11 @@ issue comment:
   *blocked* event (§8) — fired when `notify` is `"blocked"`, `"terminal"`, or `"all"`:
   `⛔ #<issue> blocked: <reason>`.
 
+Each ring here is **both** channels of the bell: the `PushNotification` *and*, when `bellCommand` is
+set, the local command hook (§8e) — the *opened* ring fires the hook with `ARMADA_BELL_EVENT=opened`,
+the *blocked* ring with `ARMADA_BELL_EVENT=blocked`. Both run under the same `notify` gate and the
+same best-effort discipline (§8c); fire them only after the label swap and comment above have landed.
+
 Either way the issue leaves `armada:underway`: never leave one stuck there, or it's invisible to
 both the lookout and a human. (On the inline path — the supervised single pick — the running
 shipwright is foreground and opens the PR directly in the turn; apply the same label swap and
@@ -461,6 +476,12 @@ pipeline (§3e):
   only at `notify: "all"` (`🔔 PR #<pr> ready — awaiting human merge`), and stay silent at the
   narrower levels so a deliberate `autoMerge: false` setup isn't pinged on every green PR.
 
+Each of these rings fires **both** bell channels — the `PushNotification` *and*, when `bellCommand`
+is set, the local command hook (§8e), under the same `notify` gate. Map the event to
+`ARMADA_BELL_EVENT`: `shipped` for the merged ring, `blocked` for the blocked ring, `awaiting` for
+`ready_awaiting_human`. Fire the hook only **after** the pipeline's consequential action (the merge,
+the label swap, the comment) has already landed — never before (§8c).
+
 After reconciling a completed pipeline — and after the bell rings — **dispatch cartographer for this
 PR** if the `cartography` key isn't `"off"` (§8d). The addressed PR's muster + human review comments
 are the richest correction evidence; cartographer mines them best-effort in the background and never
@@ -514,7 +535,10 @@ lives in **[references/close-the-loop.md](references/close-the-loop.md)**. The r
 
 When an issue closes as `armada:shipped` (§5d), **ring the ship's bell** for the *shipped* event
 (§8) — fired when `notify` is `"terminal"` or `"all"`:
-`⚓ Shipped #<issue> → PR #<pr> merged`.
+`⚓ Shipped #<issue> → PR #<pr> merged`. This ring, too, fires **both** bell channels — the
+`PushNotification` *and*, when `bellCommand` is set, the local command hook (§8e) with
+`ARMADA_BELL_EVENT=shipped` — under the same gate and the same after-the-fact discipline (§8c): fire
+the hook only after the issue has already been closed and labelled.
 
 After closing the loop — and after the bell rings — **dispatch cartographer for this shipped run** if
 the `cartography` key isn't `"off"` (§8d): the full resolution path (issue → PR → review → merge) is
@@ -608,6 +632,22 @@ terminal/exception reconciliation points the lookout already passes through (§2
 **one line** via the `PushNotification` tool so you're *told* what happened. This is the single,
 shared convention every ring above refers back to — read it once here.
 
+The bell has **two channels**, fired together at every ring: the always-on `PushNotification`
+(§8a–§8c) and an **optional local command hook**, `bellCommand` (§8e). They are complementary, not
+alternatives — the hook runs **in addition to** `PushNotification`, never instead of it.
+
+**Why a second channel.** `PushNotification` is **suppressed whenever the terminal has focus** — and
+that suppresses *both* the desktop notification *and* the mobile push. So an operator sitting on the
+crows-nest `/loop`, watching it tick, gets **nothing** on a merge or a block; the bell only ever
+lands when they've switched away. (A diagnostic `PushNotification` in that state returns *"Not sent —
+terminal has focus. Terminal + mobile suppressed."*) There's also no way to make the `PushNotification`
+itself *audible* — and it doesn't raise Claude Code's `Notification` hook, so an OS-sound fanfare wired
+to that hook never fires. The `bellCommand` hook (§8e) closes the gap: a focus-independent,
+optionally-audible local command the bell invokes directly. Operators who want an audible/desktop alert
+that works *while watching the loop* set `bellCommand`; the `PushNotification` still serves the
+switched-away case. This caveat is **harness-side** — ARMADA can't change `PushNotification`'s
+focus-suppression — so the local hook is the lever ARMADA *does* control.
+
 ### 8a. What rings, and at which `notify` level
 
 The bell fires **only** on the events below, governed by `notify` from §1 (default `"terminal"`).
@@ -629,6 +669,10 @@ tick, and gate each ring against it:
 - `"blocked"` → ring **Blocked** only.
 - `"terminal"` *(default)* → ring **Shipped** and **Blocked**.
 - `"all"` → ring **Shipped**, **Blocked**, **Opened**, and **Awaiting human**.
+
+This single `notify`→events mapping gates **both** bell channels identically: whatever the level
+admits to `PushNotification` it also admits to the `bellCommand` hook (§8e), so the two channels never
+diverge — `"off"` runs neither, `"blocked"` fires both only on blocks, and so on.
 
 ### 8b. What never rings (no noise)
 
@@ -686,6 +730,81 @@ specialise to the repo. It's a **best-effort, side-channel background subagent**
   `.armada/cartography/`; the fleet-defect loop learns about **ARMADA itself** and files a
   `fleet-defect` against `armadaRepo`. The two are independent — §7 is **unchanged** by this.
 
+### 8e. The local command hook — `bellCommand`
+
+The bell's **second channel**: a configurable local command the lookout runs at the **same three
+reconcile points** the `PushNotification` bell rings — **build-completion (§2d)**, **PR-pipeline
+outcome (§3e)**, **issue-shipped (§5)** — gated by the **same `notify` level** (§8a), **in addition
+to** the `PushNotification`, never replacing it. Its reason for existing is the focus-suppression
+caveat documented at the top of §8: `PushNotification` is muted while the terminal has focus, so an
+operator watching the `/loop` gets no alert; a local command is focus-independent and can be audible.
+
+**Gated by the `bellCommand` config key (§1).** Read `bellCommand` from `.armada/config.json`:
+
+- **Default `""` (empty / off)** → **run nothing.** The bell behaves exactly as before — just the
+  `PushNotification` — and existing setups are unchanged. This is the safe default.
+- **A non-empty string** → it's a shell command. At each ring the `notify` gate admits (§8a), run it
+  **once** via the `Bash` tool, after the `PushNotification`, as the last optional step of the
+  reconcile.
+
+**The event context the hook receives.** So one script can react differently per event, every
+invocation passes the bell context two ways — as a positional **argument** and as **environment
+variables**:
+
+- **Argument** — the bell line itself (the same one-sentence message `PushNotification` would send,
+  e.g. `⚓ Shipped #12 → PR #17 merged`) is passed as the **first argument** to the command.
+- **Environment variables** — set on the command's environment:
+  - `ARMADA_BELL_EVENT` — the event kind: one of `shipped` | `blocked` | `opened` | `awaiting`.
+  - `ARMADA_BELL_NUMBER` — the issue or PR number the event concerns (e.g. `17`).
+  - `ARMADA_BELL_REASON` — the block reason for a `blocked` event; empty for the others.
+  - `ARMADA_BELL_MESSAGE` — the full bell line (same value as the argument), for scripts that prefer
+    to read the env.
+
+Concretely, the run is `bellCommand "<bell line>"` with those four env vars exported — for example
+(a non-empty `bellCommand` of `powershell.exe -File fanfare.ps1`):
+
+```bash
+ARMADA_BELL_EVENT=shipped ARMADA_BELL_NUMBER=17 ARMADA_BELL_REASON="" \
+ARMADA_BELL_MESSAGE="⚓ Shipped #12 → PR #17 merged" \
+  powershell.exe -File fanfare.ps1 "⚓ Shipped #12 → PR #17 merged"
+```
+
+**Same discipline as §8c — best-effort, side-channel, never fatal.** The hook is held to the
+**identical** contract as the `PushNotification` ring:
+
+- **After the consequential action, never before.** Run `bellCommand` only **after** the reconcile's
+  real work has landed — the label swap, the PR comment, the merge, the issue close — exactly like
+  the `PushNotification` ring. It is the last, optional step; never re-order it ahead of the outcome.
+- **Failure swallowed, logged at most once.** A missing, slow, or failing `bellCommand` **never**
+  blocks the tick, **never** retries or spins, and **never** fails the reconcile — same contract as a
+  missing `PushNotification`. Swallow any non-zero exit or error and log it **at most once**, prefixed
+  `crows-nest bell:` (e.g. `crows-nest bell: bellCommand exited 1 — ignored`). A failed hook must
+  never turn a green tick red.
+- **Bounded / non-hanging.** A hook must not stall the loop, so run it **fire-and-forget or
+  time-bounded** — start it detached (so a long-playing sound or an accidental prompt can't hold the
+  tick open) or cap it with a short timeout and move on. **`bellCommand` is expected to return
+  promptly**; the lookout does not wait on it and does not read its output. On a platform where you
+  can't background a process from the `Bash` tool, wrap it in a short timeout (a few seconds) rather
+  than blocking. Either way the tick proceeds the moment the hook is launched.
+- **Best-effort de-dup.** Like the `PushNotification` ring, the hook fires **once** per terminal
+  event — at the reconciliation that sets the terminal label — and the in-flight guards (§2a) keep a
+  reconciled unit from re-ringing on a later tick.
+
+**Cross-platform by construction.** The value is an **operator-supplied** command — ARMADA ships **no
+sound asset and assumes no OS**. The operator points it at whatever raises an alert on their machine:
+
+```jsonc
+// Windows — a PowerShell fanfare script:
+"bellCommand": "powershell.exe -File C:\\armada\\fanfare.ps1"
+// macOS — play a system sound:
+"bellCommand": "afplay /System/Library/Sounds/Glass.aiff"
+// Linux — play a wav via PulseAudio:
+"bellCommand": "paplay /usr/share/sounds/freedesktop/stereo/complete.oga"
+```
+
+The command receives the bell line as its first argument and the `ARMADA_BELL_*` env vars (above), so
+a single script can branch on `$ARMADA_BELL_EVENT` to play different sounds for shipped vs. blocked.
+
 ## Inputs
 
 - `label` *(optional)* — the trigger label to watch. Defaults to `.armada/config.json` → `triggerLabel`, else `armada`.
@@ -706,4 +825,6 @@ specialise to the repo. It's a **best-effort, side-channel background subagent**
   PRs `armada` → `armada:reviewing` → `armada:merged` / `armada:blocked`.
 - On terminal/exception events (shipped / blocked, plus opened / awaiting-human at `notify: "all"`):
   a one-line **ship's bell** `PushNotification` per the `notify` level — degrading to a logged line
-  when the notifier is unavailable, never fatal to the tick (§8).
+  when the notifier is unavailable, never fatal to the tick (§8) — **and**, when `bellCommand` is set
+  (default `""` = off), a focus-independent local command hook fired alongside it under the same gate
+  and the same best-effort/bounded discipline (§8e).

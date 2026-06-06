@@ -68,6 +68,7 @@ overwriting** — the user may have hand-tuned it.
   "authors": "",                   // "" = act on anyone; "alice" or "alice,bob" to restrict by author
   "autoMerge": false,              // ready-PR pipeline may merge? Default false: stop-before-merge.
   "notify": "terminal",            // ship's bell: "off" | "blocked" | "terminal" | "all". Default "terminal" (shipped + blocked).
+  "bellCommand": "",               // optional local command the bell also runs (focus-independent alert). Default "" = off. See crows-nest §8e.
   "mergeMethod": "squash",         // merge | squash | rebase, when autoMerge is true
   "maxReviewRounds": 2,            // bound on the address↔review loop before handing back
   "armadaRepo": "calumjs/ARMADA",  // where self-raised fleet-defect fixes are filed (charter §9)
@@ -101,6 +102,18 @@ of you polling the `armada:*` labels (see crows-nest §8). The user can dial it 
 (only "needs a human" events) or `"off"`, or up to `"all"` (also notify when a build opens a PR and
 when a green PR awaits a human merge). The bell is best-effort and side-channel — it degrades to a
 log line if the notifier isn't available and never affects the build/review/merge outcome.
+
+Write `bellCommand` as `""` (the default — **off**). It's the ship's bell's optional **local command
+hook**: a shell command crows-nest runs at the same reconcile points as the `PushNotification`, under
+the same `notify` gate, **in addition to** it. It exists because `PushNotification` is suppressed
+while the terminal has focus (suppressing both desktop *and* mobile), so an operator watching the
+`/loop` gets no alert — a local command is focus-independent and can be audible. Left `""`, nothing
+runs and the bell behaves exactly as before. The operator opts in by setting an OS-appropriate
+command — ARMADA ships no sound asset and assumes no platform, e.g. `powershell.exe -File fanfare.ps1`
+on Windows, `afplay /System/Library/Sounds/Glass.aiff` on macOS, or
+`paplay /usr/share/sounds/freedesktop/stereo/complete.oga` on Linux. The command receives the bell
+line as its first argument plus `ARMADA_BELL_EVENT` / `ARMADA_BELL_NUMBER` / `ARMADA_BELL_REASON` /
+`ARMADA_BELL_MESSAGE` env vars, and is best-effort, bounded, and side-channel — see crows-nest §8e.
 
 `armadaRepo` and `autoArmSelfFixes` wire the **self-improvement loop** (see
 [`charter`](../charter/SKILL.md) §9): when a skill hits a defect in ARMADA *itself*, it files a fix
@@ -167,6 +180,7 @@ and don't arm the loop for them** (both are the user's call):
   authors     : <"" = anyone, or the configured allowlist>
   auto-merge  : off (default) — the sole merge gate; ready-PR pipeline stops at "awaiting human merge"
   notify      : terminal (default) — ship's bell on shipped + blocked; off | blocked | terminal | all
+  bellCommand : "" (default, off) — optional local command the bell also runs (focus-independent alert)
   self-fixes  : armadaRepo=<owner/repo> · autoArmSelfFixes off (default) — fleet-defects filed for human triage
   cartography : off (default) — cartographer never auto-runs; off | proposal | on (run /cartographer by hand any time)
   labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked, fleet-defect ✓
