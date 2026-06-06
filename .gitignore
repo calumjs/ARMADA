@@ -12,3 +12,10 @@
 # foghorn — hash-cached spoken clips are machine-/content-specific scratch, keyed
 # by (text + voice + provider); regenerated on demand, never part of the plugin.
 .armada/foghorn/cache/
+
+# foghorn — the repo-local .env supplies the cloud-voice SECRET (e.g.
+# ELEVENLABS_API_KEY) and any FOGHORN_* per-repo, without depending on OS env
+# propagation. It is a secret-bearing file — NEVER commit it. (foghorn-say.mjs
+# loads .armada/foghorn/.env then repo-root .env without overriding real env.)
+.armada/foghorn/.env
+/.env

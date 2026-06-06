@@ -77,7 +77,9 @@ overwriting** — the user may have hand-tuned it.
   "foghorn": {                     // the spoken narrator (foghorn skill). All optional — defaults shown.
     "flavour": "a gruff, proud nautical harbourmaster",  // free-text tone steering the spoken line
     "verbosity": "normal",         // spoken length: "terse" | "normal" | "rich"
-    "gate": "terminal"             // which events speak: "off" | "blocked" | "terminal" | "all" (routine ticks quiet)
+    "gate": "terminal",            // which events speak: "off" | "blocked" | "terminal" | "all" (routine ticks quiet)
+    "provider": "",                // NON-SECRET cloud TTS provider: "" (free local OS voice) | "elevenlabs" | "openai" | …
+    "voice": ""                    // NON-SECRET voice id for that provider; "" = the provider/OS default. The SECRET key is NEVER here — env / .env only.
   },
   "commands": {
     "build":  "<detected or omitted>",
@@ -140,13 +142,20 @@ gate). This is distinct from the fleet-defect loop above: `cartography` learns a
 `autoArmSelfFixes` is about defects in *ARMADA itself*.
 
 `foghorn` holds the defaults for the spoken narrator ([`foghorn`](../foghorn/SKILL.md) — the fleet's
-**voice**, which speaks activity aloud). All three keys are optional with sensible defaults, so write
-the block as a convenience: `flavour` is a short free-text tone (default a gruff, proud **nautical
+**voice**, which speaks activity aloud). All keys are optional with sensible defaults, so write the
+block as a convenience: `flavour` is a short free-text tone (default a gruff, proud **nautical
 harbourmaster**) that steers the wording of what's spoken; `verbosity` (`terse | normal | rich`)
 controls spoken length; `gate` (`off | blocked | terminal | all`, default `terminal`) keeps routine
-ticks quiet, mirroring `notify`. These set *tone*, not behaviour — foghorn is read-only w.r.t. the
-fleet and writing them turns nothing on by itself. To actually **hear** the bell, the user also
-points `bellCommand` at it (see [`foghorn`](../foghorn/SKILL.md) §3):
+ticks quiet, mirroring `notify`. Also write the two **non-secret** voice keys, both **default empty**:
+`provider` (`""` = the free local OS voice; or `"elevenlabs"`, `"openai"`, …) and `voice` (the voice
+id for that provider, `""` = its default). These live in config so a cloud-voice setup is
+**discoverable and survives restarts with no env at all** — foghorn resolves provider/voice with
+precedence `--flag > env (FOGHORN_TTS_PROVIDER/FOGHORN_VOICE) > foghorn.* config > default`. The
+**secret key is NEVER written to config** — it comes from the environment or a gitignored repo-local
+`.env` (`.armada/foghorn/.env`) only (see [`foghorn`](../foghorn/SKILL.md) §1). These keys set *tone
+and voice*, not behaviour — foghorn is read-only w.r.t. the fleet and writing them turns nothing on by
+itself. To actually **hear** the bell, the user also points `bellCommand` at it (see
+[`foghorn`](../foghorn/SKILL.md) §3):
 `"bellCommand": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/foghorn-say.mjs\""`.
 
 ## 4. Create the GitHub labels
@@ -198,7 +207,7 @@ and don't arm the loop for them** (both are the user's call):
   bellCommand : "" (default, off) — optional local command the bell also runs (focus-independent alert)
   self-fixes  : armadaRepo=<owner/repo> · autoArmSelfFixes off (default) — fleet-defects filed for human triage
   cartography : off (default) — cartographer never auto-runs; off | proposal | on (run /cartographer by hand any time)
-  foghorn     : flavour="a gruff, proud nautical harbourmaster" · verbosity=normal · gate=terminal — spoken narrator (set bellCommand to hear it)
+  foghorn     : flavour="a gruff, proud nautical harbourmaster" · verbosity=normal · gate=terminal · provider="" · voice="" — spoken narrator (set provider/voice for a cloud voice, key via env/.env; set bellCommand to hear it)
   labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked, fleet-defect ✓
 
 Next:

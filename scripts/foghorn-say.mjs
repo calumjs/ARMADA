@@ -60,6 +60,7 @@ function parseArgs(argv) {
     if (a === '--help' || a === '-h') args.help = true;
     else if (a === '--status') args.status = true;
     else if (a === '--self-test') args.selfTest = true;
+    else if (a === '--check' || a === '--doctor') args.check = true;
     else if (a === '--print-only') args.printOnly = true;
     else if (a === '--no-cache') args.noCache = true;
     else if (a === '--line') args.line = argv[++i];
@@ -86,6 +87,11 @@ Modes:
                           snapshot (spyglass's .armada/spyglass/fleet-state.json,
                           or --state <file>).
   --self-test             Compose + cache only; never touch the audio device.
+  --check                 Doctor mode: print what foghorn RESOLVED — provider,
+                          voice, whether the key is present (masked, never the
+                          value), the cache dir, and the chosen player — and
+                          synthesise/play NOTHING. Answers "why isn't it using
+                          my voice?" in one command.
 
 Options:
   --flavour "<text>"      Free-text tone prompt steering wording/voice-style.
@@ -99,11 +105,20 @@ Options:
   --no-cache              Bypass the clip cache (always re-synthesise).
   -h, --help              This help.
 
-Provider (mirrors logbook): set FOGHORN_TTS_PROVIDER (e.g. elevenlabs) and the
-provider's key (e.g. ELEVENLABS_API_KEY) in the ENV for a cloud voice. With no
-key set it falls back to the FREE LOCAL OS voice (Windows SAPI / macOS say /
-Linux espeak). With no audio engine at all it prints the line and exits 0 — it
-never errors, so it is safe as a crows-nest bellCommand.
+Provider/voice resolution (first wins): --flag > env (FOGHORN_TTS_PROVIDER /
+FOGHORN_VOICE) > config (foghorn.provider / foghorn.voice in .armada/config.json)
+> default. So a NON-SECRET cloud-voice setup can live in config and survive
+restarts with no env at all. The SECRET key is read from the ENV ONLY (e.g.
+ELEVENLABS_API_KEY) — never from config.
+
+Repo-local .env: before resolving, a local env file is loaded if present
+(.armada/foghorn/.env, then repo-root .env) into process.env WITHOUT overriding
+already-set vars. This lets the key (and any FOGHORN_*) be supplied per-repo
+without depending on OS env propagation. Both .env paths are gitignored.
+
+With no provider/key set it falls back to the FREE LOCAL OS voice (Windows SAPI /
+macOS say / Linux espeak). With no audio engine at all it prints the line and
+exits 0 — it never errors, so it is safe as a crows-nest bellCommand.
 `;
 
 // --------------------------------------------------------------------------
@@ -121,6 +136,75 @@ function readConfig() {
     /* config is optional — degrade to defaults */
   }
   return {};
+}
+
+// --------------------------------------------------------------------------
+// Repo-local .env loader — dependency-free (no `dotenv`), a tiny built-in parser.
+//
+// Why: on Windows, `setx`/User env vars only propagate to FRESHLY-launched
+// process trees, so a running app (and the bell it spawns) keeps seeing stale
+// env — a correctly-configured cloud voice silently falls back to the local OS
+// voice. Loading a repo-local .env into process.env lets the key (and any
+// FOGHORN_*) be supplied PER-REPO without depending on OS env propagation.
+//
+// Files (loaded in order): .armada/foghorn/.env, then repo-root .env. An
+// already-set var is NEVER overridden — real OS env still wins over the file,
+// and the first file loaded wins over the second. Both paths are gitignored, so
+// the SECRET key stays out of version control.
+// --------------------------------------------------------------------------
+
+// Parse a single .env line into [key, value] or null. Supports `KEY=value`,
+// optional `export ` prefix, `#` comments, blank lines, and single/double
+// quoted values (quotes stripped). Deliberately small — no interpolation.
+function parseEnvLine(line) {
+  const s = line.trim();
+  if (!s || s.startsWith('#')) return null;
+  const m = s.replace(/^export\s+/, '').match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+  if (!m) return null;
+  let val = m[2].trim();
+  if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+    val = val.slice(1, -1);
+  } else {
+    // Unquoted: strip a trailing inline comment ( value # comment ).
+    const hash = val.indexOf(' #');
+    if (hash !== -1) val = val.slice(0, hash).trim();
+  }
+  return [m[1], val];
+}
+
+// Load one .env file into process.env without overriding already-set vars.
+// Returns the list of keys it set (for the doctor report), or [] if absent.
+function loadEnvFile(file) {
+  const set = [];
+  try {
+    if (!existsSync(file)) return set;
+    for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
+      const kv = parseEnvLine(line);
+      if (!kv) continue;
+      const [k, v] = kv;
+      if (process.env[k] === undefined) {
+        process.env[k] = v;
+        set.push(k);
+      }
+    }
+  } catch {
+    /* a malformed/unreadable .env must never fail foghorn — skip it */
+  }
+  return set;
+}
+
+// Load the repo-local env files (first wins; real env always wins over both).
+// Returns { files: [{path, keys}] } describing what was loaded, for --check.
+function loadLocalEnv() {
+  const candidates = [
+    path.join(process.cwd(), '.armada', 'foghorn', '.env'),
+    path.join(process.cwd(), '.env'),
+  ];
+  const files = [];
+  for (const f of candidates) {
+    if (existsSync(f)) files.push({ path: f, keys: loadEnvFile(f) });
+  }
+  return { files };
 }
 
 function resolveFlavour(args, cfg) {
@@ -294,18 +378,37 @@ function composeStatus(state, flavour) {
 // Provider-pluggable, env-keyed TTS (mirrors logbook recorder).
 // --------------------------------------------------------------------------
 
-function ttsProviderConfig(args) {
-  const provider = (process.env.FOGHORN_TTS_PROVIDER || '').toLowerCase().trim();
-  const voice = args.voice || process.env.FOGHORN_VOICE || 'default';
-  if (!provider) return { provider: null, key: null, voice, reason: 'FOGHORN_TTS_PROVIDER unset' };
-  const keyVarByProvider = {
-    elevenlabs: 'ELEVENLABS_API_KEY',
-    openai: 'OPENAI_API_KEY',
-    azure: 'AZURE_SPEECH_KEY',
-    google: 'GOOGLE_API_KEY',
-    polly: 'AWS_ACCESS_KEY_ID',
-  };
-  const keyVar = keyVarByProvider[provider] || `${provider.toUpperCase()}_API_KEY`;
+const KEY_VAR_BY_PROVIDER = {
+  elevenlabs: 'ELEVENLABS_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  azure: 'AZURE_SPEECH_KEY',
+  google: 'GOOGLE_API_KEY',
+  polly: 'AWS_ACCESS_KEY_ID',
+};
+
+// Resolve the TTS provider/voice with precedence: --flag > env > config > default.
+//   provider: --provider not exposed; FOGHORN_TTS_PROVIDER > foghorn.provider > '' (local)
+//   voice:    --voice > FOGHORN_VOICE > foghorn.voice > 'default'
+// The SECRET key is read from the ENV ONLY (never from config) — keeping the key
+// out of committed config while letting the non-secret provider/voice live there
+// and survive restarts with no OS env propagation. The .env loader (loadLocalEnv)
+// runs first so the key can also be supplied per-repo via .armada/foghorn/.env.
+function ttsProviderConfig(args, cfg) {
+  const provider = (
+    process.env.FOGHORN_TTS_PROVIDER ||
+    cfg?.foghorn?.provider ||
+    ''
+  ).toLowerCase().trim();
+  const voice = (
+    args.voice ||
+    process.env.FOGHORN_VOICE ||
+    cfg?.foghorn?.voice ||
+    'default'
+  );
+  if (!provider) {
+    return { provider: null, key: null, voice, reason: 'no provider (FOGHORN_TTS_PROVIDER / foghorn.provider unset)' };
+  }
+  const keyVar = KEY_VAR_BY_PROVIDER[provider] || `${provider.toUpperCase()}_API_KEY`;
   return { provider, keyVar, key: process.env[keyVar] || null, voice };
 }
 
@@ -477,12 +580,12 @@ function speakLocal(text, voice) {
 // print-only. Always resolves; never throws. Returns the path taken.
 // --------------------------------------------------------------------------
 
-async function speak(text, args) {
+async function speak(text, args, cfg) {
   if (args.printOnly) {
     process.stdout.write(`foghorn: ${text}\n`);
     return 'print';
   }
-  const tts = ttsProviderConfig(args);
+  const tts = ttsProviderConfig(args, cfg);
   // 1) Cloud provider with a key -> synth (hash-cached) + play.
   if (tts.provider && tts.key) {
     const synth = await synthesizeCloud(tts, text, args);
@@ -514,6 +617,85 @@ function bellContext(args) {
 }
 
 // --------------------------------------------------------------------------
+// --check (doctor): print what foghorn RESOLVED and synthesise/play NOTHING.
+// Answers "why isn't it using my voice?" in one command — the masked key tells
+// you the key is seen without ever printing its value.
+// --------------------------------------------------------------------------
+
+// Mask a secret: never print the value. Show only that it is present and a
+// short, non-reversible hint (first 2 + last 2 chars for a long-enough key).
+function maskKey(key) {
+  if (!key) return null;
+  const k = String(key);
+  if (k.length <= 6) return '*'.repeat(k.length);
+  return `${k.slice(0, 2)}…${k.slice(-2)} (${k.length} chars)`;
+}
+
+// Report which host audio player WOULD be chosen for a cloud clip, without
+// launching it. Mirrors playFile()'s selection logic (read-only).
+function chosenPlayer() {
+  const plat = os.platform();
+  if (plat === 'win32') return 'powershell System.Windows.Media.MediaPlayer';
+  if (plat === 'darwin') return resolveExe('afplay') ? 'afplay' : 'none (afplay not found)';
+  const p = resolveExe('paplay') || resolveExe('aplay') || resolveExe('ffplay') || resolveExe('mpg123');
+  return p || 'none (paplay/aplay/ffplay/mpg123 not found)';
+}
+
+// Report the local OS voice engine that WOULD speak when no cloud key is set.
+function chosenLocalVoice() {
+  const plat = os.platform();
+  if (plat === 'win32') return 'Windows System.Speech (SAPI)';
+  if (plat === 'darwin') return resolveExe('say') ? 'macOS say' : 'none (say not found)';
+  const e = resolveExe('espeak-ng') || resolveExe('espeak');
+  return e ? `${e}` : 'none (espeak/espeak-ng not found)';
+}
+
+function runCheck(args, cfg, env) {
+  const tts = ttsProviderConfig(args, cfg);
+  const flavour = resolveFlavour(args, cfg);
+  const verbosity = resolveVerbosity(args, cfg);
+  const gate = resolveGate(cfg);
+  const usingCloud = !!(tts.provider && tts.key);
+
+  const report = {
+    mode: 'check',
+    resolved: {
+      provider: tts.provider || '(none — free local OS voice)',
+      providerSource: process.env.FOGHORN_TTS_PROVIDER
+        ? 'env FOGHORN_TTS_PROVIDER'
+        : cfg?.foghorn?.provider
+          ? 'config foghorn.provider'
+          : 'default (local)',
+      voice: tts.voice,
+      voiceSource: args.voice
+        ? '--voice'
+        : process.env.FOGHORN_VOICE
+          ? 'env FOGHORN_VOICE'
+          : cfg?.foghorn?.voice
+            ? 'config foghorn.voice'
+            : 'default',
+      keyVar: tts.keyVar || null,
+      keyPresent: !!tts.key,
+      keyMasked: maskKey(tts.key),
+      flavour,
+      register: flavourRegister(flavour),
+      verbosity,
+      gate,
+    },
+    willUse: usingCloud
+      ? `cloud voice (${tts.provider})`
+      : tts.provider
+        ? `local OS voice — provider '${tts.provider}' set but key ${tts.keyVar} is MISSING`
+        : 'free local OS voice (no provider configured)',
+    cacheDir: cacheDir(),
+    player: usingCloud ? chosenPlayer() : `local voice: ${chosenLocalVoice()}`,
+    envFilesLoaded: env.files.map((f) => ({ path: f.path, setKeys: f.keys })),
+  };
+  process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+  // Doctor synthesises/plays NOTHING.
+}
+
+// --------------------------------------------------------------------------
 // main
 // --------------------------------------------------------------------------
 
@@ -524,12 +706,23 @@ async function main() {
     return;
   }
   const cfg = readConfig();
+  // Load the repo-local .env BEFORE resolving anything — so a key (or any
+  // FOGHORN_*) supplied via .armada/foghorn/.env or repo-root .env is in
+  // process.env for provider/voice/key resolution, without depending on OS env
+  // propagation. Already-set (real OS) env always wins over the file.
+  const env = loadLocalEnv();
   const flavour = resolveFlavour(args, cfg);
   const verbosity = resolveVerbosity(args, cfg);
 
+  // --check: doctor mode — print what foghorn resolved; synthesise/play nothing.
+  if (args.check) {
+    runCheck(args, cfg, env);
+    return;
+  }
+
   // --line: an explicit, already-composed line (agent-driven modes).
   if (args.line) {
-    await speak(args.line, args);
+    await speak(args.line, args, cfg);
     return;
   }
 
@@ -545,7 +738,7 @@ async function main() {
         : 'Fleet status: no snapshot available.';
     }
     if (source) process.stderr.write(`foghorn: status from ${source}\n`);
-    await speak(line, args);
+    await speak(line, args, cfg);
     return;
   }
 
@@ -567,14 +760,14 @@ async function main() {
 
   if (args.selfTest) {
     // Compose + warm the cache (when keyed) without touching the audio device.
-    const tts = ttsProviderConfig(args);
+    const tts = ttsProviderConfig(args, cfg);
     const report = { mode: 'bell', register: flavourRegister(flavour), verbosity, gate, line };
     if (tts.provider && tts.key) report.cacheHash = clipHash(tts.provider, tts.voice, line);
     process.stdout.write(JSON.stringify(report, null, 2) + '\n');
     return;
   }
 
-  await speak(line, args);
+  await speak(line, args, cfg);
 }
 
 // Top-level: NEVER fail. foghorn is a best-effort side-channel narrator — a

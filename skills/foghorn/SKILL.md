@@ -55,14 +55,56 @@ missing block just means defaults apply.
 `foghorn` does **not** ship a TTS vendor or assume one. The bundled script selects the engine the
 same way logbook does:
 
-- **Cloud voice when keyed.** Set `FOGHORN_TTS_PROVIDER` (e.g. `elevenlabs`, `openai`) and that
-  provider's key in the **environment** (`ELEVENLABS_API_KEY`, `OPENAI_API_KEY`, …). Keys are read
-  **from env only — never committed, never passed as flags**.
+- **Cloud voice when keyed.** Pick a provider (e.g. `elevenlabs`, `openai`) and a voice, and supply
+  that provider's key. The **non-secret** provider/voice resolve with precedence
+  **`--flag` > env (`FOGHORN_TTS_PROVIDER` / `FOGHORN_VOICE`) > `foghorn.provider` / `foghorn.voice`
+  in `.armada/config.json` > default** — so a cloud-voice setup can live in **config** and **survive
+  restarts with no env at all**. The **secret key** is read **from the environment only**
+  (`ELEVENLABS_API_KEY`, `OPENAI_API_KEY`, …) — **never** from config, never committed, never passed
+  as a flag.
 - **Free local OS voice otherwise.** With no provider/key set it falls back to the host's built-in
   voice — **Windows** `System.Speech`/SAPI, **macOS** `say`, **Linux** `espeak`/`espeak-ng` — so it
   speaks out of the box with zero setup and zero cost.
 - **Print fallback, never an error.** If there's no audio device or engine at all (headless CI, no
   speaker, no `espeak`), it **prints the line and exits 0**. A missing voice must never fail a tick.
+
+### The secret / non-secret split, and the repo-local `.env`
+
+The **non-secret** provider/voice live in `.armada/config.json` under `foghorn.provider` /
+`foghorn.voice` (written by [`commission`](../commission/SKILL.md), default empty = local OS voice).
+The **secret key never goes in committed config** — and to spare you the Windows OS-env-propagation
+dance (where `setx`/User env only reaches *freshly-launched* process trees, so a running app and the
+bell it spawns keep seeing stale env), the script **loads a repo-local `.env` before resolving**:
+
+- It reads **`.armada/foghorn/.env`** then **repo-root `.env`** into `process.env`, **without
+  overriding already-set vars** (real OS env always wins; the first file wins over the second). The
+  loader is **dependency-free** — a tiny built-in parser, no `dotenv` package.
+- Put the key (and any `FOGHORN_*`) there to supply it **per-repo** without OS env propagation:
+
+  ```ini
+  # .armada/foghorn/.env  — GITIGNORED, never committed
+  ELEVENLABS_API_KEY=sk_…
+  # optional per-repo non-secret overrides:
+  # FOGHORN_TTS_PROVIDER=elevenlabs
+  # FOGHORN_VOICE=A774…
+  ```
+
+- Both `.env` paths are **gitignored** (alongside `.armada/foghorn/cache/`), so the secret stays out
+  of version control. A typical no-env-propagation setup is `provider`/`voice` in config + the key in
+  `.armada/foghorn/.env` — and it survives restarts.
+
+### `foghorn --check` (doctor) — "why isn't it using my voice?"
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/foghorn-say.mjs" --check
+```
+
+`--check` prints exactly what foghorn **resolved** — the provider and **where it came from**
+(flag/env/config/default), the voice and its source, whether the key is **present (masked — never the
+value)**, which `.env` files were loaded and what they set, the cache dir, and the chosen player /
+local voice — and **synthesises and plays nothing**. It is the one-command answer to "why is it
+falling back to the local voice?": a missing key, or a provider read from `default` instead of
+`config`, shows up immediately.
 
 **Hash-cached clips.** Each synthesised clip is keyed by a content hash of **(text + voice +
 provider)** and cached under the **gitignored** scratch dir `.armada/foghorn/cache/`. A repeated
@@ -168,9 +210,10 @@ The status readout never mutates anything — it is a *spoken view*, exactly lik
 
 For the agent-driven modes (§4/§5) you compose the line and call `--line`. For a quick spoken status,
 `--status`. For the bell, you don't run it — you **wire it** (§3) and crows-nest runs it. Useful
-flags: `--flavour`, `--verbosity terse|normal|rich`, `--print-only` (compose + print, no audio),
-`--self-test` (compose + cache key, no audio), `--no-cache`. The script prints `--help` for the full
-surface.
+flags: `--flavour`, `--verbosity terse|normal|rich`, `--voice <id>`, `--check` (doctor: print the
+resolved provider/voice/key-presence/cache/player, synthesise nothing — §1), `--print-only` (compose
++ print, no audio), `--self-test` (compose + cache key, no audio), `--no-cache`. The script prints
+`--help` for the full surface.
 
 ## 7. Discipline — best-effort, side-channel, never fatal
 
@@ -185,10 +228,14 @@ additional alert channel like the bell, never a controller, and never a replacem
 
 - Optional `--line "<text>"` (an already-composed line), `--status` (spoken fleet readout), or — in
   the bell path — the `ARMADA_BELL_*` env crows-nest exports.
-- Optional `--flavour "..."` / `--verbosity terse|normal|rich` (or the `foghorn.flavour` /
-  `foghorn.verbosity` / `foghorn.gate` config keys, or `FOGHORN_*` env).
-- TTS provider + key **from the environment only** (`FOGHORN_TTS_PROVIDER` + `<PROVIDER>_API_KEY`) —
-  optional; falls back to the free local OS voice, then to printing.
+- Optional `--flavour "..."` / `--verbosity terse|normal|rich` / `--voice <id>` (or the
+  `foghorn.flavour` / `foghorn.verbosity` / `foghorn.gate` / `foghorn.provider` / `foghorn.voice`
+  config keys, or `FOGHORN_*` env). `--check` runs the doctor (resolved config, masked key; no audio).
+- **Non-secret** TTS provider/voice resolve `--flag > env (`FOGHORN_TTS_PROVIDER`/`FOGHORN_VOICE`) >
+  `foghorn.provider`/`foghorn.voice` config > default`. The **secret key** is read **from env only**
+  (`<PROVIDER>_API_KEY`) — never from config — and a gitignored repo-local `.env`
+  (`.armada/foghorn/.env`, then repo-root `.env`) is loaded into env first (no override) so the key
+  needs no OS env propagation. All optional; falls back to the free local OS voice, then to printing.
 
 ## Output
 
