@@ -226,8 +226,21 @@ the app into an output dir — it is **not** loaded into the rendered view:
 - **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-trial.mjs`** — serves the output dir over a throwaway
   localhost server (file:// blocks the app's `fetch`) and drives the already-available Playwright
   CLI to capture each canonical state at a wide and a narrow viewport plus a **reduced-motion**
-  render. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-trial.mjs"` (optional `--only <names>`,
-  `--channel chrome`, `--snapshot <fleet-state.json>` to also trial a real read-only snapshot).
+  render. It **waits for the server to be listening and answering** before each capture, uses a
+  bounded navigation timeout and awaits the app's first paint, **retries** a transient failure, and
+  verifies every PNG is written and non-empty. Run
+  `node "${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-trial.mjs"` and it writes all states' PNGs into
+  `<out>/captures` (default out dir under the OS temp dir).
+  - **Browser channel:** it drives an already-installed Chromium-family channel — default
+    `--channel msedge` (Microsoft Edge); pass `--channel chrome` for Google Chrome. The harness adds
+    no browser/runtime dependency of its own; the channel must already be present.
+  - **Other flags:** `--only <names>` (subset of fixtures), `--out <dir>` (scratch/output dir),
+    `--snapshot <fleet-state.json>` (also trial a real read-only snapshot), `--retries <n>`
+    (per-capture retry budget, default 2), `--timeout <ms>` (navigation/action timeout, default
+    30000), `--settle <ms>` (post-load settle).
+  - **Exit code:** `0` only if **every** expected PNG was captured and is non-empty; on any failure
+    it prints the underlying Playwright error and **exits non-zero** — a broken trial never passes
+    silently.
 
 ## Inputs
 
