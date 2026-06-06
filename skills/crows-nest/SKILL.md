@@ -472,12 +472,17 @@ Dispatch lighthouse on a tick **only when every one of these holds**:
    still works for a human any time). This is the master switch, exactly like `cartography` and
    `autoMerge` — off by default, opt-in.
 2. **Existing work always wins — the runnable frontier is free.** Dispatch lighthouse **only** when
-   the frontier this tick is empty (**horizon clear · harbour clear** — §2c: no issue build and no PR
-   review is runnable *or* in flight), or utilisation is below the configured threshold
-   (`lighthouse.minIdleToDispatch`, default = require fully idle). If **any** build or review is
-   runnable or in flight, **skip or defer lighthouse this tick** — it is the last thing the fleet
-   does, never a competitor for a concurrency slot. lighthouse uses **no** `maxConcurrentBuilds` /
-   `maxConcurrentReviews` budget; it only ever runs when those tracks are quiet.
+   the frontier this tick is empty: **horizon clear · harbour clear** (§2c — no issue build and no PR
+   review is runnable *or* in flight). This is the hard, non-negotiable invariant: if **any** build or
+   review is runnable or in flight, **skip or defer lighthouse this tick**, full stop. There is **no**
+   "utilisation below a threshold" relaxation — lighthouse is the last thing the fleet does, never a
+   competitor for a concurrency slot, so it runs only when both tracks are fully quiet. The
+   `lighthouse.minIdleToDispatch` flag is the **boolean guard** for this rule (commission writes it as
+   a boolean, default `true`): left `true`, auto-dispatch requires the frontier fully idle as above.
+   The default is the only supported value — the flag exists so an operator can explicitly *tighten*
+   the gate, never loosen it; nothing about it ever permits lighthouse to run while a build or review
+   is runnable or in flight. lighthouse uses **no** `maxConcurrentBuilds` / `maxConcurrentReviews`
+   budget; it only ever runs when those tracks are quiet.
 3. **A trigger condition holds — there's a reason to survey.** Idle alone isn't enough. Dispatch only
    when at least one of these is true (cheap to check from `git`/`gh` state):
    - `lighthouse.intervalHours` has elapsed since the **last lighthouse run** (track it via the last

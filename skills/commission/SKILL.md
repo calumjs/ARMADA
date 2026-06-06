@@ -86,7 +86,7 @@ overwriting** — the user may have hand-tuned it.
     "autoArm": false,              // the ONLY way generated issues get armed. Default false — human review is the gate.
     "intervalHours": 24,           // trigger: min hours since the last lighthouse run
     "commitsSinceScan": 20,        // trigger: N commits landed since the last scan
-    "minIdleToDispatch": true,     // only dispatch when the runnable frontier is empty (existing work always wins)
+    "minIdleToDispatch": true,     // BOOLEAN guard (default true): only auto-dispatch when the runnable frontier is fully idle. Never overrides existing-work-always-wins.
     "budget": {                    // every run is bounded — recon, not exhaustive analysis
       "maxRuntimeSec": 300,        // hard cap on the whole run
       "maxPlaywrightSec": 120,     // hard cap on the dynamic (Playwright) survey

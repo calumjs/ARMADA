@@ -134,7 +134,7 @@ A couple of related distribution conventions:
     "autoArm": false,          // the ONLY way generated issues get armed. Default false — human review is the gate.
     "intervalHours": 24,       // trigger: min hours since the last lighthouse run
     "commitsSinceScan": 20,    // trigger: N commits landed since the last scan
-    "minIdleToDispatch": true, // only dispatch when the runnable frontier is free (existing work always wins)
+    "minIdleToDispatch": true, // BOOLEAN guard (default true): only auto-dispatch when the runnable frontier is fully idle. Never overrides existing-work-always-wins.
     "budget": { "maxRuntimeSec": 300, "maxPlaywrightSec": 120, "maxIssuesPerRun": 3, "maxFindings": 20 }
   },
   // Your project's commands. Any can be omitted; skills will infer or ask.

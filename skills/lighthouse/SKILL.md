@@ -14,8 +14,10 @@ description: >
   background work only when the fleet has spare capacity; existing build and review work always
   wins. Trigger when the user says "scan for work", "find future work", "reconnoitre the repo",
   "what should we build next", "survey the codebase", "run a recon pass", "light the lighthouse",
-  or invokes /lighthouse. Read-only w.r.t. the codebase — it discovers and files issues, it never
-  edits code or opens PRs (that is shipwright's job).
+  or invokes /lighthouse. Non-mutating w.r.t. the source tree — it discovers and files issues, it
+  never Writes/Edits, stages, commits, or opens PRs (that is shipwright's job); the project's own
+  survey/validate commands it runs are fenced on a clean checkout and their side effects are never
+  committed.
 argument-hint: "[--static-only] [--max-issues N]"
 allowed-tools: Bash, Read, Grep, Glob, Skill
 ---
@@ -43,10 +45,17 @@ just reacting to it.
 
 ## What lighthouse is — and is not
 
-- **Read-only w.r.t. the codebase.** lighthouse discovers and files issues. It **never edits code,
-  commits, or opens a PR** — that is [`shipwright`](../shipwright/SKILL.md)'s job. Its `allowed-tools`
-  deliberately exclude `Write`/`Edit`: the only outward action it takes is **creating GitHub issues**
-  (through `charter`, via `gh`). It surveys; it does not build.
+- **Non-mutating w.r.t. the source tree.** lighthouse discovers and files issues. **lighthouse itself
+  never `Write`s, `Edit`s, stages, or commits source, and never opens a PR** — that is
+  [`shipwright`](../shipwright/SKILL.md)'s job. Its `allowed-tools` deliberately exclude `Write`/`Edit`,
+  so the skill cannot author code. The one nuance the guarantee makes honest: lighthouse **does** run
+  the project's *own* survey/validate commands via `Bash` — `commands.test`, optionally `commands.run`,
+  and Playwright (§2, §3) — and those are the project's code, which *can* touch the working tree (build
+  artifacts, caches, a test that writes a fixture). lighthouse treats them as **untrusted side effects**
+  and **fences** them (§1a): it runs surveys only on a **clean checkout**, asserts `git status` is clean
+  afterward, and **never stages or commits** whatever they leave behind. The only outward action
+  lighthouse takes is **creating GitHub issues** (through `charter`, via `gh`). It surveys; it does not
+  build.
 - **Unarmed by default.** The issues it files are filed **without the trigger label** (charter
   `--no-arm`) — **human review is the gate.** A human reads the backlog lighthouse produced and arms
   the ones worth building. The off-by-default `lighthouse.autoArm` flag (§5c) is the *only* way a
@@ -78,7 +87,7 @@ The keys lighthouse reads:
   "autoArm":  false,   // the ONLY way generated issues get armed. Default false — human review is the gate.
   "intervalHours": 24, // crows-nest trigger: min hours since the last lighthouse run
   "commitsSinceScan": 20, // crows-nest trigger: N commits landed since the last scan
-  "minIdleToDispatch": true, // crows-nest only dispatches when the runnable frontier is empty (or utilisation below threshold)
+  "minIdleToDispatch": true, // BOOLEAN guard (default true): crows-nest only auto-dispatches when the runnable frontier is fully idle. Never loosens the existing-work-always-wins invariant.
   "budget": {
     "maxRuntimeSec":    300,  // hard cap on the whole run
     "maxPlaywrightSec": 120,  // hard cap on the dynamic survey
@@ -111,14 +120,41 @@ When a budget is hit, that is **not** an error — it's the design. The only fai
 truncation**: always name in the report (§6) which surfaces were covered and which were skipped
 because a budget ran out.
 
+## 1a. Clean-tree fence — keep the non-mutating guarantee honest
+
+lighthouse never `Write`s or `Edit`s source itself, but the **project commands it runs** (`commands.test`,
+`commands.run`, Playwright — §2, §3) are the project's own code and *can* mutate the working tree (build
+artifacts, caches, a test that writes a fixture or a snapshot). The guarantee is therefore not "no bytes
+ever change on disk" — it is "**lighthouse leaves the repo exactly as it found it and commits nothing**".
+Enforce that with a fence around any survey command:
+
+- **Start clean.** Before running surveys, confirm the checkout is clean (`git status --porcelain` is
+  empty). If it isn't, **don't survey a dirty tree** — note "skipped: working tree dirty" in the report
+  (§6) rather than risk attributing pre-existing local changes to lighthouse. Prefer running on a
+  **throwaway worktree** (`git worktree add`) or a fresh checkout when one is cheap, so surveys can't
+  touch the user's working copy at all.
+- **Assert clean after.** After the static and dynamic surveys, re-check `git status --porcelain`. If a
+  command left changes behind, **do not stage or commit them** — discard them (`git checkout -- .` /
+  `git clean -fd` on a throwaway tree, or restore the touched paths) and note what was left behind in
+  the report. Their existence may itself be a finding ("`commands.test` dirties the tree"), but it is
+  **never** something lighthouse commits.
+- **Never stage, never commit, never push.** lighthouse has no `Write`/`Edit` and issues no `git add` /
+  `git commit` / `git push` for source. Its only persistent output is **GitHub issues** via `charter`
+  (§5). If a survey somehow produced a tree change, that change dies with the run.
+
+This fence is what makes the stated guarantee enforceable with the tools lighthouse actually has: `Bash`
+can run the project's read-mostly commands, but the surrounding discipline guarantees nothing they leave
+behind ever lands in the repo.
+
 ## 2. Static survey — scan the repo for candidate work
 
 The always-available pass. Survey the checkout for candidate future work, collecting each as a
 **finding** (a short title, the evidence, where it lives, a rough value/effort sense) until
 `maxFindings` or `maxRuntimeSec` is hit. Cover these surfaces, cheapest first:
 
-- **Failing / skipped tests.** Run the repo's `commands.test` (read-only — it doesn't mutate the
-  tree) and capture failures; grep the test tree for skip markers (`it.skip`, `xit`, `@pytest.mark.skip`,
+- **Failing / skipped tests.** Run the repo's `commands.test` **inside the clean-tree fence (§1a)** —
+  it's the project's own code and may touch the tree, so survey on a clean checkout, capture failures,
+  and discard any side effects without committing them — then grep the test tree for skip markers (`it.skip`, `xit`, `@pytest.mark.skip`,
   `[Ignore]`, `t.Skip`, `#[ignore]`, `test.todo`). A skipped test is deferred work with a ready-made AC.
 - **TODO / FIXME / HACK / XXX.** Grep the source for inline debt markers. Cluster them — a single
   recurring TODO across many files is one architectural finding, not twenty tickets.
@@ -143,8 +179,10 @@ become issues; they fail charter's buildable bar (§5) anyway.
 When the repo exposes `commands.run`, lighthouse **launches the app and explores it via Playwright**
 — the same browser tooling [`spyglass`](../spyglass/SKILL.md) and [`logbook`](../logbook/SKILL.md)
 use — to surface findings a static read can't: broken flows, console errors, dead links, accessibility
-gaps, confusing UX, a feature that 404s. This pass is **bounded by `maxPlaywrightSec`** and
-**degrades gracefully** — it is never allowed to error the run.
+gaps, confusing UX, a feature that 404s. This pass is **bounded by `maxPlaywrightSec`**, runs **inside
+the clean-tree fence (§1a)** — `commands.run` is the project's own code and may write logs, caches, or
+local state, so its side effects are discarded and never committed — and **degrades gracefully**: it is
+never allowed to error the run.
 
 > Launch via `commands.run` → wait for the ready signal → drive a **short, bounded** exploration with
 > Playwright (load the main routes, click the primary affordances, watch the console/network for
@@ -271,7 +309,9 @@ build or review work**. The contract (the lookout's side is crows-nest §2f):
   like `cartography` / `autoMerge`.
 - **Only when fleet capacity is free.** crows-nest dispatches lighthouse **only** when the runnable
   frontier is empty — **horizon clear · harbour clear** (no issue build and no PR review is runnable
-  or in flight) — or utilisation is below a configurable threshold. lighthouse is the lowest-priority
+  or in flight). This is the hard invariant, gated by the boolean `lighthouse.minIdleToDispatch`
+  (default `true`): there is no "utilisation below a threshold" relaxation, and nothing ever lets
+  lighthouse run while a build or review is runnable or in flight. lighthouse is the lowest-priority
   thing the fleet does.
 - **And only when a trigger condition holds** — at least one of: `intervalHours` has elapsed since the
   last lighthouse run; `commitsSinceScan` commits have landed since the last scan; or a major
