@@ -233,9 +233,18 @@ git push -u origin <branch>
 
 Write the PR body from [references/pr-template.md](references/pr-template.md): what changed and why,
 key decisions with rationale, how each acceptance criterion is met, testing performed, and
-screenshots for UI changes. Link the issue:
+screenshots for UI changes. Link the issue **in the body**:
 
 - `Closes #<number>` if fully addressed; `Relates to #<number>` if partial.
+
+**The closing keyword must live in the PR _body_, not just the title.** GitHub only auto-closes an
+issue on merge when a closing keyword (`Closes #N` / `Fixes #N` / `Resolves #N`) appears in the PR
+**body** — a `(#N)` reference in the *title* does **not** auto-close. A PR that links the issue only
+in its title merges without closing the issue, leaving shipped work showing open and forcing the
+lookout to close it by hand. So every PR shipwright opens for a fully-addressed issue **must** carry
+`Closes #<number>` in the body (the [pr-template](references/pr-template.md) already places it under
+the summary). For a partial PR, use `Relates to #<number>` instead — deliberately *not* a closing
+keyword, because a partial PR must not auto-close the issue.
 
 ```bash
 gh pr create --title "<concise title>" --body "$(cat <<'EOF'
@@ -244,6 +253,29 @@ EOF
 )"
 gh issue comment <number> --body "Implementation PR: #<pr-number> — <one-line summary>"
 ```
+
+### Verify the closing keyword is in the body before reporting `opened`
+
+Don't trust that the keyword made it in — **read the created PR's body back and confirm it before
+reporting the PR opened.** For a fully-addressed issue the body must contain a closing keyword that
+references this issue (`Closes #<n>` / `Fixes #<n>` / `Resolves #<n>`); if it's missing, **self-correct
+by editing the body** rather than reporting `opened` with a PR that won't auto-close:
+
+```bash
+pr=<pr-number>; n=<issue-number>
+body=$(gh pr view "$pr" --json body --jq '.body')
+if ! printf '%s' "$body" | grep -Eiq "(close[sd]?|fix(e[sd])?|resolve[sd]?) +#$n\b"; then
+  # Keyword absent — append it to the body so the merge auto-closes the issue.
+  gh pr edit "$pr" --body "$(printf '%s\n\nCloses #%s\n' "$body" "$n")"
+fi
+```
+
+(A **partial** PR is the deliberate exception — it carries `Relates to #<n>`, no closing keyword, and
+this check is skipped for it.) Only after the body is confirmed to carry the closing keyword (or has
+been self-corrected) is the PR genuinely `opened`. This closes the loop that
+[`crows-nest`](../crows-nest/SKILL.md) otherwise had to special-case — an ARMADA-opened `Closes #<n>`
+PR auto-closes its issue on merge, so the lookout's close-the-loop pass (§5) just reconciles labels
+rather than compensating for a missing keyword.
 
 ### Auto-arm the PR for the ready-PR watch
 
