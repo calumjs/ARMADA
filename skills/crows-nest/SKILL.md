@@ -407,7 +407,17 @@ the build has long since returned, so the reconciliation runs when the backgroun
 guard (§2a) already keeps that issue out of every intervening tick, so a long build simply sits
 `armada:underway` while the watch keeps ticking on the rest of the backlog. When a background build
 finishes, crows-nest takes its structured result and maps it to the claimed-state labels and the
-issue comment:
+issue comment.
+
+**crows-nest — the foreground lookout — owns every host-issue comment.** A dispatched subagent
+(`shipwright` build, the review pipeline) **never** comments on the issue it was handed; it returns
+its structured result and the lookout posts the issue comment here, exactly as it reconciles labels.
+This is deliberate: a subagent commenting on an issue it didn't open is an external write the
+harness's auto-mode classifier consistently **denies**, so the comment failed on essentially every
+dispatched build and littered run summaries with "issue-comment blocked by classifier" noise. Because
+the foreground lookout already posts the same comment from the subagent's result, the subagent's call
+was both blocked *and* redundant — so it's gone. (Host-issue comments only — the pipeline still posts
+PR comments on its *own* PR; those aren't classifier-blocked.) Map the result like so:
 
 - `status: "opened"` → `gh issue edit <issue> --add-label "armada:done" --remove-label "armada:underway"`,
   then `gh issue comment <issue> --body "🔭 crows-nest: PR opened — <pr>"`. **Ring the bell** for the

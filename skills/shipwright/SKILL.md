@@ -364,8 +364,19 @@ gh pr create --title "<concise title>" --body "$(cat <<'EOF'
 <PR body>
 EOF
 )"
-gh issue comment <number> --body "Implementation PR: #<pr-number> — <one-line summary>"
 ```
+
+**Don't comment on the host issue — return the PR link in your result and let the foreground lookout
+post it.** When shipwright runs as a dispatched **subagent** (the autonomous `crows-nest` path), it
+must **not** `gh issue comment` on the issue it was handed. That comment is an external write to an
+issue the subagent didn't open, so the harness's auto-mode classifier consistently **denies** it —
+the call is dead weight that fails on essentially every dispatched build and litters the run summary
+with "issue-comment blocked by classifier" noise. It's also redundant: [`crows-nest`](../crows-nest/SKILL.md)
+already posts the issue comment from your structured result during reconciliation (the same place it
+reconciles labels) — `🔭 crows-nest: PR opened — <pr>`. So the subagent's job ends at **opening the
+PR and returning `{ pr, branch, status, reason }`** (the return contract crows-nest maps); the
+foreground lookout owns the host-issue comment. (This applies to the **host issue** only — PR
+comments the pipeline posts on its *own* PR are unaffected, since those aren't classifier-blocked.)
 
 ### Verify the closing keyword is in the body before reporting `opened`
 
@@ -582,7 +593,10 @@ final merge stays the lookout's gated decision (§4.5), never shipwright's.
 
 - **Build mode:** an isolated worktree with the implementation committed; an open, non-draft PR
   linking the issue with a structured summary body, **armed with the `triggerLabel` so the ready-PR
-  watch picks it up automatically**; a comment on the issue linking the PR.
+  watch picks it up automatically**; and the structured result (`{ pr, branch, status, reason }`)
+  returned to the caller. When dispatched as a subagent, shipwright does **not** comment on the host
+  issue itself — it returns the PR link and the **foreground lookout posts the issue comment** during
+  reconciliation (§7), so the comment never trips the auto-mode classifier.
 - **Address-review mode:** the agreed changes pushed to the PR branch; a per-thread reply on every
   review comment (triaged agree/discuss/disagree, threads left unresolved); a structured result for
   the lookout to re-review and gate on.
