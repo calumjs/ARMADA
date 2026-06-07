@@ -23,7 +23,10 @@ opening a pull request. `shipwright` is stack-agnostic: it discovers the project
 
 **shipwright runs in one of three modes:**
 
-- **Build mode** (default, §0–§10) — take an issue and produce a PR.
+- **Build mode** (default, §0–§10) — take an issue and produce a PR. For **bug-type** issues this
+  mode carries a **reproduce → fix → verify** loop: reproduce the reported symptom on the unpatched
+  code first (§2a), then confirm the repro is gone after the fix using the same method (§6a). A green
+  build/test/lint is **not** sufficient evidence a bug is fixed.
 - **Address-review mode** (§11) — take an **existing PR plus its review comments** and respond to
   them: triage each, implement the agreed changes, re-validate, push, and reply per thread. This is
   the stage [`crows-nest`](../crows-nest/SKILL.md) dispatches inside its ready-PR pipeline, after
@@ -114,6 +117,47 @@ Run these in parallel where possible:
 - **Run any audit the issue calls out *first*.** If the issue says "this is only safe if X holds"
   or "audit Y before merging", treat that as research — its findings often reshape the plan (the
   change may be inert in real data, or the gaps may dwarf the headline change).
+
+## 2a. Reproduce first — for bug-type issues (reproduce → fix → verify)
+
+**This step is mandatory when the issue is a bug** — anything labelled `bug`/`defect`/`fleet-defect`,
+or whose body reports a *symptom that should not happen* (a console warning, a crash, a hydration
+mismatch, a wrong value rendered, a failing interaction). It is the antidote to the failure this
+guard exists for: a plausible fix that **passes lint/build/test but doesn't remove the actual bug**,
+because local green gates only prove the code compiles and the existing tests pass — not that the
+reported symptom is gone. Reproducing first turns "the symptom" into concrete, re-runnable evidence,
+and gives you a ground-truth oracle to verify the fix against in §6a.
+
+Do this **before** planning the fix (§3), on the **unpatched** base-branch code, so the evidence is
+of the bug as reported:
+
+1. **Pin the symptom.** From the issue, identify the precise observable: the exact console
+   warning/error text, the failing assertion, the wrong on-screen value, the broken interaction — the
+   thing that must be *gone* for the bug to be fixed. If the issue is vague, narrow it to a concrete,
+   checkable observable before proceeding.
+2. **Reproduce it with the same method muster would use** — match the bug's nature:
+   - **Runtime / UI bug** (hydration mismatch, console warning, broken interaction, wrong render):
+     **run the app** (`commands.run`) and drive it with a **headless browser** (e.g. Playwright),
+     reproducing the exact steps and capturing the symptom — console logs, a screenshot, the failing
+     DOM state. This is the same browser ground-truth muster applies; doing it here shifts that check
+     **left** so a wrong fix is caught in the build, not at review.
+   - **Logic / data / API bug:** write or run a **failing test** (or a scripted call) that exercises
+     the reported path and fails on the unpatched code in the way the issue describes. A new
+     regression test that fails-before/passes-after is the strongest evidence and should be added to
+     the suite where it fits.
+   - **Build / tooling bug:** capture the failing command output.
+3. **Capture the evidence.** Save the before-state — the warning text, the failing test output, the
+   screenshot/log — so it can go in the PR body (§7). This is the "before" half of the before/after.
+4. **If you cannot reproduce the symptom, stop and say so explicitly.** Do **not** invent a fix and
+   assert it works. State plainly in the PR body (and your handoff) that the symptom could not be
+   reproduced with the steps given, what you tried, and what additional information or environment
+   would be needed. A non-reproducing bug issue is a legitimate outcome to surface — it is **not** an
+   excuse to ship an unverified change as if it were a fix. If, despite not reproducing, you still
+   make a speculative change, label it as speculative and `Relates to #<n>` (not `Closes`), since you
+   have no evidence it removes the symptom.
+
+Carry the reproduction method forward — you will re-run **the exact same method** in §6a to prove the
+fix removed the symptom. (For non-bug / feature issues, skip this step and proceed to §3.)
 
 ## 3. Plan implementation
 
@@ -225,6 +269,34 @@ didn't introduce: verify it's pre-existing (`git show origin/<base>:<path>` / `g
 suppress narrowly with a justified inline disable comment to keep the diff focused. Don't expand the
 PR to fix unrelated debt, and don't bypass the hook with `--no-verify`.
 
+## 6a. Verify the repro is gone — for bug-type issues
+
+**A green §6 is necessary but not sufficient for a bug fix.** If you reproduced a symptom in §2a, you
+must now prove the fix **removes that symptom** — re-run the **exact same reproduction method** from
+§2a against the **patched** code:
+
+- **Runtime / UI bug:** run the app and drive it with the headless browser through the **same steps**;
+  confirm the warning/error/broken behaviour is **gone** (clean console, correct render, working
+  interaction). Capture the after-state (screenshot / clean log) as the "after" half of the
+  before/after evidence.
+- **Logic / data / API bug:** the regression test (or scripted call) that **failed before** must now
+  **pass**. Keep that test in the suite so the bug stays fixed.
+- **Build / tooling bug:** the command that failed before now succeeds.
+
+Hold the bar:
+
+- The fix is **not done** until the §2a repro no longer reproduces. If the symptom still appears, the
+  fix is wrong or incomplete — **do not open a `Closes` PR**. Go back to §3/§5: a fix that compiles
+  and passes the old tests but leaves the symptom is exactly the failure this loop exists to catch
+  (the real root cause is often not the first plausible one — e.g. a secondary concern fixed while
+  the true cause is untouched).
+- **Verify against the symptom, not a proxy.** Confirm the *same* observable you pinned in §2a is
+  gone, with the *same* method — not a different test that merely passes, and not "tests are green"
+  standing in for "the warning is gone".
+- Keep **both** the before (§2a) and after evidence for the PR body (§7) so muster and a human can see
+  the bug was actually removed, not merely that the suite is green. muster remains the backstop, but
+  it should be **confirming** a verified fix, not discovering an unverified one.
+
 ## 7. Open the pull request
 
 ```bash
@@ -233,7 +305,12 @@ git push -u origin <branch>
 
 Write the PR body from [references/pr-template.md](references/pr-template.md): what changed and why,
 key decisions with rationale, how each acceptance criterion is met, testing performed, and
-screenshots for UI changes. Link the issue **in the body**:
+screenshots for UI changes. **For a bug-type issue, the body must record the before/after repro
+evidence** from §2a/§6a — the symptom reproduced on the unpatched code and that same method showing
+it gone after the fix (the pr-template has a *Bug repro evidence* section for this). This is the
+proof muster (and a human) needs to see the bug was actually removed, not merely that tests pass. If
+the symptom **could not be reproduced** (§2a step 4), say so explicitly in the body instead of
+claiming a verified fix. Link the issue **in the body**:
 
 - `Closes #<number>` if fully addressed; `Relates to #<number>` if partial.
 
