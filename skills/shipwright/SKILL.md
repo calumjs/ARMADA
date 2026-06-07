@@ -200,27 +200,63 @@ procedure (slice = branch = PR, slices stack, foundation first, rollup branch fo
 
 Build in an isolated worktree so multiple issues can be worked in parallel.
 
-If the harness exposes the `EnterWorktree` tool, use it (creates the worktree and switches the
-session into it in one step):
+There are **two ways to get an isolated worktree**, in order of preference. Whichever you use, the
+guarantee is the same: code changes land in a tree that is *yours*, not the shared checkout.
+
+**(a) Agent-tool isolation (preferred).** If the harness exposes the `EnterWorktree` tool, use it
+(creates the worktree and switches the session into it in one step):
 
 ```
 EnterWorktree(name: "<number>-<short-description>")
 ```
 
-Otherwise fall back to git:
+When a background subagent is spawned with `isolation: "worktree"` (the path
+[`crows-nest`](../crows-nest/SKILL.md) §2d uses), the harness has already placed you in your own
+worktree — you don't create one, you just confirm `git rev-parse --show-toplevel` points at a
+per-build tree and carry on.
+
+**(b) Manual git-worktree fallback.** Agent-tool isolation can be **unavailable** — the harness may
+not expose `EnterWorktree`, or `isolation: "worktree"` can fail (e.g. *"not in a git repository …
+configure WorktreeCreate hooks"* when the repo was created mid-session). **Do not lose isolation and
+fall back to building in the shared checkout** — create the worktree yourself with git, branching
+straight off the **remote** base so it doesn't inherit a stale local `HEAD`:
 
 ```bash
-git worktree add ../<number>-<short-description> -b <number>-<short-description>
-cd ../<number>-<short-description>
+git fetch origin <baseBranch>
+git worktree add -b <number>-<short-description> <worktree-path> origin/<baseBranch>
+cd <worktree-path>
 ```
 
+**Path hygiene on Windows — use forward slashes and a sibling path.** A backslash path
+(`C:\…\wt-2`) gets mangled by the shell and can create the worktree **nested inside the repo**
+instead of as a sibling. Always pass a **forward-slash, shell-safe** path that resolves to a
+**sibling** of the repo, e.g. `../<number>-<short-description>` or an absolute
+`C:/DataCalumSimpson/<number>-<short-description>` — never a backslash path and never one that
+lands inside the repo's own working tree.
+
 Rename the branch to follow the repo's convention if needed (check `git branch -a` for patterns
-like `feature/<number>-...`, `fix/<number>-...`). Then sync with the base branch — worktrees
-inherit from `HEAD` at creation, which may be stale:
+like `feature/<number>-...`, `fix/<number>-...`). If you created the worktree from a local `HEAD`
+rather than `origin/<baseBranch>` above, sync it — worktrees inherit from `HEAD` at creation, which
+may be stale:
 
 ```bash
 git pull origin <baseBranch>
 ```
+
+**Clean up the manual worktree on completion.** A worktree you created by hand is yours to remove
+once the PR is open (or the build is abandoned) — leaving it leaks disk and clutters
+`git worktree list`. Remove it **best-effort** and tolerate Windows file-lock leftovers (a held
+file handle can keep `git worktree remove` from deleting the directory):
+
+```bash
+git worktree remove <worktree-path> || git worktree remove --force <worktree-path> || true
+git worktree prune                                   # drop the registry entry if the dir lingers
+```
+
+If the directory still can't be deleted because a process holds a lock, leave it — `git worktree
+prune` has already cleared the registry, so it won't be mistaken for an active worktree; a later
+sweep can reclaim the bytes. **Don't fail the build over a leftover directory.** (Worktrees the
+Agent tool created are the harness's to reap — only clean up the ones *you* added.)
 
 **All code changes happen in the worktree, never the main checkout.** If the project needs a
 dependency install in a fresh tree (e.g. `npm ci`, `bundle install`, restoring packages), do it

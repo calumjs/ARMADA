@@ -349,6 +349,28 @@ isolation:
   off to one side while ticks keep firing. The completion is handled **asynchronously** when the
   background build returns its structured result — see *Reconciling a background completion* below.
 
+  **If `isolation: "worktree"` is unavailable, fall back to a manual worktree — don't lose
+  isolation.** The Agent tool's worktree isolation can fail (e.g. *"not in a git repository …
+  configure WorktreeCreate hooks"* when the repo was created mid-session). When it does, **do not**
+  silently dispatch the build into the shared checkout — that lets concurrent builds trample one
+  tree. Instead, have the dispatch target create an **isolated worktree by hand** and work there,
+  exactly as [`shipwright`](../shipwright/SKILL.md) §4(b) describes: branch off the **remote** base
+  and remove the worktree on completion —
+
+  ```bash
+  git fetch origin <baseBranch>
+  git worktree add -b <number>-<short-description> <worktree-path> origin/<baseBranch>
+  # … build in <worktree-path> …
+  git worktree remove <worktree-path> || git worktree remove --force <worktree-path> || true
+  git worktree prune
+  ```
+
+  **On Windows, pass a forward-slash, sibling worktree path** (`../<n>-<desc>` or
+  `C:/.../<n>-<desc>`) — a backslash path (`C:\…\wt-2`) gets mangled by the shell and creates the
+  worktree **nested inside the repo** instead of as a sibling, and cleanup must tolerate Windows
+  file-lock leftovers (best-effort `remove --force` then `prune`). Either way — Agent isolation or
+  the manual fallback — the build runs in **its own worktree**, so the isolation guarantee holds.
+
 - **Supervised single pick — run inline.** When a human asked for one named issue ("crows-nest,
   grab #142"), run [`shipwright`](../shipwright/SKILL.md) **inline in this turn** so the user keeps
   its approval gates — the plan sign-off (§3 of shipwright) and the base-branch choice (§1a of
