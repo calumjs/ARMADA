@@ -9,18 +9,21 @@ stages — **parallel review fan-out → consolidate → address → verify → 
 state passed between stages and a single terminal result. A Workflow (rather than a chat loop) is
 what gives multi-agent control its determinism: each stage's output is structured, the fan-out is
 genuinely parallel, and the merge gate is evaluated from data, not from prose the model might
-misread. It reuses the **parallel-reviewers + dedupe** pattern that [`muster`](../../muster/SKILL.md)
-implements internally.
+misread. It implements the **parallel-reviewers + dedupe** pattern that [`muster`](../../muster/SKILL.md)
+specifies — but the **pipeline itself** owns the two-lens fan-out (§4.1), because it runs as a
+subagent and a subagent can't nest a muster that would fan out for it ([#76](https://github.com/calumjs/ARMADA/issues/76)).
 
 **The Workflow is bundled, not re-derived.** The stage graph below is encoded as an actual script,
 not just the prose here — so the orchestration is the same every run and only its structured
 *output* enters the lookout's context:
 
 - **`${CLAUDE_PLUGIN_ROOT}/scripts/review-merge-pipeline.mjs`** — the Workflow itself. It fans out the
-  reviewers/builders via `agent()` with **explicit structured-output schemas** (`REVIEW_SCHEMA`,
-  `ADDRESS_SCHEMA`, `REBASE_SCHEMA` — the `{severity,file,line,title,detail}` finding shape and the
-  address/rebase return contracts), consolidates, runs the bounded address↔review loop, the
-  make-mergeable stage, and the gated merge. Inspect the stage graph and the schemas it drives with
+  **two review lenses as top-level agents** and the builders via `agent()` with **explicit
+  structured-output schemas** (`LENS_SCHEMA` for each lens's findings, `REVIEW_SCHEMA` for the
+  consolidated verdict, `ADDRESS_SCHEMA`, `REBASE_SCHEMA` — the `{severity,file,line,title,detail}`
+  finding shape and the address/rebase return contracts), consolidates the lenses
+  (`consolidateLenses`), runs the bounded address↔review loop, the make-mergeable stage, and the
+  gated merge. Inspect the stage graph and the schemas it drives with
   `node ${CLAUDE_PLUGIN_ROOT}/scripts/review-merge-pipeline.mjs --plan` / `--schemas`.
 - **`${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.mjs`** — the merge gate (§4.5's five points + §4.4's
   convergence bound) computed **from data**. The pipeline pipes it the run-state JSON and acts on its
@@ -34,17 +37,36 @@ The pipeline runs against one PR `<n>` already claimed `armada:reviewing`
 ([ready-pr-watch.md §3c](ready-pr-watch.md)). The sections below describe each stage the bundled
 Workflow drives — they are the spec the script implements, not a second path the model walks by hand.
 
-## 4.1 Review (parallel fan-out → consolidate)
+## 4.1 Review (two top-level lenses → consolidate)
 
-Dispatch [`muster`](../../muster/SKILL.md) against PR `<n>` as a subagent (via the **`Agent` tool**,
-non-interactive, isolated context). `muster` runs its **two lenses in parallel subagents**
-(code-review + `codex:codex-rescue`), dedupes by file+title, posts inline comments + a summary on
-the PR, and **returns the consolidated structured findings** `{severity,file,line,title,detail}`.
+The review fans out **muster's two lenses as two *top-level* agents launched by the pipeline
+itself** — not as one `muster` subagent that then tries to fan them out. That distinction is the fix
+for [#76](https://github.com/calumjs/ARMADA/issues/76): crows-nest dispatches this whole pipeline as
+a **subagent**, and a subagent **can't spawn nested agents**. So a `muster` subagent asked to fan
+out its two lenses (muster §1) would fail to nest and silently collapse to a **single lens** — losing
+the independent second perspective that is muster's whole point. The pipeline holds the *top-level*
+`agent()` capability, so it owns the fan-out:
 
-The lookout keeps only the structured return — not the review transcript. The gate is computed from
-`summary.blocking`: any blocking finding means the PR cannot merge this round (it must first be
+1. **Fan out the two lenses as two top-level `agent()` calls in the same turn** — Lens A
+   `code-review` (conventions + correctness) and Lens B `codex:codex-rescue` (independent
+   second-opinion). Each runs in its own isolated context, neither sees the other, and each returns
+   only its **findings array** (`{severity,file,line,title,detail}`) — the `LENS_SCHEMA`.
+2. **Consolidate in the pipeline** (`consolidateLenses`, reproducing muster §2): dedupe by
+   file+title (case-insensitive), keep the higher severity on a clash, record when **both** lenses
+   flagged a point, and sort worst-first — yielding the `REVIEW_SCHEMA` header
+   (`{pr, summary, lenses, degraded, findings}`).
+3. **Post the consolidated verdict on the PR** via a `muster` agent in *post-only* mode (muster §3 —
+   inline comments + a top-level summary). This is best-effort: a failed post never fails the
+   pipeline, because the gate runs off the structured consolidation, not the PR comment.
+
+If a lens **can't run** (its agent type is missing, or it errors), the review proceeds with the lens
+that returned but is marked **`degraded: true` with the missing lens NAMED** (`degradedReason`) — the
+degrade is explicit in the return *and* in the posted summary, never silent (#76 AC-2).
+
+The lookout keeps only the structured return — not the per-lens transcripts. The gate is computed
+from `summary.blocking`: any blocking finding means the PR cannot merge this round (it must first be
 addressed). A **degraded** review (one or both lenses failed) is **not** a green light — treat a
-missing review as "not safe to merge", never as "no findings".
+missing/degraded review as "not safe to merge", never as "no findings".
 
 ## 4.2 Address (subagent)
 

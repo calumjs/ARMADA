@@ -588,15 +588,19 @@ reconcile.
 
 A scheduled PR (§3) runs through a deterministic **Workflow**: **parallel review fan-out → consolidate
 → address → verify → make-mergeable → gated merge → reap merged branch**, with explicit state between
-stages and a single terminal result. It reuses the **parallel-reviewers + dedupe** pattern that
-[`muster`](../muster/SKILL.md) implements internally.
+stages and a single terminal result. It implements the **parallel-reviewers + dedupe** pattern that
+[`muster`](../muster/SKILL.md) specifies — but because this pipeline is itself dispatched as a
+**subagent** (and a subagent can't spawn nested agents), the **pipeline launches muster's two lenses
+as two *top-level* agents** and consolidates them, rather than dispatching one `muster` subagent that
+tries (and fails) to fan out into a single-lens/degraded review ([#76](https://github.com/calumjs/ARMADA/issues/76)).
 
 **This Workflow is bundled as a script, not prose the model re-derives each tick** — that's what
 makes it deterministic and keeps only its *output* in the lookout's context:
 
-- **`${CLAUDE_PLUGIN_ROOT}/scripts/review-merge-pipeline.mjs`** fans out `muster` + `shipwright` via
-  `agent()` with **structured-output schemas**, consolidates, runs the bounded address↔review loop,
-  make-mergeable, and the gated merge.
+- **`${CLAUDE_PLUGIN_ROOT}/scripts/review-merge-pipeline.mjs`** fans out the **two review lenses**
+  (`code-review` + `codex:codex-rescue`) as top-level agents and `shipwright` via `agent()` with
+  **structured-output schemas**, consolidates the lenses (naming any degrade), runs the bounded
+  address↔review loop, make-mergeable, and the gated merge.
 - **`${CLAUDE_PLUGIN_ROOT}/scripts/merge-gate.mjs`** computes the merge decision (`merge` |
   `ready_awaiting_human` | `blocked`) **from the run-state JSON** — the model acts on its output and
   never eyeballs the 5-point gate. (Bundled files are referenced via `${CLAUDE_PLUGIN_ROOT}` because

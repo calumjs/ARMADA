@@ -52,11 +52,28 @@ return an empty finding set rather than spawning reviewers on nothing.
 
 ## 1. Fan out two reviewers in parallel subagents
 
+> **Who owns the fan-out depends on how muster is reached — because a subagent can't nest agents.**
+> When you invoke muster **directly** (foreground, with the `Agent` tool available), muster itself
+> spawns the two lenses as below. But inside [`crows-nest`](../crows-nest/SKILL.md)'s ready-PR
+> pipeline, **the pipeline is already running as a subagent**, and a subagent **cannot spawn nested
+> agents**. A muster subagent that tried to fan out there would fail to nest and silently collapse to
+> a **single, degraded lens** — exactly the defect [#76](https://github.com/calumjs/ARMADA/issues/76)
+> fixes. So in the pipeline the **two lenses are launched as two *top-level* agents by the Workflow**
+> (`scripts/review-merge-pipeline.mjs` §4.1, via `consolidateLenses`), and muster is reused only to
+> **post the already-consolidated verdict** (§3). Either way the contract is the same — two
+> independent lenses, consolidated (§2), with any degrade **named** (§5), never a silent single lens.
+
 Spawn **both** reviewers via the **`Agent` tool**, non-interactive, in the **same turn** so they
 run concurrently. Each gets the PR metadata, the diff, the changed-file list, and the project's
 validation commands — and an instruction to return findings in the **exact schema** below. They
 work in **isolated context**: neither reviewer sees the other's output, and neither pollutes the
 lookout's transcript.
+
+If the **`Agent` tool isn't available at all** (muster is itself running as a subagent — no nested
+agents), muster **cannot fan out**: it runs the **single lens it can** (the in-context `/code-review`
+pass) and returns `degraded: true` with the missing lens **named** in `degradedReason` and the
+summary. It must **never** present a single-lens read as a full two-lens review. In the pipeline this
+case doesn't arise, because the Workflow owns the top-level fan-out (see the callout above).
 
 - **Lens A — code-review (conventions + correctness).** Dispatch the built-in `/code-review` skill
   (or, if it isn't available, an `Explore` / `general-purpose` subagent running a
@@ -165,9 +182,13 @@ review was posted at all. Keep the return machine-readable; the prose lives on t
 
 ## 5. When something goes wrong
 
-- **One lens fails** (agent type missing, subagent errors) — proceed with the lens that returned,
-  mark the review **degraded** in the summary, and say so in the return (`"lenses": ["code-review"]`).
-  Don't fail the whole muster for a half-loaf; a degraded review is still worth posting.
+- **One lens fails** (agent type missing, subagent errors, or muster is itself a subagent and can't
+  fan out — §1) — proceed with the lens that returned, mark the review **degraded** in the summary,
+  and say so in the return (`"degraded": true`, `"lenses": ["code-review"]`). **Name the degrade
+  explicitly** — the top-level summary comment must state *which* lens didn't run and *why* (e.g.
+  "single-lens/degraded — codex-rescue lens unavailable (no nested agents)"), never a silent
+  collapse to one lens. Don't fail the whole muster for a half-loaf; a named, degraded review is
+  still worth posting — but it is a degraded review, not a green light.
 - **Both lenses fail** — post nothing, return an empty `findings` with a `"degraded": true` flag and
   a reason. The caller treats "no review produced" as **not** a green light (it must not infer
   "no findings ⇒ safe to merge").
