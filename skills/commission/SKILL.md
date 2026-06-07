@@ -218,7 +218,127 @@ opens (see crows-nest's close-the-loop watch). `armada:blocked` is reused as the
 human" terminal state across both tracks. (If `triggerLabel` was customised, name the eligible label
 to match and adjust the state labels' prefix accordingly.)
 
-## 5. Report readiness and how to set sail
+## 5. Offer to charter recommended setup/improvement issues (don't force)
+
+Commissioning prepares the repo, but a fresh repo usually still has **setup gaps the fleet can't
+close inline** — the biggest being a **CI merge-gate**: lint/build/test running on every PR as an
+independent, ideally **required** status check. ARMADA's only merge gate is otherwise the `muster`
+subagent's *local* validation; if that misses something, `autoMerge` can land a broken base. CI
+often can't be wired during commissioning (no pipeline yet, secrets/permissions absent), so rather
+than scaffolding it inline, **commission offers to charter the gap as tracked future work** — and,
+more generally, a short list of recommended setup/improvement issues, each filed **unarmed** for
+human review and each body **stating it is pending an initial implementation**.
+
+This is an **offer, not a default action** — never auto-create these issues. Present the
+recommended list and let the user pick which (if any) to charter; default to none if they decline or
+don't answer.
+
+### 5a. The recommended list (CI merge-gate first)
+
+Survey what the repo already has (don't recommend what exists) and assemble the candidate list,
+**CI merge-gate as the primary recommendation**:
+
+```bash
+# Does a CI workflow already run checks on PRs?
+ls .github/workflows/ 2>/dev/null            # GitHub Actions
+ls .gitlab-ci.yml azure-pipelines.yml 2>/dev/null
+# Are there already required status checks on the base branch?
+gh api "repos/{owner}/{repo}/branches/<baseBranch>/protection" --jq '.required_status_checks.contexts' 2>/dev/null
+```
+
+Recommend an issue only when the gap is real:
+
+- **CI merge-gate** *(primary)* — when no PR-triggered CI workflow runs the detected
+  `build`/`test`/`lint` commands, **and/or** no required status check is configured on the base
+  branch. This is the issue the whole feature exists for.
+- **Branch protection / required review** — when the base branch has no protection rule (no required
+  checks, no required review) — recommend only if it's a gap, and keep it distinct from the CI issue.
+- Other genuine, repo-specific setup gaps you observed (e.g. no test command detected at all in §2) —
+  keep the list **short** (≈1–3), each one focused and clearly future work.
+
+Don't pad the list. If CI already gates PRs as a required check, say so and **offer nothing** — the
+gap the feature targets is already closed.
+
+### 5b. Charter each accepted issue — unarmed, "pending an initial implementation"
+
+For each issue the user accepts, route it through [`charter`](../charter/SKILL.md) in **`--no-arm`**
+mode (§6 there) so it's filed for human review and **not** picked up by the build queue. Each issue
+must be **charter-quality** (§4 there: imperative `ship: capability`-style title, problem/goal,
+concrete testable acceptance criteria, scope, notes) **and its body must state plainly that it is
+pending an initial implementation** — tracked future work, not done at commission time. For the CI
+merge-gate, the canonical shape:
+
+```markdown
+## Problem / Goal
+This repo has no CI merge-gate: lint/build/test do not run as an independent status check on every
+PR, so the only thing standing between a PR and the base branch is `muster`'s local validation.
+With `autoMerge` on, a gap in local validation can land a broken base. Wire CI so the project's own
+`build`/`test`/`lint` commands run on every PR and become a **required** status check.
+
+> **Pending an initial implementation.** This issue was filed by `commission` at fleet setup time as
+> tracked future work — CI was deliberately *not* scaffolded inline. It is unarmed; a human should
+> review and implement (or arm) it.
+
+## Acceptance criteria
+- [ ] A PR-triggered CI workflow runs the project's `build` / `test` / `lint` commands (from
+      `.armada/config.json`).
+- [ ] The CI check is configured as a **required status check** on the `<baseBranch>` branch so a
+      red check blocks merge.
+- [ ] A failing check visibly blocks merge on a sample PR.
+
+## Scope / non-goals
+- In: a CI workflow running the configured commands on every PR + a required status check.
+- Out: changing the commands themselves or the merge policy.
+
+## Notes
+- Filed unarmed by `commission` as recommended setup work. Primary motivation: an independent merge
+  gate beyond `muster`'s local validation (see ARMADA's autoMerge safety model).
+```
+
+File it (charter §7, `--no-arm` path — type label only, **no** trigger label):
+
+```bash
+gh issue create --label "enhancement" --title "ci: gate every PR on lint/build/test as a required check" --body "$(cat <<'EOF'
+<the body above>
+EOF
+)"
+# Do NOT add the triggerLabel — these are unarmed, for human review.
+```
+
+Surface the result like charter §8 (number, url, **unarmed — for human review**, the one-liner to
+arm later: `gh issue edit <n> --add-label <triggerLabel>`). Filing is **best-effort and
+side-channel** — if a `gh` call fails, note it and carry on; it never blocks commissioning.
+
+## 6. Warn when autoMerge is on but no required checks gate the merge
+
+`autoMerge: true` lets the ready-PR pipeline merge unattended; its sole independent gate is then
+whatever **required status checks** the base branch enforces. When `autoMerge: true` **and** there
+are **no required status checks**, the effective merge gate is **`muster`'s local validation only** —
+which is exactly the broken-base risk this feature targets. Commission **warns** about it (and so does
+[`crows-nest`](../crows-nest/SKILL.md) at its merge gate — see below):
+
+```bash
+# Is autoMerge on in the config we just wrote/confirmed?
+#   → read .armada/config.json → autoMerge
+# Are there any required status checks on the base branch?
+gh api "repos/{owner}/{repo}/branches/<baseBranch>/protection" \
+  --jq '.required_status_checks.contexts | length' 2>/dev/null   # 0 / error ⇒ none
+```
+
+If `autoMerge: true` and the required-checks count is `0` (or the protection call errors, i.e. no
+protection at all), print a prominent warning in the readiness report:
+
+```
+⚠ autoMerge is ON but the base branch has no required status checks — the merge gate is
+  LOCAL-VALIDATION-ONLY (muster's subagent), with no independent CI gate. A gap in local validation
+  can land a broken <baseBranch>. Charter the CI merge-gate issue above (§5) and/or set autoMerge:false.
+```
+
+This warning is **advisory** — it never flips `autoMerge` off or blocks commissioning; it just makes
+the local-only gate visible. (`crows-nest`'s ready-PR pipeline raises the same warning at the merge
+gate when it's about to auto-merge a PR with an empty `statusCheckRollup`.)
+
+## 7. Report readiness and how to set sail
 
 Print a short readiness summary and the two things the user does next — **don't auto-create issues
 and don't arm the loop for them** (both are the user's call):
@@ -236,6 +356,12 @@ and don't arm the loop for them** (both are the user's call):
   foghorn     : flavour="a gruff, proud nautical harbourmaster" · verbosity=normal · gate=terminal · provider="" · voice="" — spoken narrator (set provider/voice for a cloud voice, key via env/.env; set bellCommand to hear it)
   lighthouse  : enabled=false · autoArm=false (defaults) — autonomous recon never auto-runs; run /lighthouse by hand any time (files unarmed backlog issues for human review)
   labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked, fleet-defect ✓
+  chartered   : <e.g. "#84 ci merge-gate (unarmed)" — or "none (offered, declined)" / "none (CI already gates PRs)">
+
+<one of:>
+  ⚠ autoMerge is ON but the base branch has no required status checks — the merge gate is
+    LOCAL-VALIDATION-ONLY (muster's subagent). Charter the CI merge-gate issue (§5) and/or set autoMerge:false.
+<or omit the warning when autoMerge is off, or required checks exist.>
 
 Next:
   1. Label the issues you want built with `armada`:
@@ -244,15 +370,23 @@ Next:
        run the crows-nest skill, or say "watch for issues"
 ```
 
+The `chartered` line reports the §5 offer's outcome; the `⚠` line is the §6 warning, printed **only**
+when `autoMerge: true` and no required status checks gate the base branch.
+
 ## Idempotency & re-runs
 
 - Labels: `--force` reconciles them — safe.
 - Config: diff-and-confirm before overwrite — never clobbers hand edits silently. Re-running never
   flips `autoMerge` back on or off behind the user's back; if it's already set, leave it.
-- Nothing here creates issues, opens PRs, or merges. Commissioning only prepares the repo, and it
-  always writes `autoMerge: false`, **`autoArmSelfFixes: false`**, **and `cartography: "off"`** —
-  neither autonomous merging, autonomous self-fixing, nor autonomous learning is ever turned on by
-  commissioning.
+- Nothing here merges or arms. Commissioning writes `autoMerge: false`, **`autoArmSelfFixes: false`**,
+  **and `cartography: "off"`** — neither autonomous merging, autonomous self-fixing, nor autonomous
+  learning is ever turned on by commissioning.
+- The **offer to charter** (§5) is the only step that can *create* anything, and only with the user's
+  say-so — issues are filed **unarmed**, never armed into the build queue. On a re-run, **de-dupe
+  first**: `gh issue list --state all --search "ci merge-gate"` (and the other candidates) — if the
+  recommended issue already exists, don't file a twin; surface the existing one instead.
+- The §6 **warning** is read-only — it never flips `autoMerge` or blocks; it just reports the
+  local-only gate when `autoMerge: true` and no required checks exist.
 
 ## Inputs
 
@@ -264,4 +398,9 @@ Next:
   `autoArmSelfFixes: false`.
 - The eight GitHub labels created/reconciled (issue track + PR track + shared blocked +
   `fleet-defect`).
+- An **offer** to charter a short list of recommended setup/improvement issues (CI merge-gate first),
+  each filed **unarmed** via `charter --no-arm` with a body stating it is **pending an initial
+  implementation** — only those the user accepts; nothing forced.
+- A **local-validation-only warning** in the readiness report when `autoMerge: true` and the base
+  branch has no required status checks.
 - A readiness summary + the two next-step commands.

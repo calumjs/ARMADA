@@ -182,6 +182,20 @@ Acting on the decision:
   ```bash
   gh pr merge <n> --<mergeMethod>   # merge | squash | rebase, from config — then reap (below)
   ```
+
+  **Warn on a local-validation-only merge.** When this merge runs with `autoMerge: true` but the PR
+  had **no required status checks** (an **empty `statusCheckRollup`** in the §2a scan — no independent
+  CI gate), the only thing that gated this merge was `muster`'s *local* validation. That's the
+  broken-base risk [#73](https://github.com/calumjs/ARMADA/issues/73) is about. Emit a one-line
+  advisory alongside the merge (it does **not** block — the gate already decided `merge`):
+
+  ```
+  ⚠ merged #<n> with no required status checks — gate was LOCAL-VALIDATION-ONLY (muster), no independent
+    CI. Charter/implement the CI merge-gate (commission §5) or set autoMerge:false to keep the human gate.
+  ```
+
+  This mirrors `commission`'s §6 warning so the local-only gate is visible whether it's surfaced at
+  setup time or at the moment of an unattended merge.
 - **`ready_awaiting_human`** (gates 2–5 hold but `autoMerge` is off) → stop before merge; never
   merge.
 - **`blocked`** → return the specific reason from the gate output.
