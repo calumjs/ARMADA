@@ -73,6 +73,29 @@ command — which reuses `.armada/config.json` `commands.run` — waits for the 
 `stage` steps), then **replays that chapter's `reach`** while capturing. Each chapter is captured as
 its own clip so an edit re-records just that chapter. The app is torn down cleanly between chapters.
 
+### Capture readiness — wait for paint, warm the route, and report blank captures
+
+An HTTP `200`/the page `load` event is **not** proof the app is on screen. On a dev server
+(Next.js and any dev-mode bundler) the route is **compiled on first request**, so the viewport can
+stay blank for seconds *after* navigation resolves. If a capture starts in that window it records
+the blank pre-paint state and falls back to caption cards — producing a **titles-only storyboard**
+rather than a real walkthrough. The recorder therefore enforces a capture-readiness discipline for
+the `web` surface:
+
+- **Wait for a contentful paint, not just a 200.** After each navigation the recorder waits for the
+  recipe `readySignal`, for the network to settle, and for a genuine **first-contentful-paint**
+  (with a visible-body backstop) before it relies on the captured frames — not merely the `load`
+  event.
+- **Warm each route before the recorded pass.** Every route a chapter touches is primed with one
+  throwaway navigation in a **non-recording** context first, so dev-mode first-compile latency
+  happens *outside* the recording and never lands inside the captured clip.
+- **Report a blank capture as a degrade — don't swallow it.** After capture the recorder
+  sanity-checks the clip; an empty/near-static clip (one that recorded the pre-paint blank window)
+  is **reported as a capture degrade** in the run summary (named per the §0 degrade convention,
+  alongside any TTS/ffmpeg degrades) and falls back to a storyboard card — it is never silently
+  muxed into the final video. A produced video of real content chapters is therefore materially
+  larger than a pure caption-card storyboard, a sanity check that real frames were captured.
+
 ## Assemble — one video with `ffmpeg`
 
 The recorder muxes and concatenates with `ffmpeg`:

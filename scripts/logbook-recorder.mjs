@@ -528,6 +528,14 @@ async function runRecord(args) {
   if (capture.status === 'missing') degraded.push(`capture backend absent -> ${capture.degradesTo}`);
   if (!ttsCfg.key) degraded.push('no TTS key -> burned-in captions');
 
+  // Capture degrades are discovered DURING capture — a chapter whose clip came
+  // back empty/near-static because the app hadn't painted yet — so they can't be
+  // known up front like the toolchain degrades above. captureWeb pushes a named
+  // entry here when a chapter falls back to a storyboard card, and we fold them
+  // into the run summary so a blank-frames capture is REPORTED per §0 rather than
+  // silently swallowed into the final video (issue #68).
+  const captureDegraded = [];
+
   // Plan each chapter: resolve its narration clip (cache/voice/caption) and the
   // reach steps the capture step will replay.
   const chapterPlan = chapters.map((ch, i) => {
@@ -566,12 +574,19 @@ async function runRecord(args) {
   for (const ch of chapterPlan) {
     let clipFile;
     if (surface === 'web' && capture.status === 'ready' && ffmpegExe) {
-      clipFile = await captureWeb(recipe, ch, ffmpegExe);
+      clipFile = await captureWeb(recipe, ch, ffmpegExe, captureDegraded);
     } else {
       clipFile = await renderStoryboardCard(ch, ffmpegExe);
     }
     const muxed = await muxChapter(ch, clipFile, ffmpegExe);
     clips.push(muxed);
+  }
+
+  // Fold any capture-time degrades discovered above into the summary so they ride
+  // alongside the toolchain degrades and surface in the printed report (§0).
+  if (captureDegraded.length) {
+    summary.degraded = [...degraded, ...captureDegraded];
+    summary.captureDegraded = captureDegraded;
   }
 
   // --- Assemble: normalise + concat ---------------------------------------
@@ -587,36 +602,142 @@ async function runRecord(args) {
   }
 }
 
+// Wait for a route to be genuinely PAINTED before we start (or rely on) a capture
+// of it. An HTTP 200 / the `load` event is not enough on a dev server: Next.js (and
+// any dev-mode bundler) compiles the route on first request, so the page can be
+// blank for seconds AFTER navigation resolves. This was the root cause of issue
+// #68 — the recorder began capturing into that blank window and produced a
+// titles-only storyboard. We wait for three things in order:
+//   1. network to settle (the dev compile + initial data fetches finish),
+//   2. a real first-contentful-paint (the browser reports an `first-contentful-paint`
+//      paint entry), and
+//   3. the document body to actually carry rendered content (non-trivial visible
+//      text/markup), as a backstop for apps that never emit an FCP entry.
+// Each wait is bounded and best-effort: if the page legitimately has little content
+// we don't hang, we just proceed — the empty-clip check downstream is the honest
+// degrade signal.
+async function waitForContentfulPaint(page, { timeout = 15000 } = {}) {
+  // 1) Let the dev compile and initial requests settle.
+  await page.waitForLoadState('networkidle', { timeout }).catch(() => {});
+  // 2) Wait for an actual first-contentful-paint AND visible body content. We poll
+  //    inside the page so we catch whichever lands first / last.
+  await page
+    .waitForFunction(
+      () => {
+        const painted = performance
+          .getEntriesByType('paint')
+          .some((e) => e.name === 'first-contentful-paint' && e.startTime > 0);
+        const body = document.body;
+        const text = body ? (body.innerText || '').trim() : '';
+        const hasContent = !!body && (text.length > 0 || body.childElementCount > 1);
+        return painted && hasContent;
+      },
+      { timeout, polling: 250 },
+    )
+    .catch(() => {});
+}
+
 // Lazy web capture. Tries playwright, then puppeteer; degrades to a card on any
 // import/launch failure so a missing/half-installed backend never hard-fails.
-async function captureWeb(recipe, chapter, ffmpegExe) {
+//
+// Readiness discipline (issue #68): before the *recorded* pass we (a) drive a
+// throwaway WARM-UP navigation in a non-recording context so first-compile latency
+// in dev mode never lands inside the recording, then (b) in the recording context
+// wait for the recipe readySignal AND a contentful paint before driving the reach
+// steps. After capture we (c) sanity-check the produced clip and, if it's
+// empty/near-static, fall back to a storyboard card and NAME the capture degrade in
+// `captureDegraded` rather than silently muxing blank frames.
+async function captureWeb(recipe, chapter, ffmpegExe, captureDegraded = []) {
+  const entry =
+    (recipe.stage && recipe.stage.entry) ||
+    (recipe.launch && recipe.launch.readySignal && recipe.launch.readySignal.value);
+  // Routes this chapter touches: the entry plus any goto targets in its reach.
+  const routes = [];
+  if (entry && /^https?:/.test(entry)) routes.push(entry);
+  for (const step of chapter.reach) {
+    if (step.action === 'goto' && step.target) routes.push(resolveUrl(entry, step.target));
+  }
+
+  const degrade = (reason) => {
+    const msg = `chapter ${chapter.index} ("${chapter.title}") capture degraded -> storyboard card (${reason})`;
+    if (!captureDegraded.includes(msg)) captureDegraded.push(msg);
+    return renderStoryboardCard(chapter, ffmpegExe);
+  };
+
   try {
     const pw = await import('playwright').catch(() => import('playwright-core'));
     const browser = await pw.chromium.launch();
+
+    // (a) WARM-UP — prime each route in a throwaway, NON-recording context so the
+    // dev server's first-compile (which can take seconds and renders blank) happens
+    // OUTSIDE the capture. We wait for a contentful paint on each so the warmed
+    // route is actually compiled before the recorded pass revisits it.
+    try {
+      const warmCtx = await browser.newContext();
+      const warmPage = await warmCtx.newPage();
+      for (const url of routes) {
+        await warmPage.goto(url, { waitUntil: 'load', timeout: 30000 }).catch(() => {});
+        await waitForContentfulPaint(warmPage);
+      }
+      await warmCtx.close();
+    } catch {
+      /* warm-up is best-effort; the recorded pass still gates on readiness below */
+    }
+
+    // (b) RECORD — fresh recording context, gated on readiness at every navigation.
     const ctx = await browser.newContext({ recordVideo: { dir: cacheDir() } });
     const page = await ctx.newPage();
-    const entry =
-      (recipe.stage && recipe.stage.entry) ||
-      (recipe.launch && recipe.launch.readySignal && recipe.launch.readySignal.value);
-    if (entry && /^https?:/.test(entry)) await page.goto(entry).catch(() => {});
+    if (entry && /^https?:/.test(entry)) {
+      await page.goto(entry, { waitUntil: 'load', timeout: 30000 }).catch(() => {});
+      await waitForContentfulPaint(page);
+    }
     for (const step of chapter.reach) {
-      if (step.action === 'goto' && step.target)
-        await page.goto(resolveUrl(entry, step.target)).catch(() => {});
-      else if (step.action === 'click' && step.target)
+      if (step.action === 'goto' && step.target) {
+        await page.goto(resolveUrl(entry, step.target), { waitUntil: 'load', timeout: 30000 }).catch(() => {});
+        await waitForContentfulPaint(page);
+      } else if (step.action === 'click' && step.target) {
         await page.click(step.target, { timeout: 5000 }).catch(() => {});
-      else if (step.action === 'fill' && step.target)
+        // A click can trigger a client-side route/transition; let it settle.
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+      } else if (step.action === 'fill' && step.target) {
         await page.fill(step.target, step.value || '').catch(() => {});
-      else if (step.action === 'wait') await page.waitForTimeout(Number(step.value) || 1000);
+      } else if (step.action === 'wait') {
+        await page.waitForTimeout(Number(step.value) || 1000);
+      }
     }
     await ctx.close();
     await browser.close();
+
     // Playwright writes a .webm; the newest file in cacheDir is this chapter's.
     const vids = readdirSync(cacheDir())
       .filter((f) => f.endsWith('.webm'))
       .map((f) => path.join(cacheDir(), f));
-    return vids.sort((a, b) => statMtime(b) - statMtime(a))[0] || (await renderStoryboardCard(chapter, ffmpegExe));
+    const clip = vids.sort((a, b) => statMtime(b) - statMtime(a))[0];
+    if (!clip) return degrade('no clip produced');
+    // (c) Empty/near-static sanity check: a clip that captured a real painted app
+    // is materially larger than one of a blank/near-static viewport. A blank webm
+    // compresses to almost nothing, so a too-small file means we recorded the
+    // pre-paint blank window — report it as a capture degrade instead of muxing it.
+    if (isEmptyClip(clip)) return degrade('clip is empty/near-static (app not painted)');
+    return clip;
+  } catch (e) {
+    return degrade(`capture backend error: ${e.message || e}`);
+  }
+}
+
+// Heuristic emptiness check for a captured webm. A recording of a blank or static
+// viewport (e.g. the pre-paint dev-compile window) carries almost no inter-frame
+// change and compresses to a tiny file; a recording of a real, painted, navigated
+// app is materially larger. We treat a clip under a small byte floor as empty.
+// Bytes are a robust, dependency-free proxy here — we already require ffmpeg/the
+// browser, but not a frame-diffing decode, so size keeps the check cheap and the
+// script Node-built-ins-only at load time.
+const EMPTY_CLIP_BYTES = 24 * 1024; // 24 KiB — well below any genuine multi-second app clip
+function isEmptyClip(file) {
+  try {
+    return statSync(file).size < EMPTY_CLIP_BYTES;
   } catch {
-    return renderStoryboardCard(chapter, ffmpegExe);
+    return true;
   }
 }
 
