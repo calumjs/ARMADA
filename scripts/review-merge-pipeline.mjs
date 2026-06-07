@@ -132,13 +132,22 @@ export const SCHEMAS = { FINDING_SCHEMA, REVIEW_SCHEMA, LENS_SCHEMA, ADDRESS_SCH
 export const LENSES = [
   {
     name: 'code-review',
-    agentType: 'code-review',
+    // Lens A is muster's conventions+correctness pass. muster §1 specifies it as
+    // the built-in `/code-review` SKILL (or an Explore/general-purpose subagent)
+    // — there is no `code-review` AGENT type to dispatch, so use the always-
+    // resolvable `general-purpose` agent and have it run `/code-review` if it's
+    // available, falling back to a conventions+correctness read. Dispatching a
+    // bare `agentType: 'code-review'` would fail to resolve and degrade every
+    // review — re-introducing the single-lens collapse #76 fixes, as a permanent
+    // named degrade.
+    agentType: 'general-purpose',
     prompt: (pr) =>
-      `Review PR #${pr} as the conventions+correctness lens (muster Lens A). Read the diff against ` +
-      `the project's conventions: does the change match the surrounding code's idioms, is it correct, ` +
-      `does it handle errors and edge cases, does it keep to the issue's scope? Return ONLY your ` +
-      `findings array in the per-finding schema {severity,file,line,title,detail}. Do not fan out ` +
-      `to further agents.`,
+      `Review PR #${pr} as the conventions+correctness lens (muster Lens A). If the built-in ` +
+      `\`/code-review\` skill is available, run it over this PR's diff; otherwise read the diff ` +
+      `directly against the project's conventions. Assess: does the change match the surrounding ` +
+      `code's idioms, is it correct, does it handle errors and edge cases, does it keep to the ` +
+      `issue's scope? Return ONLY your findings array in the per-finding schema ` +
+      `{severity,file,line,title,detail}. Do not fan out to further agents.`,
   },
   {
     name: 'codex-rescue',
