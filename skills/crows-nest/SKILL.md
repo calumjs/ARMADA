@@ -112,11 +112,13 @@ Read `.armada/config.json` from the target repo:
   platform examples, the discipline) is §8e. Read it now; you fire it everywhere the bell rings.
 - `cartography` — gates [`cartographer`](../cartographer/SKILL.md), which learns *per-repo* heuristics
   from completed runs into `.armada/cartography/`. One of `"off" | "proposal" | "on"`, **default
-  `"off"`**: at the **same reconcile points** the bell rings (§2d, §3e, §5), and under the **same
-  best-effort side-channel discipline** (§8c), the lookout dispatches cartographer as a background
-  subagent — but **only when this key is not `"off"`**. Default `"off"` = never auto-runs (manual
-  `/cartographer` still works); `"proposal"` = auto-runs but only proposes a diff; `"on"` = auto-runs
-  and commits the learning into the active PR. The full convention is §8d.
+  `"off"`**: at the **same reconcile points** the bell rings (§2d, §3e, §5) the lookout **records**
+  each completed run into a pending accumulator, then — under the **same best-effort side-channel
+  discipline** (§8c) — dispatches cartographer **once per fleet-run at an idle point** over the whole
+  batch (a single, serial writer), so a busy backlog gets **one** cartography update, not one per
+  reconcile. Active **only when this key is not `"off"`**. Default `"off"` = never auto-runs (manual
+  `/cartographer` still works); `"proposal"` = batches then only proposes a diff; `"on"` = batches
+  then commits one learning into the active PR. The full convention is §8d.
 - `lighthouse` — gates [`lighthouse`](../lighthouse/SKILL.md), the fleet's autonomous **reconnaissance**:
   it surveys the repo for *future* work and charters it (unarmed). A block with `enabled` (**default
   `false`** = opt-in), `autoArm` (default `false`), the trigger thresholds (`intervalHours`,
@@ -437,9 +439,11 @@ both the lookout and a human. (On the inline path — the supervised single pick
 shipwright is foreground and opens the PR directly in the turn; apply the same label swap and
 comment from its outcome.)
 
-After this reconcile — and after the bell rings — **dispatch cartographer for this run** if the
-`cartography` key isn't `"off"` (§8d): a best-effort background subagent that learns per-repo
-heuristics from the just-opened PR. It never blocks or fails this reconcile.
+After this reconcile — and after the bell rings — **record this run for the batched cartography
+pass** if the `cartography` key isn't `"off"` (§8d): append the just-opened PR to the pending
+accumulator (§8d.i). cartographer is **not** dispatched here — it runs **once per fleet-run** at an
+idle point (§8d.ii), so a busy backlog doesn't emit one cartography PR per build. Recording is cheap
+and synchronous; it never blocks or fails this reconcile.
 
 #### Concurrency is bounded, not unbounded — per track
 
@@ -572,10 +576,13 @@ is set, the local command hook (§8e), under the same `notify` gate. Map the eve
 `ready_awaiting_human`. Fire the hook only **after** the pipeline's consequential action (the merge,
 the label swap, the comment) has already landed — never before (§8c).
 
-After reconciling a completed pipeline — and after the bell rings — **dispatch cartographer for this
-PR** if the `cartography` key isn't `"off"` (§8d). The addressed PR's muster + human review comments
-are the richest correction evidence; cartographer mines them best-effort in the background and never
-blocks or fails this reconcile.
+After reconciling a completed pipeline — and after the bell rings — **record this PR for the batched
+cartography pass** if the `cartography` key isn't `"off"` (§8d): append it to the pending accumulator
+(§8d.i). The addressed PR's muster + human review comments are the richest correction evidence, but
+cartographer is **not** dispatched here — it runs **once per fleet-run** at an idle point (§8d.ii)
+over the whole batch, so concurrent pipelines don't each spawn a racing cartography update on the
+same `.armada/cartography/` files. Recording is cheap and synchronous; it never blocks or fails this
+reconcile.
 
 ## 4. The review→merge pipeline (a Workflow)
 
@@ -630,10 +637,12 @@ When an issue closes as `armada:shipped` (§5d), **ring the ship's bell** for th
 `ARMADA_BELL_EVENT=shipped` — under the same gate and the same after-the-fact discipline (§8c): fire
 the hook only after the issue has already been closed and labelled.
 
-After closing the loop — and after the bell rings — **dispatch cartographer for this shipped run** if
-the `cartography` key isn't `"off"` (§8d): the full resolution path (issue → PR → review → merge) is
-now available, the richest evidence for per-repo heuristics. Best-effort and background; it never
-blocks or fails the close.
+After closing the loop — and after the bell rings — **record this shipped run for the batched
+cartography pass** if the `cartography` key isn't `"off"` (§8d): append it to the pending accumulator
+(§8d.i). The full resolution path (issue → PR → review → merge) is the richest evidence for per-repo
+heuristics, but cartographer is **not** dispatched here — it runs **once per fleet-run** at an idle
+point (§8d.ii) over the accumulated set, de-duped against the same run already recorded at its
+PR-merge reconcile. Recording is cheap and synchronous; it never blocks or fails the close.
 
 ## 6. Arm the loop — hand the /loop line to the user
 
@@ -791,31 +800,79 @@ A notification is a **side-channel courtesy**, never part of the build/review/me
   sets the terminal label, and the in-flight guards (§2a) mean a reconciled unit isn't re-picked, so
   the same event won't re-ring on a later tick.
 
-### 8d. Cartographer — learn per-repo heuristics at the same reconcile points
+### 8d. Cartographer — accumulate learnings, then map once per fleet-run (batched)
 
-At the **same three terminal reconcile points** the bell rings — **build-completion (§2d)**,
-**PR-pipeline outcome (§3e)**, and **issue-shipped (§5)** — the lookout also dispatches
-[`cartographer`](../cartographer/SKILL.md), the ship that mines the just-completed run for reusable
+[`cartographer`](../cartographer/SKILL.md) is the ship that mines completed runs for reusable
 *per-repo* heuristics and maintains the knowledge base under `.armada/cartography/` so future builds
-specialise to the repo. It's a **best-effort, side-channel background subagent**, run under the
-**identical ship's-bell discipline as §8c** — it must **never block, derail, or fail the tick**:
+specialise to the repo. It runs under the **identical best-effort, side-channel ship's-bell
+discipline as §8c** — it must **never block, derail, or fail the tick**.
+
+**What it must NOT do: fire once per reconcile.** The naive wiring dispatches cartographer at *every*
+terminal reconcile (§2d / §3e / §5). On a busy backlog that means one cartography update **per
+issue/PR** — an 8-feature, 3-fix run would emit **11+** cartography PRs (or 11+ commits competing for
+the active PR), each touching the **same** `.armada/cartography/` files, so they **race and conflict
+with each other** and **flood the review lane**. The fix is to **accumulate** the runs each reconcile
+completes and dispatch cartographer **once per fleet-run**, batched, over the whole accumulated set.
+
+#### 8d.i Accumulate, don't dispatch, at each reconcile point
+
+At each of the **three terminal reconcile points** the bell rings — **build-completion (§2d)**,
+**PR-pipeline outcome (§3e)**, **issue-shipped (§5)** — do **not** dispatch cartographer inline.
+Instead, when `cartography` isn't `"off"`, **record the just-completed run** into a per-fleet-run
+**pending-cartography accumulator** and carry straight on:
+
+- The accumulator is a small in-memory list the lookout keeps across the ticks of one `/loop`
+  session — one entry per completed run, each `{ kind: "build" | "pr" | "shipped", number, ref }`
+  (the issue/PR number and its branch/PR ref) so the batched cartographer (§8d.ii) knows exactly
+  which runs to analyse. De-dup by `number` so the same run recorded at two reconcile points (its PR
+  merged *and* its issue shipped) is analysed once.
+- Recording is **after the consequential action, never before** — the label swap, the PR comment, the
+  merge, the issue close have already landed; appending to the accumulator is the last, optional step
+  of the reconcile, exactly like the bell ring. It is cheap and synchronous (no subagent), so it
+  **never** holds the tick or fails it.
+
+This replaces the per-reconcile dispatch entirely: a reconcile **enqueues**, it does not map.
+
+#### 8d.ii Dispatch cartographer once, at an idle point, over the whole batch
+
+Dispatch cartographer **once per fleet-run**, when the run reaches an **idle point** — the
+**frontier is clear** (`horizon clear · harbour clear`, §2c: no build or review runnable or in
+flight) **and the accumulator is non-empty**. That is the natural end-of-run drain: all the work
+that produced learnings has landed, nothing is mid-flight to add more, so one batched pass captures
+the whole run. Then:
+
+- Spawn **one** cartographer via the `Agent` tool with `run_in_background: true` in its own context,
+  handed the **entire accumulated batch** (§8d.i) to analyse together — it dedupes/updates/prunes
+  across all of them and emits **one** knowledge-update PR (or one commit / one proposed diff), per
+  cartographer §9/§9a. **Clear the accumulator** the moment it's handed off, so the next fleet-run
+  starts fresh and a run isn't re-analysed.
+- **Single-writer — never two cartographers at once.** Because every cartography pass writes the same
+  `.armada/cartography/` files, two concurrent passes would race. So treat cartographer as
+  **strictly serial**: track a `cartographyInFlight` flag for the session and **never dispatch a
+  second cartographer while one is still running**. If an idle point is reached while a cartography
+  pass is in flight, **leave the accumulator intact** and let the *next* idle point drain it once the
+  in-flight pass returns (clear the flag on its completion). One writer, one batched PR, no race.
+- If the `/loop` is **stopped** (or the user ends the session) with the accumulator non-empty and no
+  idle point yet reached, that residue can be mapped by a manual `/cartographer` over those runs — it
+  is never silently lost, but it is also never forced through mid-run.
+
+#### 8d.iii Gating, isolation, and the discipline (unchanged)
 
 - **Gated by the `cartography` config key (§1).** Read `cartography` from `.armada/config.json`:
-  - `"off"` *(default)* → **do not dispatch cartographer at all.** The tick behaves exactly as before;
+  - `"off"` *(default)* → **never accumulate and never dispatch.** The tick behaves exactly as before;
     learning is opt-in. (Manual `/cartographer` still works for a human any time.)
-  - `"proposal"` → dispatch it, but it only **proposes** a cartography diff for human approval — it
-    never commits silently.
-  - `"on"` → dispatch it; it commits the knowledge update into the **active PR** so it rides the
+  - `"proposal"` → accumulate, then at the idle point dispatch a batched pass that only **proposes** a
+    single cartography diff for human approval — it never commits silently.
+  - `"on"` → accumulate, then dispatch a batched pass that commits **one** knowledge update into the
+    **active PR** (or opens **one** dedicated cartography PR when there's no active PR) so it rides the
     muster review + `autoMerge` gate (cartographer §9).
-- **After the consequential action, never before.** Dispatch cartographer only **after** the
-  reconcile's real work has landed — the label swap, the PR comment, the merge, the issue close. It is
-  the last, optional step, exactly like the bell ring; never re-order it ahead of the outcome.
-- **Background, bounded, and isolated.** Spawn it via the `Agent` tool with `run_in_background: true`
-  in its own context — one dispatch per reconcile event, handed the issue/PR it should analyse. It
-  never holds the tick open and never fans out a swarm.
+- **Background, bounded, isolated, single-writer.** One cartographer in flight at a time (§8d.ii),
+  spawned in its own context, handed the batch. It never holds the tick open and never fans out a
+  swarm — at most **one** cartography PR per fleet-run, not one per reconcile.
 - **Never fatal.** If cartographer errors, finds nothing, isn't available, or the key is off, the tick
   is **completely unaffected** — swallow any failure (log at most once, prefixed
-  `crows-nest cartography:`) and carry on. A failed map update must never turn a green tick red.
+  `crows-nest cartography:`), clear the in-flight flag, and carry on. A failed map update must never
+  turn a green tick red.
 - **Distinct from the fleet-defect loop (§7).** Cartographer learns about the **host repo** and writes
   `.armada/cartography/`; the fleet-defect loop learns about **ARMADA itself** and files a
   `fleet-defect` against `armadaRepo`. The two are independent — §7 is **unchanged** by this.

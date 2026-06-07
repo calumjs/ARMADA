@@ -203,33 +203,45 @@ High-confidence heuristics are applied by default; Low-confidence ones are surfa
 not hard constraints. This is the payoff: each run the repo gets *easier* to build because the last
 run wrote down what it learned.
 
-## 7. Auto-run at crows-nest's reconcile points (ship's-bell discipline)
+## 7. Auto-run once per fleet-run, batched (ship's-bell discipline)
 
-When the `cartography` config key is on (§8), [`crows-nest`](../crows-nest/SKILL.md) dispatches
-cartographer as a **best-effort background subagent** at its **three terminal reconcile points** —
-the same points the ship's bell rings:
+When the `cartography` config key is on (§8), [`crows-nest`](../crows-nest/SKILL.md) does **not** fire
+cartographer once per reconcile — that would emit one cartography update **per issue/PR** on a busy
+backlog, all racing on the same `.armada/cartography/` files and flooding the review lane. Instead the
+lookout **accumulates** the completed runs at its **three terminal reconcile points** — the same
+points the ship's bell rings — and dispatches cartographer **once per fleet-run, over the whole
+batch** (crows-nest §8d):
 
-- **build-completion** (crows-nest §2d) — a background build returned `opened`; analyse the new PR's run.
-- **PR-pipeline outcome** (crows-nest §3e) — a review→merge pipeline reconciled; analyse the addressed
+- **build-completion** (crows-nest §2d) — a background build returned `opened`; record the new PR's run.
+- **PR-pipeline outcome** (crows-nest §3e) — a review→merge pipeline reconciled; record the addressed
   PR (its muster + human review comments are the richest correction evidence).
-- **issue-shipped** (crows-nest §5) — an issue closed `armada:shipped`; analyse the full resolution path.
+- **issue-shipped** (crows-nest §5) — an issue closed `armada:shipped`; record the full resolution path.
 
-It runs under the **ship's-bell discipline (crows-nest §8c)** — it is a *side-channel courtesy*,
-never part of the tick's outcome:
+Each reconcile **enqueues** a run; the actual cartographer dispatch happens **once, at the run's idle
+point** (frontier clear, accumulator non-empty — crows-nest §8d.ii), handed the **entire accumulated
+batch** to analyse together. So on the auto path cartographer is invoked with **a set of runs**, not
+one — it analyses them all (§4), reconciles once against existing cartography (§5), and emits a
+**single** knowledge update (§9a). It runs under the **ship's-bell discipline (crows-nest §8c)** — a
+*side-channel courtesy*, never part of the tick's outcome:
 
-- **Best-effort & side-channel.** cartographer runs **after** the consequential action (the label
-  swap, the merge, the issue close have already happened). It is the last, optional step — never
-  re-ordered ahead of the outcome.
-- **Bounded.** One cartographer dispatch per reconcile event, in the background, in its own context —
-  it never fans out a swarm and never holds the tick open.
+- **Best-effort & side-channel.** cartographer runs **after** the consequential actions (the label
+  swaps, the merges, the issue closes have already happened). It is the last, optional step — never
+  re-ordered ahead of an outcome.
+- **Batched & bounded — one pass per fleet-run.** At most **one** cartographer in flight, in the
+  background, in its own context, over the whole batch. It never fans out a swarm, never holds a tick
+  open, and emits **one** cartography PR per fleet-run, not one per reconcile.
+- **Single-writer — no race.** Because every pass writes the same `.armada/cartography/` files,
+  crows-nest serialises cartographer: it never dispatches a second pass while one is in flight (§8d.ii),
+  so two cartography updates never collide on those files.
 - **Never blocks, derails, or fails the tick.** If cartographer errors, finds nothing, or the tool
   isn't available, the tick is **unaffected** — swallow the failure (log it at most once) and carry
   on. A failed map update must never turn a green tick red, exactly as a failed bell ring never does.
-- **De-duped.** Each terminal event triggers cartographer **once** (the in-flight guards mean a
-  reconciled unit isn't re-picked), so the same run isn't re-analysed every tick.
+- **De-duped.** A run recorded at two reconcile points (its PR merged *and* its issue shipped) is
+  analysed **once** — crows-nest de-dups the accumulator by number (§8d.i), and the batch itself is
+  reconciled as one set, so no run is mapped twice.
 
-With the key **off** (the default), crows-nest does **not** auto-dispatch cartographer at all —
-learning is opt-in, and manual `/cartographer` always works regardless.
+With the key **off** (the default), crows-nest does **not** accumulate or auto-dispatch cartographer
+at all — learning is opt-in, and manual `/cartographer` always works regardless.
 
 ## 8. Config gating — the `cartography` key
 
@@ -240,19 +252,21 @@ writes it with a **safe default**:
 ```jsonc
 // How cartographer learns per-repo heuristics. Default "off": never auto-runs.
 //   "off"      → cartographer never auto-runs; only manual /cartographer works (default)
-//   "proposal" → auto-runs at reconcile points, but only *proposes* a diff for human approval
-//   "on"       → auto-runs and commits knowledge into the active PR (rides muster + autoMerge)
+//   "proposal" → batches per fleet-run, then only *proposes* one diff for human approval
+//   "on"       → batches per fleet-run, then commits one update into the active PR (rides muster + autoMerge)
 "cartography": "off",
 ```
 
 - **`"off"` (default).** Cartographer never auto-runs. The fleet behaves exactly as before; a human
   who wants the map runs `/cartographer` by hand. This is the conservative default — learning is an
   explicit opt-in, like `autoMerge` and `autoArmSelfFixes`.
-- **`"proposal"`.** Auto-runs at the reconcile points but **never commits silently** — it presents the
-  proposed cartography diff (as a PR comment or for human approval) rather than pushing. The
-  middle ground: learning is on, but a human signs each update.
-- **`"on"`.** Auto-runs and **commits the knowledge update into the active PR** (§9) so it rides the
-  existing review + merge gate.
+- **`"proposal"`.** Accumulates runs and, at the fleet-run's idle point (§7, crows-nest §8d.ii),
+  dispatches **one** batched pass that **never commits silently** — it presents the proposed
+  cartography diff (as a PR comment or for human approval) rather than pushing. The middle ground:
+  learning is on, but a human signs the update.
+- **`"on"`.** Accumulates runs and, at the idle point, dispatches **one** batched pass that **commits
+  a single knowledge update into the active PR** (§9/§9a) so it rides the existing review + merge gate
+  — one cartography update per fleet-run, not one per reconcile.
 
 `commission` **always writes `"off"`** on a fresh repo — turning cartographer's autonomy on is a
 deliberate hand edit, never something commissioning enables (same posture as `autoMerge: false`).
@@ -276,12 +290,43 @@ Either way the rule holds: **a cartography change is always reviewable and never
 the default branch.** The active-PR path is preferred because it keeps the learning attached to the
 run that produced it; the dedicated-PR path is the fallback when no such PR exists.
 
+### 9a. The batched auto path — one knowledge update for the whole fleet-run
+
+On the auto path cartographer is handed a **batch of runs** (§7, crows-nest §8d.ii), not a single
+one. It analyses the whole set together and emits **exactly one** knowledge update for the fleet-run,
+not one per run — that is the whole point of batching, and what stops the review lane from flooding:
+
+- **Analyse the whole batch, reconcile once.** Run the §4 analysis across **all** the batched runs,
+  then do the §5 reconcile **once** over the combined set of candidate heuristics. Batching is what
+  makes the dedupe *better*, not just cheaper: a heuristic that shows up in three of the run's PRs is
+  seen three times in one pass and lands at **High** confidence (repeated-success / repeated-failure,
+  §3) instead of being written three separate times by three separate per-reconcile passes. De-dup,
+  promote-on-repetition, and prune exactly as §5 — just over the batch.
+- **One update, one review object.** Emit a **single** set of `.armada/cartography/` edits for the
+  whole batch and land it on **one** review object via §9:
+  - **Active PR present** (the run still has an open ARMADA PR — e.g. the last PR of the run, or the
+    cartography pass runs before the final merge) → commit the one batched update into that PR's
+    branch. Commit message: `cartography: batch learnings from fleet-run (<N> runs: #a, #b, …)`.
+  - **No active PR** (the common end-of-run case — every PR of the run already merged) → open **one**
+    dedicated cartography PR for the batch (`cartography: learn from fleet-run (#a, #b, …)`, armed
+    with the `triggerLabel`), **never** one per run. In `"proposal"` mode, present the **one** combined
+    diff for approval instead of pushing.
+- **Single-writer — never two passes on the same files.** crows-nest already serialises dispatch so
+  only one cartographer runs at a time (crows-nest §8d.ii). Hold up your end of that contract: a
+  batched pass **reads `.armada/cartography/` fresh, edits, and lands its one update atomically** —
+  it does not assume another pass is interleaving, and it never splits the batch across multiple
+  concurrent PRs. One writer, one batched update, no race on the cartography files.
+
+The **manual** path (§1) is unchanged: a human invoking `/cartographer` against a single PR/issue
+still produces a single-run update via §9 — §9a is only the shape the **auto, batched** path takes.
+
 ## 10. Report
 
 Summarise what was learned, in one short block:
 
 ```
-## Cartography update — <repo> · run #<pr/issue>
+## Cartography update — <repo> · run #<pr/issue>   (or: fleet-run batch #a, #b, …)
+- **Runs:**    <N> analysed in this batch — #a, #b, #c   (auto/batched path; "1" on the manual path)
 - **Added:**   <N> heuristic(s)   — e.g. workflows: "run npm run generate before build" (High)
 - **Updated:** <N> — e.g. conventions: "use FooService" confidence Medium → High (+ PR #145)
 - **Pruned:**  <N> — e.g. removed stale "edit config.yml" (superseded)
