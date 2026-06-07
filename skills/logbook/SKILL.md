@@ -110,6 +110,15 @@ The concrete navigation from the staged state to the feature: clicks/routes for 
 for CLI/TUI, the request sequence for API. Keep these as data the recorder replays, so a later run
 re-records the same path after an edit.
 
+For `web`, `reach` is not navigation-only — drive **live interactions** so the walkthrough is a
+**demo, not a slideshow**: on top of `goto` / `click` / `fill` / `wait`, use `hover`, `dblclick`,
+`press` (keyboard — e.g. `Control+k` to open a command palette), `dragdrop` (`target` → `to`), and
+`scrollTo`. The whole viewport is captured as **real motion**. A chapter can also carry a **`target`**
+(or `targets`/`spotlight`) selector to **spotlight the narrated element** — the recorder dims the
+rest, rings the element, and holds it for the length of that beat's narration — and `cursor: true`
+to drift a synthetic cursor to it. See [references/recorder.md](references/recorder.md) (*Motion
+walkthrough*) for the full beat vocabulary and the spotlight-on-stills degrade.
+
 Persist all three to `.armada/logbook/staging.json`, for example:
 
 ```jsonc
@@ -126,12 +135,20 @@ Persist all three to `.armada/logbook/staging.json`, for example:
     "seed": "<repo seed/reset command, or .armada/logbook/seed.*>",
     "entry": "http://localhost:${PORT}/"   // start URL | CLI command | API base
   },
+  "cursor": true,                          // optional: drift a synthetic cursor to targets
   "reach": [
     { "action": "goto", "target": "/" },
-    { "action": "click", "target": "<selector or label>" }
+    { "action": "press", "value": "Control+k" },          // open a command palette
+    { "action": "fill", "target": "#cmd-input", "value": "invoice" },
+    { "action": "dragdrop", "target": "#card-1", "to": "#column-2" }  // live interaction, as motion
   ]
 }
 ```
+
+A chapter in the plan may carry per-beat **`target`/`targets`/`spotlight`** (the selector(s) to
+highlight while it narrates) and **`cursor`**; the `reach` `action`s above are recorded as live
+motion. See [references/recorder.md](references/recorder.md) (*Motion walkthrough*) for the full
+beat vocabulary.
 
 **Document (re)configuration:** tell the user the recipe lives at `.armada/logbook/staging.json`,
 that they can hand-edit it, and that `/logbook --setup` re-runs the toolchain preflight (§0) and
@@ -185,12 +202,18 @@ silent captions (§0). The bundled recorder implements this; see
 For each planned chapter, **stage via the recipe** (launch the app with `commands.run`, run the
 *Stage* steps), then **drive the *Reach* steps** for that chapter while capturing the surface:
 
-- **web** — Playwright drives the page; capture video of the viewport.
+- **web** — Playwright drives the page and captures the viewport as **motion**: live interactions
+  (clicks, drags, keyboard, a streamed result appearing) are recorded as video, and each beat
+  **spotlights its narrated element** (dim the rest, ring the element, optional cursor drift) **held
+  for the length of its narration** so the highlight stays synced to the voice-over. No live video ⇒
+  the beat degrades to a **spotlight-annotated still**, and the run names the degrade.
 - **cli / tui** — capture the terminal session running the chapter's commands.
 - **api** — render request→response pairs as the on-screen visual.
 
 Capture each chapter as its own clip so a later edit re-records just that chapter. Use the recipe's
-*ready-signal* to wait for the app before driving it, and tear the app down between runs cleanly.
+*ready-signal* to wait for the app before driving it, and tear the app down between runs cleanly. The
+spotlight overlay, synthetic cursor, and live-interaction `reach` vocabulary for `web` are detailed
+in [references/recorder.md](references/recorder.md) (*Motion walkthrough*).
 
 ## 5. Assemble the video
 

@@ -64,7 +64,7 @@ The recorder picks a capture backend from the recipe's `surface` — it does **n
 
 | `surface` | Capture backend | Drives via |
 | :--- | :--- | :--- |
-| `web` | browser driver (Playwright/Puppeteer) records the viewport | the `reach` clicks/routes |
+| `web` | browser driver (Playwright/Puppeteer) records the viewport as motion | the `reach` interactions (goto/click/dblclick/hover/fill/press/dragdrop/scrollTo) + per-beat spotlight |
 | `cli` / `tui` | terminal recorder (asciinema/VHS, or xterm.js + Playwright for a polished frame) | the `reach` commands/keys |
 | `api` | renders request→response pairs as the on-screen visual | the `reach` request sequence |
 
@@ -92,9 +92,52 @@ the `web` surface:
 - **Report a blank capture as a degrade — don't swallow it.** After capture the recorder
   sanity-checks the clip; an empty/near-static clip (one that recorded the pre-paint blank window)
   is **reported as a capture degrade** in the run summary (named per the §0 degrade convention,
-  alongside any TTS/ffmpeg degrades) and falls back to a storyboard card — it is never silently
-  muxed into the final video. A produced video of real content chapters is therefore materially
-  larger than a pure caption-card storyboard, a sanity check that real frames were captured.
+  alongside any TTS/ffmpeg degrades) and falls back to a **spotlight-annotated still** (see Motion
+  walkthrough, below) — it is never silently muxed into the final video. A produced video of real
+  content chapters is therefore materially larger than a pure caption-card storyboard, a sanity
+  check that real frames were captured.
+
+## Motion walkthrough — spotlight the narrated element, capture live interactions
+
+A walkthrough should feel like a **demo, not a slideshow** — it draws the viewer's eye to the
+element being narrated and shows the app **in motion** (Loom/Arcade-style), not a sequence of static
+screenshots with a caption bar. For the `web` surface the recorder makes each beat a moment of
+guided motion:
+
+- **Per-beat target + spotlight overlay.** A chapter beat may carry a **`target`** (a CSS selector)
+  — or **`targets`/`spotlight`** for several. During that beat the recorder **scrolls each target
+  into view** and renders a **spotlight overlay**: a dimmed full-viewport backdrop with a transparent
+  hole and a **glowing ring** punched over the element's bounding box. The overlay is **held for the
+  duration of that beat's narration audio** — the recorder reads the cached narration clip's real
+  duration (ffprobe/ffmpeg, best-effort) and holds for exactly that, so the highlight stays **synced
+  to the voice-over** (a readable default, clamped to a sane window, when the beat is caption-only).
+  With several targets the hold is split evenly and the spotlight steps through them.
+- **Live interactions recorded as motion.** The `reach` vocabulary is not navigation-only. On top of
+  `goto` / `click` / `fill` / `wait` it supports **`hover`**, **`dblclick`**, **`press`** (keyboard —
+  e.g. `Control+k` to open a command palette, then `fill` to type, then watch a streamed result
+  appear), **`dragdrop`** (`target` → `to`/`dest`, e.g. drag a card between columns), and
+  **`scrollTo`**. The whole recording context is captured as **real video**, so these interactions
+  land as motion, not stills. Each step that can trigger a transition settles on `networkidle` before
+  the next.
+- **Optional synthetic cursor.** Set **`cursor: true`** on a beat (or once on the recipe) and the
+  recorder injects a synthetic cursor that **drifts to** each pointer step's target and animates a
+  **tap** on clicks — visual guidance toward the element the narration is about. It's best-effort
+  chrome layered over the real interaction; it never blocks the action that actually drives the app.
+- **Degrades to an annotated still — with the spotlight, named.** With no live video (no browser
+  driver, or a capture that came back blank), the beat degrades to an **annotated still**: a
+  screenshot **with the same spotlight overlay drawn** on the target, held for the narration's length
+  — so even the degraded path highlights the narrated element rather than showing a bare title card.
+  The degrade is **named** in the run summary per the §0 convention (e.g. `chapter 2 (...) capture
+  degraded -> annotated still (spotlight overlay) (...)`).
+
+All overlay/cursor chrome is injected into the page (a stylesheet + a few elements via the browser
+driver's `evaluate`/`screenshot`) — **no new third-party dependency**; the browser driver stays the
+only (already-optional, lazily-loaded) backend.
+
+The spotlight/cursor/interaction fields are **recipe + plan data** (`target` / `targets` /
+`spotlight` / `cursor` on a chapter; the interaction `action`s in `reach`), so a later run re-records
+the same guided motion after an edit — consistent with the "reach is data the recorder replays"
+rule above.
 
 ## Assemble — one video with `ffmpeg`
 

@@ -97,9 +97,15 @@ Environment:
   LOGBOOK_VOICE           Optional voice id passed to the provider.
   Any demo credentials the recipe references by name (e.g. LOGBOOK_DEMO_USER).
 
+Motion walkthrough (web): a chapter may carry "target"/"spotlight" selector(s) to
+highlight while it narrates (dim the rest + ring the element, held for the narration
+clip's duration) and "cursor": true to drift a synthetic cursor to it. Reach steps
+support live interactions recorded as motion: goto, click, dblclick, hover, fill,
+press (keyboard, e.g. a command palette), dragdrop (target -> to), scrollTo, wait.
+
 Missing optional tools degrade rather than fail: no ffmpeg -> storyboard;
-no capture backend -> stills; no TTS key -> burned-in captions. The run names
-whatever degraded.
+no capture backend / blank capture -> spotlight-annotated still; no TTS key ->
+burned-in captions. The run names whatever degraded.
 `;
 
 // --------------------------------------------------------------------------
@@ -546,6 +552,13 @@ async function runRecord(args) {
       title: ch.title || `Chapter ${i + 1}`,
       role: ch.role || ch.action || '',
       reach: ch.reach || [],
+      // Motion-walkthrough fields (issue #69): the element(s) to spotlight while this
+      // beat narrates, and whether to drift a synthetic cursor. Carried through so the
+      // capture step can target/highlight/guide.
+      target: ch.target,
+      targets: ch.targets,
+      spotlight: ch.spotlight,
+      cursor: ch.cursor,
       narration,
       clip,
     };
@@ -637,6 +650,190 @@ async function waitForContentfulPaint(page, { timeout = 15000 } = {}) {
     .catch(() => {});
 }
 
+// --------------------------------------------------------------------------
+// Motion walkthrough: narration-synced hold, spotlight overlay, synthetic cursor,
+// and live interactions (issue #69)
+// --------------------------------------------------------------------------
+
+// How long to hold a beat's spotlight/interaction on screen. The acceptance
+// criterion is that the on-screen highlight lasts as long as that beat's narration
+// audio — so when a voice clip exists we read its real duration (via ffprobe/ffmpeg,
+// best-effort) and hold for that; otherwise we fall back to a readable default. The
+// hold is clamped so a missing/odd duration can never wedge the capture open.
+const SPOTLIGHT_MIN_HOLD_MS = 1500;
+const SPOTLIGHT_MAX_HOLD_MS = 20000;
+const SPOTLIGHT_DEFAULT_HOLD_MS = 3500;
+
+function clamp(n, lo, hi) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+// Probe a narration clip's duration in seconds using ffprobe (preferred) or ffmpeg's
+// stderr banner (fallback). Best-effort and dependency-free — returns null if neither
+// is available or the probe fails, and the caller then uses the default hold.
+function clipDurationSeconds(clipFile, ffmpegExe) {
+  if (!clipFile || !existsSync(clipFile)) return null;
+  // ffprobe usually sits next to ffmpeg; try a provisioned/PATH copy.
+  const probeName = os.platform() === 'win32' ? 'ffprobe.exe' : 'ffprobe';
+  const probe = resolveExe(probeName);
+  if (probe) {
+    const r = spawnSync(
+      probe,
+      ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', clipFile],
+      { encoding: 'utf8' },
+    );
+    const d = parseFloat((r.stdout || '').trim());
+    if (Number.isFinite(d) && d > 0) return d;
+  }
+  // Fallback: parse ffmpeg's "Duration: HH:MM:SS.xx" banner from stderr.
+  if (ffmpegExe) {
+    const r = spawnSync(ffmpegExe, ['-i', clipFile], { encoding: 'utf8' });
+    const m = (r.stderr || '').match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    if (m) {
+      const secs = Number(m[1]) * 3600 + Number(m[2]) * 60 + parseFloat(m[3]);
+      if (Number.isFinite(secs) && secs > 0) return secs;
+    }
+  }
+  return null;
+}
+
+// Resolve how long this beat should hold its spotlight/interaction on screen: the
+// narration clip's real duration when we have a voice clip, else the default. Always
+// clamped to a sane window so the capture can't hang.
+function beatHoldMs(chapter, ffmpegExe) {
+  const clip = chapter.clip;
+  let ms = SPOTLIGHT_DEFAULT_HOLD_MS;
+  if (clip && clip.mode === 'voice' && clip.file) {
+    const secs = clipDurationSeconds(clip.file, ffmpegExe);
+    if (secs) ms = Math.round(secs * 1000);
+  }
+  return clamp(ms, SPOTLIGHT_MIN_HOLD_MS, SPOTLIGHT_MAX_HOLD_MS);
+}
+
+// Normalise a beat's target(s) into an array of selector strings. A beat can carry
+// `target`/`targets`/`spotlight` as a single selector or a list.
+function beatTargets(chapter) {
+  const raw = chapter.spotlight ?? chapter.targets ?? chapter.target;
+  if (!raw) return [];
+  return (Array.isArray(raw) ? raw : [raw]).filter((s) => typeof s === 'string' && s.trim());
+}
+
+// Inject the spotlight stylesheet + a synthetic cursor element ONCE per page. The
+// overlay is a fixed full-viewport dim backdrop with a transparent "hole" punched
+// over the target via a box-shadow ring; the cursor is an absolutely-positioned dot
+// that we animate toward a target for visual guidance. All injected into the page —
+// no new npm dependency. Idempotent: re-injection is a no-op.
+async function ensureSpotlightChrome(page, withCursor) {
+  await page
+    .evaluate((cursor) => {
+      if (!document.getElementById('armada-logbook-style')) {
+        const style = document.createElement('style');
+        style.id = 'armada-logbook-style';
+        style.textContent = `
+          #armada-logbook-spot{position:fixed;inset:0;pointer-events:none;z-index:2147483646;
+            opacity:0;transition:opacity .35s ease;border-radius:8px;
+            box-shadow:0 0 0 9999px rgba(8,12,20,.62);outline:3px solid #4da3ff;
+            outline-offset:2px;}
+          #armada-logbook-spot.on{opacity:1;}
+          #armada-logbook-ring{position:fixed;pointer-events:none;z-index:2147483647;
+            border:3px solid #4da3ff;border-radius:10px;box-shadow:0 0 18px 4px rgba(77,163,255,.8);
+            opacity:0;transition:opacity .35s ease, top .4s ease, left .4s ease,
+            width .4s ease, height .4s ease;}
+          #armada-logbook-ring.on{opacity:1;}
+          #armada-logbook-cursor{position:fixed;width:22px;height:22px;z-index:2147483647;
+            pointer-events:none;left:0;top:0;opacity:0;transition:left .6s ease, top .6s ease,
+            opacity .3s ease, transform .12s ease;
+            background:no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M4 2l16 9-7 1 4 8-3 1-4-8-6 4z' fill='white' stroke='black' stroke-width='1.2'/></svg>");
+            filter:drop-shadow(0 1px 2px rgba(0,0,0,.5));}
+          #armada-logbook-cursor.on{opacity:1;}
+          #armada-logbook-cursor.tap{transform:scale(.8);}`;
+        document.head.appendChild(style);
+      }
+      if (!document.getElementById('armada-logbook-spot')) {
+        const spot = document.createElement('div');
+        spot.id = 'armada-logbook-spot';
+        document.body.appendChild(spot);
+        const ring = document.createElement('div');
+        ring.id = 'armada-logbook-ring';
+        document.body.appendChild(ring);
+      }
+      if (cursor && !document.getElementById('armada-logbook-cursor')) {
+        const c = document.createElement('div');
+        c.id = 'armada-logbook-cursor';
+        document.body.appendChild(c);
+      }
+    }, !!withCursor)
+    .catch(() => {});
+}
+
+// Spotlight a target selector: scroll it into view, then position the dim backdrop's
+// "hole" and the glowing ring over its bounding box and fade them in. Returns whether
+// a target was found (so the caller can still hold the beat even if it wasn't).
+async function spotlightTarget(page, selector) {
+  return page
+    .evaluate((sel) => {
+      const el = document.querySelector(sel);
+      const spot = document.getElementById('armada-logbook-spot');
+      const ring = document.getElementById('armada-logbook-ring');
+      if (!el || !spot || !ring) return false;
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+      const r = el.getBoundingClientRect();
+      const pad = 6;
+      const box = {
+        left: Math.max(0, r.left - pad),
+        top: Math.max(0, r.top - pad),
+        width: r.width + pad * 2,
+        height: r.height + pad * 2,
+      };
+      for (const node of [spot, ring]) {
+        node.style.left = box.left + 'px';
+        node.style.top = box.top + 'px';
+        node.style.width = box.width + 'px';
+        node.style.height = box.height + 'px';
+        node.classList.add('on');
+      }
+      return true;
+    }, selector)
+    .catch(() => false);
+}
+
+// Hide the spotlight backdrop + ring between beats so an un-targeted beat shows the
+// app unobscured.
+async function clearSpotlight(page) {
+  await page
+    .evaluate(() => {
+      for (const id of ['armada-logbook-spot', 'armada-logbook-ring']) {
+        const n = document.getElementById(id);
+        if (n) n.classList.remove('on');
+      }
+    })
+    .catch(() => {});
+}
+
+// Drift the synthetic cursor toward a selector (centre of its box) and optionally
+// animate a tap. Best-effort visual guidance — never throws, never blocks the click
+// that actually drives the app.
+async function moveCursorTo(page, selector, { tap = false } = {}) {
+  await page
+    .evaluate(
+      ({ sel, tap }) => {
+        const c = document.getElementById('armada-logbook-cursor');
+        const el = sel && document.querySelector(sel);
+        if (!c || !el) return;
+        const r = el.getBoundingClientRect();
+        c.classList.add('on');
+        c.style.left = r.left + r.width / 2 + 'px';
+        c.style.top = r.top + r.height / 2 + 'px';
+        if (tap) {
+          c.classList.add('tap');
+          setTimeout(() => c.classList.remove('tap'), 160);
+        }
+      },
+      { sel: selector, tap },
+    )
+    .catch(() => {});
+}
+
 // Lazy web capture. Tries playwright, then puppeteer; degrades to a card on any
 // import/launch failure so a missing/half-installed backend never hard-fails.
 //
@@ -647,6 +844,14 @@ async function waitForContentfulPaint(page, { timeout = 15000 } = {}) {
 // steps. After capture we (c) sanity-check the produced clip and, if it's
 // empty/near-static, fall back to a storyboard card and NAME the capture degrade in
 // `captureDegraded` rather than silently muxing blank frames.
+//
+// Motion walkthrough (issue #69): the reach vocabulary carries live interactions
+// (hover/dblclick/press/dragdrop/scrollTo on top of goto/click/fill/wait), all
+// recorded as real motion; a beat can carry target selector(s) to SPOTLIGHT — the
+// recorder scrolls each into view, dims the rest, rings the element, optionally
+// drifts a synthetic cursor to it, and HOLDS for the beat's narration-clip duration so
+// the highlight stays synced to the voice-over. With no live video this same spotlight
+// is drawn onto an annotated still (see captureWebStill) and the degrade is named.
 async function captureWeb(recipe, chapter, ffmpegExe, captureDegraded = []) {
   const entry =
     (recipe.stage && recipe.stage.entry) ||
@@ -658,6 +863,10 @@ async function captureWeb(recipe, chapter, ffmpegExe, captureDegraded = []) {
     if (step.action === 'goto' && step.target) routes.push(resolveUrl(entry, step.target));
   }
 
+  // Capture degrade when there is no live page to annotate (e.g. the backend failed to
+  // launch): name the degrade (issue #68 convention) and fall back to a storyboard
+  // card. The empty/no-clip path uses degradeWithStill(), which prefers a
+  // spotlight-annotated still grabbed from the live page (issue #69).
   const degrade = (reason) => {
     const msg = `chapter ${chapter.index} ("${chapter.title}") capture degraded -> storyboard card (${reason})`;
     if (!captureDegraded.includes(msg)) captureDegraded.push(msg);
@@ -687,24 +896,88 @@ async function captureWeb(recipe, chapter, ffmpegExe, captureDegraded = []) {
     // (b) RECORD — fresh recording context, gated on readiness at every navigation.
     const ctx = await browser.newContext({ recordVideo: { dir: cacheDir() } });
     const page = await ctx.newPage();
+    const wantCursor = !!(chapter.cursor ?? recipe.cursor);
     if (entry && /^https?:/.test(entry)) {
       await page.goto(entry, { waitUntil: 'load', timeout: 30000 }).catch(() => {});
       await waitForContentfulPaint(page);
     }
+    await ensureSpotlightChrome(page, wantCursor);
+    // Replay the reach steps as LIVE motion. goto/click/fill/wait are preserved;
+    // hover/dblclick/press/scrollTo/dragdrop add real interactions that the video
+    // captures as motion (issue #69). A synthetic cursor (when enabled) drifts to the
+    // target of each pointer step for visual guidance before the real action fires.
     for (const step of chapter.reach) {
-      if (step.action === 'goto' && step.target) {
-        await page.goto(resolveUrl(entry, step.target), { waitUntil: 'load', timeout: 30000 }).catch(() => {});
+      const t = step.target;
+      if (step.action === 'goto' && t) {
+        await page.goto(resolveUrl(entry, t), { waitUntil: 'load', timeout: 30000 }).catch(() => {});
         await waitForContentfulPaint(page);
-      } else if (step.action === 'click' && step.target) {
-        await page.click(step.target, { timeout: 5000 }).catch(() => {});
+        await ensureSpotlightChrome(page, wantCursor); // chrome is per-document; re-inject after nav
+      } else if (step.action === 'click' && t) {
+        if (wantCursor) await moveCursorTo(page, t, { tap: true });
+        await page.click(t, { timeout: 5000 }).catch(() => {});
         // A click can trigger a client-side route/transition; let it settle.
         await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-      } else if (step.action === 'fill' && step.target) {
-        await page.fill(step.target, step.value || '').catch(() => {});
+      } else if (step.action === 'dblclick' && t) {
+        if (wantCursor) await moveCursorTo(page, t, { tap: true });
+        await page.dblclick(t, { timeout: 5000 }).catch(() => {});
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+      } else if (step.action === 'hover' && t) {
+        if (wantCursor) await moveCursorTo(page, t);
+        await page.hover(t, { timeout: 5000 }).catch(() => {});
+      } else if (step.action === 'fill' && t) {
+        if (wantCursor) await moveCursorTo(page, t);
+        await page.fill(t, step.value || '').catch(() => {});
+      } else if (step.action === 'press') {
+        // Keyboard input — e.g. opening a command palette (Control+K) or submitting.
+        // `target` is optional: focus it first when given, else press globally.
+        if (t) await page.focus(t).catch(() => {});
+        await page.keyboard.press(String(step.value || step.keys || 'Enter')).catch(() => {});
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+      } else if (step.action === 'dragdrop' && t && (step.to || step.dest)) {
+        // Drag one element onto another and let the streamed result settle — captured
+        // as motion. Playwright's dragAndDrop interpolates the pointer move.
+        if (wantCursor) await moveCursorTo(page, t);
+        await page.dragAndDrop(t, step.to || step.dest, { timeout: 8000 }).catch(() => {});
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+      } else if (step.action === 'scrollTo' && t) {
+        await page
+          .evaluate((sel) => {
+            const el = document.querySelector(sel);
+            if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          }, t)
+          .catch(() => {});
+        await page.waitForTimeout(600);
       } else if (step.action === 'wait') {
         await page.waitForTimeout(Number(step.value) || 1000);
       }
     }
+    // (b2) SPOTLIGHT — after the interactions land, draw the per-beat spotlight on the
+    // target element(s) and HOLD for the narration-clip's duration so the highlight is
+    // synced to the voice-over (or a readable default when captions). Cycle through
+    // multiple targets, splitting the hold evenly. With no target the hold still keeps
+    // the final interacted state on screen for the narration's length.
+    const targets = beatTargets(chapter);
+    const holdMs = beatHoldMs(chapter, ffmpegExe);
+    if (targets.length) {
+      const per = Math.max(SPOTLIGHT_MIN_HOLD_MS, Math.round(holdMs / targets.length));
+      for (const sel of targets) {
+        if (wantCursor) await moveCursorTo(page, sel);
+        await spotlightTarget(page, sel);
+        await page.waitForTimeout(per);
+        await clearSpotlight(page);
+      }
+    } else {
+      await page.waitForTimeout(holdMs);
+    }
+
+    // Grab a spotlight-annotated still from the LIVE page before we close the context
+    // (the webm only finalises on close, and the page is gone afterwards). We use this
+    // still only if the recorded clip turns out empty/near-static — so an honest
+    // degrade still shows the narrated element highlighted, not a bare title card.
+    let fallbackStill = null;
+    if (targets[0]) await spotlightTarget(page, targets[0]);
+    fallbackStill = await captureWebStill(page, chapter, ffmpegExe).catch(() => null);
+
     await ctx.close();
     await browser.close();
 
@@ -713,16 +986,48 @@ async function captureWeb(recipe, chapter, ffmpegExe, captureDegraded = []) {
       .filter((f) => f.endsWith('.webm'))
       .map((f) => path.join(cacheDir(), f));
     const clip = vids.sort((a, b) => statMtime(b) - statMtime(a))[0];
-    if (!clip) return degrade('no clip produced');
+    if (!clip) return degradeWithStill('no clip produced', fallbackStill);
     // (c) Empty/near-static sanity check: a clip that captured a real painted app
     // is materially larger than one of a blank/near-static viewport. A blank webm
     // compresses to almost nothing, so a too-small file means we recorded the
     // pre-paint blank window — report it as a capture degrade instead of muxing it.
-    if (isEmptyClip(clip)) return degrade('clip is empty/near-static (app not painted)');
+    if (isEmptyClip(clip)) return degradeWithStill('clip is empty/near-static (app not painted)', fallbackStill);
     return clip;
   } catch (e) {
+    // The page may be gone here; degrade to a storyboard card and name it.
     return degrade(`capture backend error: ${e.message || e}`);
   }
+
+  // Name an empty/no-clip degrade and prefer the spotlight-annotated still we grabbed
+  // from the live page (issue #69) over a bare storyboard card (issue #68 names it).
+  function degradeWithStill(reason, still) {
+    const target = still ? 'annotated still (spotlight overlay)' : 'storyboard card';
+    const msg = `chapter ${chapter.index} ("${chapter.title}") capture degraded -> ${target} (${reason})`;
+    if (!captureDegraded.includes(msg)) captureDegraded.push(msg);
+    return still || renderStoryboardCard(chapter, ffmpegExe);
+  }
+}
+
+// Take a screenshot of the live page (with whatever spotlight overlay is currently on)
+// and render it as a short still clip — the annotated-still degrade for issue #69. The
+// PNG is turned into a held video frame via ffmpeg so it concatenates with real clips;
+// with no ffmpeg we return the PNG marker so the storyboard manifest can reference it.
+async function captureWebStill(page, chapter, ffmpegExe) {
+  if (!page) return null;
+  const png = path.join(cacheDir(), `still-${chapter.index}.png`);
+  await page.screenshot({ path: png, fullPage: false }).catch(() => {});
+  if (!existsSync(png)) return null;
+  if (!ffmpegExe) return { still: true, png, ...chapter };
+  const out = path.join(cacheDir(), `still-${chapter.index}.mp4`);
+  // Hold the still for the narration-clip's duration (or default) so the annotated
+  // frame stays synced to the voice-over, mirroring the live-spotlight hold.
+  const holdSecs = Math.round(beatHoldMs(chapter, ffmpegExe) / 1000) || 4;
+  await run(ffmpegExe, [
+    '-y', '-loop', '1', '-i', png, '-t', String(holdSecs),
+    '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2',
+    '-r', '30', '-pix_fmt', 'yuv420p', out,
+  ]).catch(() => {});
+  return existsSync(out) ? out : { still: true, png, ...chapter };
 }
 
 // Heuristic emptiness check for a captured webm. A recording of a blank or static
