@@ -525,6 +525,19 @@ forked, which is exactly the bug a rebase is meant to avoid. Read both sides, un
 changed, and produce a resolution that preserves both. Then `git add` the resolved files and
 `git rebase --continue`.
 
+**Dependency lockfiles get the lockfile-merge convention, not a textual merge.** When the conflicting
+file is a JS/package-managed **dependency lockfile** (`package-lock.json`, `yarn.lock`,
+`pnpm-lock.yaml`, `npm-shrinkwrap.json`), do **not** hand-merge its hunks — a generated lockfile
+three-way-merged by text is inconsistent and often corrupt. Instead apply the standard convention:
+**(1) union the dependency edits in `package.json`** (keep both sides' added/bumped deps, higher
+version on a clash), **(2) regenerate the lockfile via the repo's package manager** (`npm install` /
+`yarn install` / `pnpm install`, matched to whichever lockfile exists — never resolve a `yarn.lock`
+with `npm`), then `git add` the regenerated lockfile, and **(3) re-validate** (§12d) so a broken
+dependency union blocks rather than merging. This is the same convention crows-nest's make-mergeable
+stage documents ([crows-nest §4.4b](../crows-nest/references/review-merge-pipeline.md)); it applies
+whether the lockfile conflict is hit here or there. (JS lockfiles only for now — other package
+managers generalise later.)
+
 If a conflict **isn't mechanically resolvable with confidence** — the two sides made genuinely
 contradictory changes to the same logic and picking either loses correctness — **abort and fall
 back to `blocked`** rather than guessing:

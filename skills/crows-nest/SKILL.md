@@ -264,6 +264,19 @@ an edge, two units are independent and run concurrently. Derive edges from:
     conflict-prone; building both in parallel risks a merge conflict. Use issue text/paths and PR
     `files` from §2a to detect overlap. A same-file edge **serialises** the pair (build one, let it
     land, then the other rebases cleanly) rather than racing them.
+  - **The dependency lockfile — an *expected* shared surface (JS/package-managed repos).** In a
+    JS/package-managed repo the lockfile (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`,
+    `npm-shrinkwrap.json`) is a near-universal collision point: **every** build that adds, removes, or
+    bumps a dependency rewrites it, so any two dependency-touching builds **will** conflict on it even
+    when their actual feature code is disjoint. Treat the lockfile as an **expected shared surface**,
+    not a surprise: detect it from the PR `files` / a manifest change (`package.json`) in §2a, and
+    record the edge as `implicit: shared lockfile <path>` (distinct from a generic `same file` edge so
+    §2e and the merge-ordering in §2c can recognise it). This is the AC-3 signal — the lockfile is the
+    one file the scheduler *plans* for two dependency-adding builds to share, rather than discovering
+    `CONFLICTING` at each gate. The convention that resolves it (keep-both deps → regenerate the
+    lockfile via the package manager → re-validate) is §4.4b's lockfile-merge convention; the
+    scheduler's job here is to *recognise* the surface and (§2c) *order* the merges so it's absorbed
+    once, serially, instead of re-litigated at every gate.
   - **Foundation work others build on.** A unit that lays a base others extend (data model, shared
     surface) is a prerequisite for its dependents even without an explicit `depends on`.
   - **A PR whose base is about to move.** If an in-flight merge will change another open PR's base
@@ -272,8 +285,9 @@ an edge, two units are independent and run concurrently. Derive edges from:
     the dependent PR.
 
 Record each edge with its **reason** (`explicit: depends on #N` / `implicit: same file
-skills/foo/SKILL.md` / `implicit: base #12 about to move`). The reason is what §2e reports for held
-units and what makes a judgment call reviewable rather than opaque.
+skills/foo/SKILL.md` / `implicit: shared lockfile package-lock.json` / `implicit: base #12 about to
+move`). The reason is what §2e reports for held units and what makes a judgment call reviewable rather
+than opaque.
 
 **FIFO fallback when there are no signals.** If a unit has no edges, it's independent — there's
 nothing to order it against, so it falls back to plain FIFO (issues oldest-first on `createdAt`, PRs
@@ -305,9 +319,29 @@ sequenced rather than merged in a race — so each subsequent PR rebases against
 base instead of being invalidated mid-flight. (The actual rebase, when needed, is the pipeline's
 make-mergeable stage, §4.4b; the scheduler's job is just to *order* the merges to minimise it.)
 
+**Absorb the lockfile collision proactively — serialise lockfile-sharing merges, don't re-discover
+`CONFLICTING` at each gate (AC-1).** In a JS/package-managed repo, a `shared lockfile` edge (§2b) is
+*expected* between any two dependency-adding PRs, so a naïve scheduler would let them all reach the
+merge gate `MERGEABLE`, merge the first, and then watch every sibling flip `MERGEABLE → CONFLICTING`
+as the lockfile moves under it — paying a make-mergeable rebase round (§4.4b) on **every** merge after
+the first. That works but adds latency to each gate. Instead, when the frontier holds **two or more
+PRs joined by a `shared lockfile` edge**, treat the lockfile as the shared surface it is and **order
+those merges into a serial chain** up front: merge one, let it land, and **hold its lockfile-siblings
+with reason `lockfile merge #M first`** (§2e) so the next tick re-evaluates each against the
+*already-updated* base. The collision is then absorbed **once, in order, proactively** — at most one
+rebase per sibling, scheduled deliberately — rather than reactively rediscovered as a fresh
+`CONFLICTING` surprise at each independent gate. This is the issue-track analogue too: two builds that
+will both add dependencies are sequenced on the same `shared lockfile` edge (build one, let its PR
+land and regenerate the lockfile, then the next rebases cleanly), rather than raced into a guaranteed
+lockfile conflict. Ordering only — the actual keep-both-deps + regenerate resolution stays §4.4b's
+lockfile-merge convention; the scheduler's job is to *sequence* the merges so that convention runs at
+most once per sibling, in a planned order.
+
 **Hold the rest, with a reason.** Every unit **not** on the frontier is **held** — not dropped:
 - **blocked by a prerequisite** → "waiting on #N" (the edge from §2b);
 - **same-file conflict with an in-flight unit** → "conflicts with #M on `<file>`";
+- **shared-lockfile sibling, sequenced** → "lockfile merge #M first" (the `shared lockfile` edge from
+  §2b — held so it rebases against the already-updated lockfile instead of racing into a conflict);
 - **base about to move** → "base #K merging first";
 - **over the bound** → "queued (N/​M builds|reviews in flight)".
 

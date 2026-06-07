@@ -123,6 +123,38 @@ this stage entirely):
    the resolution is sound, and **force-pushes with `--force-with-lease`** to the PR's own branch. It
    returns a structured result: `resolved` (with the new head sha) or `unresolved` (with the reason).
 
+   **The lockfile-merge convention — the standard resolution for a JS dependency lockfile conflict
+   (AC-2).** When the `CONFLICTING` file is a JS/package-managed **dependency lockfile**
+   (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `npm-shrinkwrap.json`), do **not** hand-merge
+   the lockfile's hunks — a textual three-way merge of a generated lockfile produces an inconsistent,
+   often-corrupt tree. The lockfile is a *generated artefact*; the source of truth is `package.json`.
+   So resolve it deterministically, the same way every time:
+
+   1. **Keep both sides of the manifest.** Resolve `package.json` (and any workspace manifests) by
+      **unioning the dependency edits from both sides** — keep the base's added/bumped deps *and* the
+      PR's, taking the higher version on a genuine version clash and surfacing it in the trail. This is
+      a real merge of intent, not "take theirs": both builds wanted their dependency, and both must
+      survive.
+   2. **Regenerate the lockfile via the package manager — never hand-edit it.** With the merged
+      manifest in place, **regenerate** the lockfile by running the repo's own package manager so it's
+      internally consistent with the unioned `package.json`: `npm install` (or
+      `npm install --package-lock-only` for a lockfile-only refresh) for `package-lock.json`,
+      `yarn install` for `yarn.lock`, `pnpm install` for `pnpm-lock.yaml`. Detect the manager from
+      which lockfile exists (and `packageManager` in `package.json` if present); never resolve a
+      `yarn.lock` with `npm`. `git add` the regenerated lockfile — it is now a clean artefact of the
+      merged manifest, not a conflicted text blob.
+   3. **Re-validate that the regenerated tree is sound.** Regeneration is not proof of correctness — a
+      union of two dependency sets can still break the build. Re-run the project's checks
+      (`<commands.build> && <commands.test> && <commands.lint>`, §4.3) against the regenerated tree
+      before force-pushing. A regeneration that leaves the tree red **blocks**, it never merges — same
+      fence as every other make-mergeable resolution.
+
+   Applied this way the lockfile conflict is resolved **consistently and proactively**: the scheduler
+   (§2c) has already *ordered* the lockfile-sharing merges so this convention runs at most once per
+   sibling, in sequence, and each run keeps both deps → regenerates → re-validates rather than guessing
+   at a textual merge. (Scope: JS/package-managed lockfiles only — other package managers generalise
+   later, per the issue's non-goals.)
+
 **This stage is bounded and fenced — it never force-merges a guess:**
 
 - **Bound the attempts.** Cap rebase/resolve at **`maxRebaseRounds` (default 1, falling back to
