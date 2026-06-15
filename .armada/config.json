@@ -4,6 +4,26 @@
   "baseBranch": "master",
   "authors": "",
   "autoMerge": true,
+  "notify": "terminal",
+  "bellCommand": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/foghorn-say.mjs\"",
+  "mergeMethod": "squash",
+  "maxReviewRounds": 2,
+  "armadaRepo": "calumjs/ARMADA",
+  "autoArmSelfFixes": false,
+  "cartography": "proposal",
+  "publicIntake": {
+    "enabled": true,
+    "authors": "",
+    "autoArm": true,
+    "maxPerTick": 3,
+    "requireDoubleCheck": true,
+    "closeOnCharter": true
+  },
+  "foghorn": {
+    "flavour": "a gruff, proud nautical harbourmaster",
+    "verbosity": "normal",
+    "gate": "terminal"
+  },
   "commands": {
     "test": "node scripts/validate-skills.mjs",
     "lint": "node scripts/validate-skills.mjs"
