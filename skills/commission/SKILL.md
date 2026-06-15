@@ -94,6 +94,7 @@ overwriting** — the user may have hand-tuned it.
       "maxFindings": 20            // most candidate findings a run collects before it stops surveying
     }
   },
+  "logbook": "off",               // shipwright auto-record walkthrough on PR open? "off" | "user-visible" | "all". Default "off" (opt-in).
   "commands": {
     "build":  "<detected or omitted>",
     "test":   "<detected or omitted>",
@@ -183,6 +184,17 @@ thresholds (`intervalHours`, `commitsSinceScan`, `minIdleToDispatch`) and the `b
 **opportunistic, low-priority** dispatch so recon only runs in spare capacity and never preempts
 build/review work (see crows-nest §2f and lighthouse §0/§7). Left at the defaults, lighthouse never
 auto-runs and nothing it would discover is ever auto-built.
+
+`logbook` gates [`shipwright`](../shipwright/SKILL.md)'s **auto-walkthrough** — whether the builder
+automatically records a narrated demo video via [`logbook`](../logbook/SKILL.md) when it opens a PR,
+rather than waiting for an interactive offer. One of `"off" | "user-visible" | "all"`. **Write
+`"off"`** on a fresh repo — like `lighthouse` and `cartography`, auto-recording is opt-in, never
+something commissioning enables. Set `"user-visible"` to record automatically when the change is
+user-visible (new workflows, multi-step UX, role-based behaviour — but not refactors, dependency
+bumps, infra-only changes, or one-line fixes — shipwright applies the same heuristic it uses for the
+interactive §9 offer); set `"all"` to record on every PR shipwright opens. When auto-recording,
+shipwright invokes `logbook` non-interactively, best-effort and side-channel — a logbook failure,
+missing toolchain, or degraded render **never blocks, fails, or delays** the build or handoff.
 
 ## 4. Create the GitHub labels
 
@@ -355,6 +367,7 @@ and don't arm the loop for them** (both are the user's call):
   cartography : off (default) — cartographer never auto-runs; off | proposal | on (run /cartographer by hand any time)
   foghorn     : flavour="a gruff, proud nautical harbourmaster" · verbosity=normal · gate=terminal · provider="" · voice="" — spoken narrator (set provider/voice for a cloud voice, key via env/.env; set bellCommand to hear it)
   lighthouse  : enabled=false · autoArm=false (defaults) — autonomous recon never auto-runs; run /lighthouse by hand any time (files unarmed backlog issues for human review)
+  logbook     : off (default) — shipwright offers walkthrough interactively only; set user-visible or all to auto-record on PR open (see shipwright §9)
   labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked, fleet-defect ✓
   chartered   : <e.g. "#84 ci merge-gate (unarmed)" — or "none (offered, declined)" / "none (CI already gates PRs)">
 
@@ -379,8 +392,8 @@ when `autoMerge: true` and no required status checks gate the base branch.
 - Config: diff-and-confirm before overwrite — never clobbers hand edits silently. Re-running never
   flips `autoMerge` back on or off behind the user's back; if it's already set, leave it.
 - Nothing here merges or arms. Commissioning writes `autoMerge: false`, **`autoArmSelfFixes: false`**,
-  **and `cartography: "off"`** — neither autonomous merging, autonomous self-fixing, nor autonomous
-  learning is ever turned on by commissioning.
+  **`cartography: "off"`**, and **`logbook: "off"`** — neither autonomous merging, autonomous self-fixing,
+  autonomous learning, nor auto-recording is ever turned on by commissioning.
 - The **offer to charter** (§5) is the only step that can *create* anything, and only with the user's
   say-so — issues are filed **unarmed**, never armed into the build queue. On a re-run, **de-dupe
   first**: `gh issue list --state all --search "ci merge-gate"` (and the other candidates) — if the

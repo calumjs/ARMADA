@@ -432,16 +432,37 @@ if not, note it in the handoff so the user can add it manually — don't block o
 Share the PR URL, summarise what was done and any follow-ups, and note if a new architecture
 decision should be recorded. The worktree stays available for review iteration.
 
-## 9. Optionally offer a walkthrough video
+## 9. Walkthrough video — interactive offer or auto-record depending on `logbook` config
 
-For user-visible features — new workflows, multi-step UX, role-based behaviour, anything harder to
-read than to watch — offer a short demo video via [`logbook`](../logbook/SKILL.md). **Skip** for
-refactors, dependency bumps, infra-only changes, or one-line fixes. Phrase it as one question and
-don't auto-record:
+Read `logbook` from `.armada/config.json` (default `"off"` when absent) and branch:
+
+**`"off"` (default)** — unchanged behaviour: on an interactive session, offer once as a single
+question and don't auto-record:
 
 > "Want me to record a short walkthrough video for the stakeholders?"
 
-Default to skipping if unsure — over-offering trains the user to mute the suggestion.
+On the non-interactive (autonomous background) path, **skip silently** — no prompt can be issued,
+so the offer is a no-op. Default to skipping if unsure — over-offering trains the user to mute the
+suggestion.
+
+**`"user-visible"`** — **auto-record** when the change is user-visible: new workflows, multi-step
+UX, role-based behaviour, anything harder to read than to watch. **Skip** for refactors, dependency
+bumps, infra-only changes, or one-line fixes (the same heuristic used for the interactive offer
+above — if you would skip the offer, skip auto-recording). When the heuristic says record, invoke
+logbook non-interactively against the just-opened PR.
+
+**`"all"`** — **auto-record on every PR** shipwright opens, regardless of the change type.
+
+**When auto-recording** (either `"user-visible"` or `"all"`): invoke logbook as a **best-effort,
+side-channel** step — non-interactively against the just-opened PR — after the PR is open and the
+handoff (§8) is complete. A logbook failure, missing toolchain, or degraded render **must never
+block, fail, or delay** the build or handoff: swallow any error, log a note in the handoff summary
+that auto-recording was attempted (and what, if anything, went wrong), and carry on. Logbook already
+degrades gracefully to captions-over-stills when the full toolchain is absent — shipwright's
+contract is only to invoke it and absorb the outcome.
+
+For user-visible features — new workflows, multi-step UX, role-based behaviour, anything harder to
+read than to watch — **skip** for refactors, dependency bumps, infra-only changes, or one-line fixes.
 
 ## 10. Suggest skill improvements — and file ARMADA defects (self-improvement loop)
 
