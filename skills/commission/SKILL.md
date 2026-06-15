@@ -397,7 +397,7 @@ and don't arm the loop for them** (both are the user's call):
   foghorn     : flavour="a gruff, proud nautical harbourmaster" · verbosity=normal · gate=terminal · provider="" · voice="" — spoken narrator (set provider/voice for a cloud voice, key via env/.env; set bellCommand to hear it)
   lighthouse  : enabled=false · autoArm=false (defaults) — autonomous recon never auto-runs; run /lighthouse by hand any time (files unarmed backlog issues for human review)
   logbook     : off (default) — shipwright offers walkthrough interactively only; set user-visible or all to auto-record on PR open (see shipwright §9)
-  publicintake: enabled=false (default) — never reads public issues; set enabled=true to screen unsolicited public suggestions (untrusted input; defended in layers — crows-nest §2g)
+  publicIntake: enabled=false (default) — never reads public issues; set enabled=true to screen unsolicited public suggestions (untrusted input; defended in layers — crows-nest §2g)
   labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked, armada:considered, armada:flagged, fleet-defect ✓
   chartered   : <e.g. "#84 ci merge-gate (unarmed)" — or "none (offered, declined)" / "none (CI already gates PRs)">
 

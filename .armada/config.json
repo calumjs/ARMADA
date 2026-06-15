@@ -14,7 +14,7 @@
   "publicIntake": {
     "enabled": true,
     "authors": "",
-    "autoArm": true,
+    "autoArm": false,
     "maxPerTick": 3,
     "requireDoubleCheck": true,
     "closeOnCharter": true
