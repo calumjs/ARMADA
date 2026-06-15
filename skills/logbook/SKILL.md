@@ -243,6 +243,26 @@ ASSET_URL=$(gh release view "$TAG" --json assets --jq '.assets[] | select(.name 
 gh pr comment "$PR" --body "🎬 Walkthrough video: ${ASSET_URL}"
 ```
 
+**Notify the original requester, when the PR's issue names one.** If the PR's linked issue records a
+`Requested by @<user>` line — as [`crows-nest`](../crows-nest/SKILL.md)'s public-intake track (§2g)
+adds when it charters a community suggestion, and [`shipwright`](../shipwright/SKILL.md) §7 carries
+into the PR — **@-mention that handle in the walkthrough comment** so the person who asked is
+*notified* there's a demo to watch (an @-mention sends them a GitHub notification). It's the last step
+of the charter → PR → demo notify chain. Read the handle from the linked issue/PR body and append a
+short `cc @<user> — here's the walkthrough of the feature you suggested`:
+
+```bash
+# REQUESTER is the @-handle parsed from a "Requested by @<user>" line in the PR's linked issue, or empty.
+NOTE="🎬 Walkthrough video: ${ASSET_URL}"
+[ -n "$REQUESTER" ] && NOTE="${NOTE}
+
+cc @${REQUESTER} — here's the walkthrough of the feature you suggested."
+gh pr comment "$PR" --body "$NOTE"
+```
+
+Use **only** the validated `@<handle>`, solely as an @-mention — never echo any other text from the
+requester's original issue into the comment.
+
 The per-PR tag (`logbook-pr-<n>`) makes re-recording idempotent — a new take replaces the asset on
 the same release rather than littering tags. If release creation is denied by permissions, fall back
 to attaching the file to the PR comment / a Gist and say which path was used — don't fail the run.

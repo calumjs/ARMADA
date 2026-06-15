@@ -359,6 +359,15 @@ lookout to close it by hand. So every PR shipwright opens for a fully-addressed 
 the summary). For a partial PR, use `Relates to #<number>` instead — deliberately *not* a closing
 keyword, because a partial PR must not auto-close the issue.
 
+**Notify the original requester, when the issue names one.** If the issue body records an external
+requester — a `Requested by @<user>` line, as [`crows-nest`](../crows-nest/SKILL.md)'s public-intake
+track (§2g) adds when it charters a community suggestion — **@-mention that handle in the PR body** so
+the person who asked is *notified* their suggestion is being built (an @-mention sends them a GitHub
+notification). It's a notify, not a credit line: a short `cc @<user> — your suggestion (#<n>) is being
+built here` is enough. Carry the same `@<user>` into the §9 walkthrough follow-up so they're pinged at
+each step (charter → PR → demo). Only the validated `@<handle>` is used, solely as an @-mention — never
+echo any other text from the requester's original issue.
+
 ```bash
 gh pr create --title "<concise title>" --body "$(cat <<'EOF'
 <PR body>
@@ -463,6 +472,13 @@ contract is only to invoke it and absorb the outcome.
 
 For user-visible features — new workflows, multi-step UX, role-based behaviour, anything harder to
 read than to watch — **skip** for refactors, dependency bumps, infra-only changes, or one-line fixes.
+
+**Notify the requester on the walkthrough, too.** When the issue records a `Requested by @<user>`
+line (§7) and a walkthrough is recorded, ensure the person who asked is **@-mentioned in logbook's
+walkthrough follow-up comment**, so they're notified there's a demo to watch — the final step of the
+charter → PR → demo notify chain. logbook already does this when the PR's linked issue names a
+requester (logbook §6); shipwright's part is only to make sure the `Requested by @<user>` line is on
+the issue/PR so logbook can read it.
 
 ## 10. Suggest skill improvements — and file ARMADA defects (self-improvement loop)
 
