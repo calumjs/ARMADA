@@ -359,14 +359,11 @@ lookout to close it by hand. So every PR shipwright opens for a fully-addressed 
 the summary). For a partial PR, use `Relates to #<number>` instead — deliberately *not* a closing
 keyword, because a partial PR must not auto-close the issue.
 
-**Notify the original requester, when the issue names one.** If the issue body records an external
-requester — a `Requested by @<user>` line, as [`crows-nest`](../crows-nest/SKILL.md)'s public-intake
-track (§2g) adds when it charters a community suggestion — **@-mention that handle in the PR body** so
-the person who asked is *notified* their suggestion is being built (an @-mention sends them a GitHub
-notification). It's a notify, not a credit line: a short `cc @<user> — your suggestion (#<n>) is being
-built here` is enough. Carry the same `@<user>` into the §9 walkthrough follow-up so they're pinged at
-each step (charter → PR → demo). Only the validated `@<handle>` is used, solely as an @-mention — never
-echo any other text from the requester's original issue.
+**Notify the original requester, when the issue names one.** If the issue body records who asked — a
+`Requested by @<user>` line — **copy that same line into the PR body**. The @-mention notifies the
+requester their suggestion is being built (an @-mention sends a GitHub notification), and it leaves the
+handle where the §9 walkthrough follow-up can read it too. Copy **only** that line / the bare
+`@<handle>` — never any other text from the issue.
 
 ```bash
 gh pr create --title "<concise title>" --body "$(cat <<'EOF'
@@ -443,7 +440,8 @@ decision should be recorded. The worktree stays available for review iteration.
 
 ## 9. Walkthrough video — interactive offer or auto-record depending on `logbook` config
 
-Read `logbook` from `.armada/config.json` (default `"off"` when absent) and branch:
+Read `logbook` from `.armada/config.json` (default `"off"` when absent; treat any unrecognised or
+malformed value as `"off"` too — fail closed) and branch:
 
 **`"off"` (default)** — unchanged behaviour: on an interactive session, offer once as a single
 question and don't auto-record:
@@ -463,22 +461,17 @@ logbook non-interactively against the just-opened PR.
 **`"all"`** — **auto-record on every PR** shipwright opens, regardless of the change type.
 
 **When auto-recording** (either `"user-visible"` or `"all"`): invoke logbook as a **best-effort,
-side-channel** step — non-interactively against the just-opened PR — after the PR is open and the
-handoff (§8) is complete. A logbook failure, missing toolchain, or degraded render **must never
-block, fail, or delay** the build or handoff: swallow any error, log a note in the handoff summary
-that auto-recording was attempted (and what, if anything, went wrong), and carry on. Logbook already
+side-channel** step — non-interactively against the just-opened PR, **after** the handoff (§8) so it
+never blocks or delays it. A logbook failure, missing toolchain, or degraded render **must never
+block, fail, or delay** the build or handoff: swallow any error, report what was attempted (and what,
+if anything, went wrong) as a **follow-up note** after the handoff, and carry on. Logbook already
 degrades gracefully to captions-over-stills when the full toolchain is absent — shipwright's
 contract is only to invoke it and absorb the outcome.
 
-For user-visible features — new workflows, multi-step UX, role-based behaviour, anything harder to
-read than to watch — **skip** for refactors, dependency bumps, infra-only changes, or one-line fixes.
-
-**Notify the requester on the walkthrough, too.** When the issue records a `Requested by @<user>`
-line (§7) and a walkthrough is recorded, ensure the person who asked is **@-mentioned in logbook's
-walkthrough follow-up comment**, so they're notified there's a demo to watch — the final step of the
-charter → PR → demo notify chain. logbook already does this when the PR's linked issue names a
-requester (logbook §6); shipwright's part is only to make sure the `Requested by @<user>` line is on
-the issue/PR so logbook can read it.
+**The requester is notified on the walkthrough, too.** When a walkthrough is recorded and the issue
+named a requester (§7), logbook (§6) reads the `Requested by @<user>` line from the PR body and
+@-mentions them in the walkthrough comment — so shipwright's only part is to have copied that line into
+the PR body (§7).
 
 ## 10. Suggest skill improvements — and file ARMADA defects (self-improvement loop)
 
