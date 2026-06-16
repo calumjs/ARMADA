@@ -94,7 +94,7 @@ overwriting** — the user may have hand-tuned it.
       "maxFindings": 20            // most candidate findings a run collects before it stops surveying
     }
   },
-  "logbook": "off",               // shipwright auto-record walkthrough on PR open? "off" | "user-visible" | "all". Default "off" (opt-in).
+  "logbook": "off",               // auto-record walkthrough? shipwright on PR open + crows-nest at merge/ship. "off" | "user-visible" | "all". Default "off" (opt-in).
   "publicIntake": {                // screen UNSOLICITED public issues (no trigger label) and charter the safe, good ones. The ONLY track that reads untrusted input.
     "enabled": false,              // master switch. Default false (opt-in) — the track is inert until on. Reads attacker-controllable text, so off by default.
     "authors": "",                 // optional allowlist of public authors to consider. "" = anyone (the point of the feature). Same form as top-level "authors".
