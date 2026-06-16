@@ -62,8 +62,11 @@ The recording toolchain it checks:
 - A **capture backend** appropriate to the surface (see §1 *Launch/Reach*): a browser driver for
   web, a terminal recorder for CLI/TUI, a request runner for APIs.
 - **`ffmpeg`** — muxes audio + video, concatenates chapters, burns in titles/lower-thirds.
-- A **TTS provider** reachable via an **environment variable** (see §3). No key ⇒ **silent captions**
-  (burned-in chapter text and narration as subtitles).
+- A **TTS provider** reachable via an **environment variable** (see §3). The preflight doesn't just
+  check the key is *present* — it **verifies the key authenticates** and that `LOGBOOK_VOICE` resolves
+  to the expected `LOGBOOK_VOICE_NAME`, failing loudly (auth error / wrong voice id / name mismatch)
+  rather than silently narrating wrong or silent. No key ⇒ **silent captions** (burned-in chapter
+  text and narration as subtitles).
 
 **Graceful degradation is the design, not a failure mode.** Every *optional* tool that's absent
 **downgrades** rather than blocking — no browser driver ⇒ captioned stills/storyboard; no `ffmpeg` ⇒
@@ -124,6 +127,10 @@ Persist all three to `.armada/logbook/staging.json`, for example:
 ```jsonc
 {
   "surface": "web",                       // "web" | "cli" | "tui" | "api"
+  "recordUrl": "https://<pr-preview-or-live-url>",  // optional: record this (a preview/Vercel
+                                          // deployment or live site) instead of the worktree dev
+                                          // server, which may never paint (issue #91). Also as env
+                                          // LOGBOOK_RECORD_URL. Falls back to stage.entry if blank.
   "launch": {
     "command": "<from commands.run>",     // reuse .armada/config.json commands.run
     "extraFlags": [],
@@ -191,10 +198,13 @@ Narration speaks to **stakeholders**, so it describes **features and outcomes, n
 ### Provider-pluggable, env-keyed, hash-cached TTS
 
 Synthesise narration through a **pluggable TTS provider** selected by config/env, with **API keys
-read only from the environment — never committed.** Cache each clip by a **content hash** of
+read only from the environment — never committed.** The recorder **actually generates** each chapter's
+voice (ElevenLabs is the bundled adapter) and caches each clip by a **content hash** of
 `(provider, voice, text)`: editing one chapter's script changes only that chapter's hash, so **only
-that clip regenerates** — the rest are reused from cache. If no provider key is present, fall back to
-silent captions (§0). The bundled recorder implements this; see
+that clip regenerates** — the rest are reused from cache. Before recording it runs the **loud TTS
+preflight** (§0): a bad key, an invalid `LOGBOOK_VOICE` id, or a voice whose name ≠ `LOGBOOK_VOICE_NAME`
+is reported and degrades **visibly** to captions — never a silent or wrong-voice narration. If no
+provider key is present, fall back to silent captions (§0). The bundled recorder implements this; see
 [references/recorder.md](references/recorder.md).
 
 ## 4. Record each chapter
@@ -219,15 +229,18 @@ in [references/recorder.md](references/recorder.md) (*Motion walkthrough*).
 
 Compose the chapters into **one** video with `ffmpeg`:
 
-- A **chapter divider** card between chapters (chapter title).
-- A **persistent lower-third** showing the current role/action.
-- **Bookends:** an **agenda** card up front (the chapter list) and a **recap** card at the end (what
-  was shown).
-- Mux each chapter's narration (or caption track) against its clip, then concatenate to a single
-  file.
+- A **chapter divider** card before each chapter (title + role).
+- A **persistent lower-third** showing the current chapter title/role.
+- **Timestamp-aligned audio:** narration is woven in as **one master track**, each chapter's clip
+  delayed (`adelay`) to its real start offset and mixed (`amix`) — so narration lands when its
+  chapter begins, with **no long silent tail** (the audio-drift bug of issue #91).
+- A **post-record self-check**: a mid-video frame must be **non-blank** and the file must carry a
+  **video stream** plus (when narration was expected) a **non-silent audio stream** — a failed check
+  is reported loudly so a white-screen/silent render is caught before it's shipped.
 
 The bundled recorder ([references/recorder.md](references/recorder.md)) performs synthesis, caching,
-capture orchestration, and the mux; keep this skill the procedure and let the script do the work.
+capture orchestration, the aligned mux, and the self-check; keep this skill the procedure and let the
+script do the work.
 
 ## 6. Attach to the PR — a per-PR release asset
 
@@ -300,7 +313,7 @@ failing. A walkthrough is a nice-to-have; never let its absence block the PR.
 
 ## Output
 
-- One narrated, chaptered walkthrough video (~2:30) with agenda/recap bookends, chapter dividers,
-  and a persistent role/action lower-third.
+- One narrated, chaptered walkthrough video (~2:30) with chapter dividers, a persistent role/action
+  lower-third, timestamp-aligned narration, and a post-record blank/silent self-check.
 - The video uploaded as a **per-PR GitHub release asset** and its link **commented on the PR**.
 - A persisted, reusable `.armada/logbook/staging.json` (launch / stage / reach) for the repo.

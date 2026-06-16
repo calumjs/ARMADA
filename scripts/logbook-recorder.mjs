@@ -95,6 +95,13 @@ Environment:
   LOGBOOK_TTS_PROVIDER    Selects the TTS adapter (e.g. "elevenlabs", "openai").
   <PROVIDER>_API_KEY      The provider's key, read from env only — never a flag.
   LOGBOOK_VOICE           Optional voice id passed to the provider.
+  LOGBOOK_VOICE_NAME      Optional expected voice NAME; the preflight fetches the
+                          voice id and fails loudly if its real name differs
+                          (catches "id points at the wrong voice").
+  LOGBOOK_RECORD_URL      Optional URL to record against (a PR preview/Vercel or
+                          the live site) — preferred over the worktree dev server,
+                          which may never paint. Falls back to the dev server if
+                          this URL warms up blank. Also settable as recipe.recordUrl.
   Any demo credentials the recipe references by name (e.g. LOGBOOK_DEMO_USER).
 
 Motion walkthrough (web): a chapter may carry "target"/"spotlight" selector(s) to
@@ -355,7 +362,107 @@ function ttsProviderConfig() {
   };
   const keyVar = keyVarByProvider[provider] || `${provider.toUpperCase()}_API_KEY`;
   const key = process.env[keyVar] || null;
-  return { provider, keyVar, key, voice: process.env.LOGBOOK_VOICE || 'default' };
+  return {
+    provider,
+    keyVar,
+    key,
+    voice: process.env.LOGBOOK_VOICE || 'default',
+    // The human-readable name the operator EXPECTS this voice id to resolve to
+    // (e.g. "calum"). When set, the preflight (verifyTts) fetches the voice by id
+    // and asserts its real name matches — catching the "voice id points at a
+    // different voice than configured" failure (issue #91: a cowboy narrator
+    // instead of the configured voice, with no warning).
+    voiceName: process.env.LOGBOOK_VOICE_NAME || null,
+  };
+}
+
+// --------------------------------------------------------------------------
+// TTS preflight — verify the key WORKS and the voice id resolves to the
+// expected name, loudly. Presence of a key is not proof it authenticates, and a
+// valid key can still point LOGBOOK_VOICE at the wrong voice. Both failures were
+// silent before (issue #91): an expired key degraded to no audio with no notice,
+// and a mismatched id narrated in the wrong voice. verifyTts turns both into a
+// clear, named result the caller surfaces (degrade visibly, never silently).
+//
+// Best-effort and bounded: a network blip or an un-implemented provider check
+// returns { ok: true, checked: false } rather than failing the run — we only
+// HARD-fail on a definitive auth rejection or a confirmed name mismatch.
+async function verifyTts(ttsCfg, { timeoutMs = 8000 } = {}) {
+  if (!ttsCfg.provider) return { ok: false, checked: false, reason: ttsCfg.reason || 'no TTS provider' };
+  if (!ttsCfg.key) return { ok: false, checked: false, reason: `${ttsCfg.keyVar || 'provider key'} not set in env` };
+
+  // Only ElevenLabs has a verified adapter here; other providers report
+  // "key present, unverified" so they degrade-by-absence behaviour is unchanged
+  // (we never silently claim a non-ElevenLabs voice is correct).
+  if (ttsCfg.provider !== 'elevenlabs') {
+    return { ok: true, checked: false, reason: `key present (no preflight adapter for ${ttsCfg.provider})` };
+  }
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  // Don't let the abort timer keep the event loop alive on its own.
+  if (timer.unref) timer.unref();
+  try {
+    // Fetch the configured voice by id. This both authenticates the key and lets
+    // us compare the returned voice name to the expected LOGBOOK_VOICE_NAME.
+    const voiceId = ttsCfg.voice && ttsCfg.voice !== 'default' ? ttsCfg.voice : null;
+    const url = voiceId
+      ? `https://api.elevenlabs.io/v1/voices/${encodeURIComponent(voiceId)}`
+      : 'https://api.elevenlabs.io/v1/voices';
+    const res = await fetch(url, {
+      headers: { 'xi-api-key': ttsCfg.key, accept: 'application/json' },
+      signal: ctrl.signal,
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, checked: true, reason: `auth-failed (HTTP ${res.status} — key rejected by ElevenLabs)` };
+    }
+    if (voiceId && (res.status === 404 || res.status === 400 || res.status === 422)) {
+      // The configured voice id doesn't exist / isn't valid on this account
+      // (ElevenLabs answers a bad id with 400/404/422) — a definitive id failure,
+      // not a transient blip. Fail loudly so it degrades to captions rather than
+      // erroring mid-record.
+      return { ok: false, checked: true, reason: `voice-not-found (id ${voiceId} returned HTTP ${res.status} — LOGBOOK_VOICE is wrong)` };
+    }
+    if (!res.ok) {
+      // A non-auth error (rate limit, 5xx) is inconclusive — don't claim wrong/silent,
+      // but don't block either; treat as unverified.
+      return { ok: true, checked: false, reason: `voice lookup inconclusive (HTTP ${res.status})` };
+    }
+    const body = await res.json().catch(() => null);
+    const gotName = voiceId
+      ? body && (body.name || (body.voice && body.voice.name))
+      : null;
+    // Name check only when both a specific voice id AND an expected name are set.
+    if (voiceId && ttsCfg.voiceName) {
+      if (!gotName) {
+        return { ok: false, checked: true, reason: `name-unresolved (voice id ${voiceId} returned no name to verify against "${ttsCfg.voiceName}")` };
+      }
+      if (gotName.trim().toLowerCase() !== ttsCfg.voiceName.trim().toLowerCase()) {
+        return {
+          ok: false,
+          checked: true,
+          reason: `name-mismatch (voice id ${voiceId} is "${gotName}", expected "${ttsCfg.voiceName}")`,
+          got: gotName,
+          want: ttsCfg.voiceName,
+        };
+      }
+      return { ok: true, checked: true, reason: `verified: "${gotName}"`, got: gotName };
+    }
+    // Key authenticates; no name assertion requested.
+    return {
+      ok: true,
+      checked: true,
+      reason: voiceId
+        ? `key valid; voice id resolves${gotName ? ` ("${gotName}")` : ''} (set LOGBOOK_VOICE_NAME to assert the name)`
+        : 'key valid (set LOGBOOK_VOICE to a specific voice id to verify it)',
+      ...(gotName ? { got: gotName } : {}),
+    };
+  } catch (e) {
+    // Network failure / timeout: inconclusive, not a definitive auth failure.
+    return { ok: true, checked: false, reason: `voice lookup failed (${e.name === 'AbortError' ? 'timeout' : e.message})` };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function clipHash(provider, voice, text) {
@@ -381,6 +488,54 @@ function resolveClip(ttsCfg, text) {
     voice: ttsCfg.voice,
     text,
   };
+}
+
+// Synthesize one narration clip to its content-hashed cache file (issue #91). The
+// bundled recorder previously NEVER generated voice — it only reused pre-cached
+// clips — so a valid key still produced a SILENT walkthrough. This is the missing
+// synth step: for ElevenLabs (the only verified adapter here) it POSTs the text to
+// the text-to-speech endpoint and writes the returned mp3 to clip.file, keyed by
+// the (provider, voice, text) hash so an unchanged chapter is reused next run.
+// Best-effort: returns false (caller degrades that chapter to silent/caption)
+// rather than throwing on any failure. A real voice id (LOGBOOK_VOICE) is required.
+async function synthesizeClip(ttsCfg, clip, { timeoutMs = 30000 } = {}) {
+  if (ttsCfg.provider !== 'elevenlabs') return false;
+  const voiceId = ttsCfg.voice && ttsCfg.voice !== 'default' ? ttsCfg.voice : null;
+  if (!voiceId || !clip || !clip.text) return false;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  if (timer.unref) timer.unref();
+  try {
+    const model = process.env.LOGBOOK_TTS_MODEL || 'eleven_multilingual_v2';
+    const res = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`,
+      {
+        method: 'POST',
+        headers: {
+          'xi-api-key': ttsCfg.key,
+          'content-type': 'application/json',
+          accept: 'audio/mpeg',
+        },
+        body: JSON.stringify({
+          text: clip.text,
+          model_id: model,
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        }),
+        signal: ctrl.signal,
+      },
+    );
+    if (!res.ok) return false;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (!buf.length) return false;
+    ensureDir(cacheDir());
+    writeFileSync(clip.file, buf);
+    clip.cached = true;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -411,6 +566,40 @@ function readSurfaceFromRecipe(stagingArg) {
     /* fall through to default */
   }
   return 'web';
+}
+
+// Resolve which URL to record against, and a fallback (issue #91). A worktree dev
+// server (`npm run dev` inside a fresh, not-fully-set-up build worktree) is the
+// least reliable surface to record — it may never paint, yielding a white-screen
+// video. Prefer a URL that is known to render: the PR's Vercel/preview deployment
+// or the live site, supplied via `LOGBOOK_RECORD_URL` (env) or `recipe.recordUrl`.
+// Returns { preferred, fallback }: `preferred` is recorded first; if it comes back
+// blank the caller falls back to `fallback` (the dev-server entry) — so a missing
+// or broken preview never silently produces a blank capture.
+function resolveRecordEntry(recipe) {
+  const devEntry =
+    (recipe.stage && recipe.stage.entry) ||
+    (recipe.launch && recipe.launch.readySignal && recipe.launch.readySignal.value) ||
+    null;
+  const preferredRaw = (process.env.LOGBOOK_RECORD_URL || recipe.recordUrl || '').trim() || null;
+  const preferred = preferredRaw || devEntry;
+  // Only offer a fallback when it's a real, distinct URL to switch to.
+  const fallback = preferred && devEntry && devEntry !== preferred ? devEntry : null;
+  return { preferred, fallback };
+}
+
+// Does the current page actually carry rendered content (not a blank/white pre-paint
+// viewport)? Mirrors waitForContentfulPaint's body-content backstop — used to decide
+// whether to switch from a blank preferred URL to the dev-server fallback (issue #91).
+async function pageHasContent(page) {
+  return page
+    .evaluate(() => {
+      const body = document.body;
+      if (!body) return false;
+      const text = (body.innerText || '').trim();
+      return text.length > 0 || body.childElementCount > 1;
+    })
+    .catch(() => false);
 }
 
 // --------------------------------------------------------------------------
@@ -458,14 +647,31 @@ async function runSetup(args) {
   report.tools.capture = detectCaptureBackend(surface);
 
   // 3) TTS ------------------------------------------------------------------
+  // Don't just check the key is PRESENT — verify it AUTHENTICATES and that the
+  // voice id resolves to the expected name (issue #91). A loud preflight here is
+  // what turns "narrated in the wrong voice / silently no audio" into a reported
+  // degrade before a single frame is recorded.
   const ttsCfg = ttsProviderConfig();
-  report.tools.tts = ttsCfg.key
-    ? { status: 'ready', provider: ttsCfg.provider, keyVar: ttsCfg.keyVar }
-    : {
-        status: 'degraded',
-        reason: ttsCfg.reason || `${ttsCfg.keyVar || 'provider key'} not set in env`,
-        degradesTo: 'burned-in captions (silent narration)',
-      };
+  const ttsVerdict = await verifyTts(ttsCfg);
+  if (ttsVerdict.ok) {
+    report.tools.tts = {
+      status: 'ready',
+      provider: ttsCfg.provider,
+      keyVar: ttsCfg.keyVar,
+      ...(ttsCfg.voice && ttsCfg.voice !== 'default' ? { voice: ttsCfg.voice } : {}),
+      ...(ttsCfg.voiceName ? { voiceName: ttsCfg.voiceName } : {}),
+      verified: !!ttsVerdict.checked,
+      reason: ttsVerdict.reason,
+    };
+  } else {
+    report.tools.tts = {
+      status: 'degraded',
+      provider: ttsCfg.provider || undefined,
+      keyVar: ttsCfg.keyVar || undefined,
+      reason: ttsVerdict.reason,
+      degradesTo: 'burned-in captions (silent narration)',
+    };
+  }
 
   // overall: missing > degraded > ready
   const statuses = Object.values(report.tools).map((t) => t.status);
@@ -481,8 +687,11 @@ async function runSetup(args) {
     printSetupHuman(report);
   }
   // Exit 0 even when degraded — degradation is by design, not failure. Only a
-  // truly missing *required* capability (status 'missing') is non-zero.
-  process.exit(report.overall === 'missing' ? 2 : 0);
+  // truly missing *required* capability (status 'missing') is non-zero. Set the
+  // exit CODE rather than calling process.exit() so the event loop drains the TTS
+  // preflight's network handle cleanly — a hard exit() races socket teardown and
+  // trips a libuv assertion on Windows (UV_HANDLE_CLOSING).
+  process.exitCode = report.overall === 'missing' ? 2 : 0;
 }
 
 function printSetupHuman(r) {
@@ -534,6 +743,21 @@ async function runRecord(args) {
   if (capture.status === 'missing') degraded.push(`capture backend absent -> ${capture.degradesTo}`);
   if (!ttsCfg.key) degraded.push('no TTS key -> burned-in captions');
 
+  // Loud TTS preflight (issue #91): a present key is not proof it authenticates,
+  // and a valid key can still point LOGBOOK_VOICE at the wrong voice. Verify both
+  // BEFORE recording; on a definitive auth failure or a confirmed name mismatch,
+  // degrade VISIBLY to captions (named in the run summary) instead of silently
+  // narrating in the wrong voice or producing a silent track. `ttsActive` is what
+  // the chapter clips resolve against — nulling its key forces caption mode.
+  let ttsActive = ttsCfg;
+  if (ttsCfg.provider && ttsCfg.key) {
+    const verdict = await verifyTts(ttsCfg);
+    if (!verdict.ok) {
+      degraded.push(`TTS preflight failed -> burned-in captions (${verdict.reason})`);
+      ttsActive = { ...ttsCfg, key: null };
+    }
+  }
+
   // Capture degrades are discovered DURING capture — a chapter whose clip came
   // back empty/near-static because the app hadn't painted yet — so they can't be
   // known up front like the toolchain degrades above. captureWeb pushes a named
@@ -546,7 +770,7 @@ async function runRecord(args) {
   // reach steps the capture step will replay.
   const chapterPlan = chapters.map((ch, i) => {
     const narration = ch.narration || ch.script || '';
-    const clip = resolveClip(ttsCfg, narration);
+    const clip = resolveClip(ttsActive, narration);
     return {
       index: i,
       title: ch.title || `Chapter ${i + 1}`,
@@ -564,11 +788,36 @@ async function runRecord(args) {
     };
   });
 
+  // Synthesize any uncached narration clips up front (issue #91): generate + cache
+  // voice BEFORE capture so the spotlight holds read each beat's real narration
+  // duration, and so the timestamp-aligned master track has clips to mix. Without
+  // this the recorder only ever reused pre-cached clips and a valid key still
+  // yielded a silent video. Best-effort and named: a chapter whose synth fails
+  // simply stays silent, reported in the run summary.
+  let synthesised = 0;
+  if (ttsActive.key) {
+    let synthFailures = 0;
+    for (const ch of chapterPlan) {
+      const c = ch.clip;
+      if (c && c.mode === 'voice' && !c.cached && c.text && !existsSync(c.file)) {
+        if (await synthesizeClip(ttsActive, c)) synthesised++;
+        else synthFailures++;
+      }
+    }
+    if (synthFailures > 0) {
+      degraded.push(
+        `TTS synthesis failed for ${synthFailures} chapter(s) -> those chapters silent` +
+          (ttsActive.voice === 'default' ? ' (LOGBOOK_VOICE not set to a voice id)' : ''),
+      );
+    }
+  }
+
   const summary = {
     out,
     surface,
     chapters: chapterPlan.length,
-    tts: ttsCfg.key ? `voice (${ttsCfg.provider})` : 'captions',
+    tts: ttsActive.key ? `voice (${ttsActive.provider})` : 'captions',
+    synthesised,
     capture: capture.backend || capture.degradesTo,
     ffmpeg: ffmpegExe ? 'present' : 'absent (storyboard)',
     degraded,
@@ -589,10 +838,18 @@ async function runRecord(args) {
     if (surface === 'web' && capture.status === 'ready' && ffmpegExe) {
       clipFile = await captureWeb(recipe, ch, ffmpegExe, captureDegraded);
     } else {
+      // No live capture backend for a web surface ⇒ a storyboard-card deck. Per
+      // AC2 this deck is only ever an explicitly-NAMED fallback, never a silent
+      // default — so name it here (the captureWeb path names its own degrades).
+      if (surface === 'web') {
+        const msg = `chapter ${ch.index} ("${ch.title}") no live capture backend -> storyboard card`;
+        if (!captureDegraded.includes(msg)) captureDegraded.push(msg);
+      }
       clipFile = await renderStoryboardCard(ch, ffmpegExe);
     }
-    const muxed = await muxChapter(ch, clipFile, ffmpegExe);
-    clips.push(muxed);
+    // Keep the video-only clip; narration is woven in at assemble time as a single
+    // timestamp-aligned master track (issue #91, AC4) rather than per-chapter muxed.
+    clips.push(clipFile);
   }
 
   // Fold any capture-time degrades discovered above into the summary so they ride
@@ -602,10 +859,20 @@ async function runRecord(args) {
     summary.captureDegraded = captureDegraded;
   }
 
-  // --- Assemble: normalise + concat ---------------------------------------
+  // --- Assemble: divider cards + lower-thirds, concat, aligned audio, self-check
   if (ffmpegExe) {
-    await assemble(clips, chapterPlan, out, ffmpegExe);
+    const result = await assemble(clips, chapterPlan, out, ffmpegExe);
+    summary.selfCheck = result.selfCheck;
+    if (result.selfCheck && !result.selfCheck.pass) {
+      // A failed self-check is a REPORTED degrade, not a silent pass: fold it into
+      // the summary and warn on stderr so a blank/silent render is caught here
+      // (issue #91, AC5) rather than shipped as a walkthrough.
+      summary.degraded = [...(summary.degraded || degraded), `post-record self-check FAILED: ${result.selfCheck.reason}`];
+    }
     console.log(JSON.stringify({ mode: 'recorded', ...summary }, null, 2));
+    if (result.selfCheck && !result.selfCheck.pass) {
+      console.error(`logbook-recorder: WARNING — post-record self-check failed: ${result.selfCheck.reason}`);
+    }
   } else {
     // No ffmpeg: emit a storyboard manifest beside --out so the run still yields
     // a reviewable artifact rather than failing.
@@ -853,15 +1120,21 @@ async function moveCursorTo(page, selector, { tap = false } = {}) {
 // the highlight stays synced to the voice-over. With no live video this same spotlight
 // is drawn onto an annotated still (see captureWebStill) and the degrade is named.
 async function captureWeb(recipe, chapter, ffmpegExe, captureDegraded = []) {
-  const entry =
-    (recipe.stage && recipe.stage.entry) ||
-    (recipe.launch && recipe.launch.readySignal && recipe.launch.readySignal.value);
+  // Prefer a URL that actually renders (preview/live) over the worktree dev server,
+  // with the dev server as the fallback (issue #91). `entry` is mutable: if the
+  // preferred URL warms up blank we switch to the fallback before recording.
+  const { preferred, fallback } = resolveRecordEntry(recipe);
+  let entry = preferred;
   // Routes this chapter touches: the entry plus any goto targets in its reach.
-  const routes = [];
-  if (entry && /^https?:/.test(entry)) routes.push(entry);
-  for (const step of chapter.reach) {
-    if (step.action === 'goto' && step.target) routes.push(resolveUrl(entry, step.target));
-  }
+  const routesFor = (base) => {
+    const r = [];
+    if (base && /^https?:/.test(base)) r.push(base);
+    for (const step of chapter.reach) {
+      if (step.action === 'goto' && step.target) r.push(resolveUrl(base, step.target));
+    }
+    return r;
+  };
+  let routes = routesFor(entry);
 
   // Capture degrade when there is no live page to annotate (e.g. the backend failed to
   // launch): name the degrade (issue #68 convention) and fall back to a storyboard
@@ -884,6 +1157,23 @@ async function captureWeb(recipe, chapter, ffmpegExe, captureDegraded = []) {
     try {
       const warmCtx = await browser.newContext();
       const warmPage = await warmCtx.newPage();
+      // Warm the entry first and ASSERT it actually paints. If the preferred URL
+      // comes back blank (a dead preview, a not-yet-deployed URL) and we have a
+      // dev-server fallback, switch to it before recording — never record a URL we
+      // just observed blank (issue #91, AC1).
+      if (entry && /^https?:/.test(entry)) {
+        await warmPage.goto(entry, { waitUntil: 'load', timeout: 30000 }).catch(() => {});
+        await waitForContentfulPaint(warmPage);
+        const painted = await pageHasContent(warmPage);
+        if (!painted && fallback) {
+          const msg = `chapter ${chapter.index} ("${chapter.title}") preferred record URL blank -> fell back to dev server (${entry} -> ${fallback})`;
+          if (!captureDegraded.includes(msg)) captureDegraded.push(msg);
+          entry = fallback;
+          routes = routesFor(entry);
+        }
+      }
+      // Prime every route this chapter touches (with the resolved entry) so dev-mode
+      // first-compile latency happens outside the recorded pass.
       for (const url of routes) {
         await warmPage.goto(url, { waitUntil: 'load', timeout: 30000 }).catch(() => {});
         await waitForContentfulPaint(warmPage);
@@ -1081,53 +1371,282 @@ async function renderStoryboardCard(chapter, ffmpegExe) {
   return existsSync(file) ? file : { card: true, ...chapter };
 }
 
-// Mux a chapter's narration voice clip onto its clip (captions are burned in at
-// assemble time). A missing clip just leaves the chapter silent.
-async function muxChapter(chapter, clipFile, ffmpegExe) {
-  if (!ffmpegExe || typeof clipFile !== 'string') return clipFile;
-  const clip = chapter.clip;
-  if (clip && clip.mode === 'voice' && clip.file && existsSync(clip.file)) {
-    const muxed = path.join(cacheDir(), `mux-${chapter.index}.mp4`);
-    await run(ffmpegExe, [
-      '-y', '-i', clipFile, '-i', clip.file,
-      '-c:v', 'copy', '-c:a', 'aac', '-shortest', muxed,
-    ]).catch(() => {});
-    return existsSync(muxed) ? muxed : clipFile;
-  }
-  return clipFile;
+// Escape text for ffmpeg's drawtext filter (which treats :, %, \, and ' specially).
+// We map the apostrophe to a typographic one to dodge shell/filter quoting entirely,
+// strip newlines, and bound the length so a card stays readable.
+function ffSafeText(s) {
+  return String(s || '')
+    .replace(/\\/g, ' ')
+    .replace(/[:%]/g, ' ')
+    .replace(/'/g, '’')
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+    .slice(0, 120);
 }
 
-// Concatenate chapter clips into one output with ffmpeg's concat demuxer.
-async function assemble(clips, chapterPlan, out, ffmpegExe) {
-  const files = clips.filter((c) => typeof c === 'string' && existsSync(c));
-  if (files.length === 0) {
-    writeFileSync(
-      out.replace(/\.mp4$/i, '') + '.storyboard.json',
-      JSON.stringify(chapterPlan, null, 2),
+// Render a short chapter-divider card (title + role) — production polish (issue #91).
+async function renderDividerCard(chapter, ffmpegExe, secs = 1.4) {
+  if (!ffmpegExe) return null;
+  const file = path.join(cacheDir(), `divider-${chapter.index}.mp4`);
+  const title = ffSafeText(chapter.title || `Chapter ${chapter.index + 1}`);
+  const role = ffSafeText(chapter.role || '');
+  const vf = [
+    `drawtext=text='${title}':fontcolor=white:fontsize=54:x=(w-text_w)/2:y=(h-text_h)/2-30`,
+    role
+      ? `drawtext=text='${role}':fontcolor=0xbcd3ee:fontsize=28:x=(w-text_w)/2:y=(h-text_h)/2+45`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(',');
+  await run(ffmpegExe, [
+    '-y', '-f', 'lavfi', '-i', `color=c=0x0b0f16:s=1280x720:d=${secs}`,
+    '-vf', vf, '-r', '30', '-pix_fmt', 'yuv420p', file,
+  ]).catch(() => {});
+  return existsSync(file) ? file : null;
+}
+
+// Normalise a clip to the common 1280x720/30fps/yuv420p shape so segments concat
+// cleanly, dropping any source audio (audio is added later as one aligned master
+// track). When `lowerThird` is set, burn in a persistent lower-third (issue #91).
+async function normaliseClip(file, tag, ffmpegExe, lowerThird) {
+  const n = path.join(cacheDir(), `norm-${tag}.mp4`);
+  const base =
+    'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p';
+  const vf = lowerThird
+    ? `${base},drawtext=text='${ffSafeText(lowerThird)}':fontcolor=white:fontsize=26:x=40:y=h-72:box=1:boxcolor=0x0b0f16@0.6:boxborderw=14`
+    : base;
+  await run(ffmpegExe, [
+    '-y', '-i', file, '-an', '-vf', vf, '-r', '30', '-pix_fmt', 'yuv420p', n,
+  ]).catch(() => {});
+  return existsSync(n) ? n : null;
+}
+
+// Build ONE master audio track from per-chapter narration clips, each delayed to
+// its real start offset on the timeline (adelay) and mixed (amix). This is the fix
+// for audio drift (issue #91, AC4): naive per-chapter mux + concat left a long
+// silent tail when a clip outran its narration; aligning by timestamp lands each
+// narration exactly when its chapter begins. Returns the master path, or null.
+async function buildAlignedAudio(voiced, ffmpegExe) {
+  if (!voiced.length) return null;
+  const master = path.join(cacheDir(), 'master-audio.m4a');
+  const inputs = [];
+  const filters = [];
+  voiced.forEach((v, i) => {
+    inputs.push('-i', v.file);
+    filters.push(`[${i}:a]adelay=${v.offsetMs}|${v.offsetMs}[a${i}]`);
+  });
+  const mixIns = voiced.map((_, i) => `[a${i}]`).join('');
+  const filterComplex = `${filters.join(';')};${mixIns}amix=inputs=${voiced.length}:normalize=0:dropout_transition=0[mix]`;
+  await run(ffmpegExe, [
+    '-y', ...inputs,
+    '-filter_complex', filterComplex,
+    '-map', '[mix]', '-c:a', 'aac', '-ar', '48000', master,
+  ]).catch(() => {});
+  return existsSync(master) ? master : null;
+}
+
+function matchNum(txt, re) {
+  const m = txt.match(re);
+  return m ? Number(m[1]) : null;
+}
+
+// Sample one frame at `t` seconds and read its luma stats (YAVG/YMIN/YMAX) via
+// ffmpeg's signalstats filter. Used to detect a blank/near-white capture. Returns
+// null on any failure — best-effort, ffmpeg-only.
+function frameLuma(file, t, ffmpegExe) {
+  if (!ffmpegExe) return null;
+  const r = spawnSync(
+    ffmpegExe,
+    ['-v', 'info', '-ss', String(t), '-i', file, '-frames:v', '1', '-vf', 'signalstats,metadata=print', '-f', 'null', '-'],
+    { encoding: 'utf8' },
+  );
+  const txt = (r.stderr || '') + (r.stdout || '');
+  const yavg = matchNum(txt, /signalstats\.YAVG=([\d.]+)/);
+  if (yavg === null) return null;
+  const ymin = matchNum(txt, /signalstats\.YMIN=([\d.]+)/);
+  const ymax = matchNum(txt, /signalstats\.YMAX=([\d.]+)/);
+  return { yavg, ymin: ymin ?? yavg, ymax: ymax ?? yavg };
+}
+
+// Mean volume in dB via ffmpeg's volumedetect. null on failure.
+function meanVolumeDb(file, ffmpegExe) {
+  if (!ffmpegExe) return null;
+  const r = spawnSync(ffmpegExe, ['-i', file, '-af', 'volumedetect', '-f', 'null', '-'], {
+    encoding: 'utf8',
+  });
+  return matchNum(r.stderr || '', /mean_volume:\s*(-?[\d.]+) dB/);
+}
+
+// Post-record self-check (issue #91, AC5): sample a mid-video frame and assert it
+// is NOT blank/near-white, and assert the file carries a video stream and — when
+// narration was expected — a NON-SILENT audio stream. Returns a structured verdict
+// the caller reports loudly; never throws. This is the guard that would have caught
+// every failure mode in the issue (white screen, no voice, silent track).
+function postRecordSelfCheck(out, ffmpegExe, { expectAudio } = {}) {
+  if (!out || !existsSync(out)) {
+    return { pass: false, frame: 'absent', audio: 'absent', reason: 'output file not produced' };
+  }
+  const verdict = { pass: true, frame: 'unknown', audio: 'unknown', reason: '' };
+  const note = (m) => (verdict.reason = verdict.reason ? `${verdict.reason}; ${m}` : m);
+
+  const dur = clipDurationSeconds(out, ffmpegExe) || 0;
+  const mid = dur > 0 ? Math.max(0.1, dur / 2) : 0.1;
+
+  // Streams present?
+  const probe = resolveExe(os.platform() === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+  let hasVideo = true;
+  let hasAudio = false;
+  if (probe) {
+    const r = spawnSync(
+      probe,
+      ['-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', out],
+      { encoding: 'utf8' },
     );
-    return;
+    const types = (r.stdout || '').split(/\r?\n/).map((s) => s.trim());
+    hasVideo = types.includes('video');
+    hasAudio = types.includes('audio');
   }
-  // Normalise each clip to a common codec/size so concat is clean.
-  const normalised = [];
-  for (let i = 0; i < files.length; i++) {
-    const n = path.join(cacheDir(), `norm-${i}.mp4`);
-    await run(ffmpegExe, [
-      '-y', '-i', files[i],
-      '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2',
-      '-r', '30', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', n,
-    ]).catch(() => {});
-    if (existsSync(n)) normalised.push(n);
+  if (!hasVideo) {
+    verdict.pass = false;
+    verdict.frame = 'no-video-stream';
+    note('no video stream in output');
   }
+
+  // Mid-frame not blank/near-white.
+  const luma = frameLuma(out, mid, ffmpegExe);
+  if (luma) {
+    const nearWhite = luma.yavg >= 235;
+    const flat = luma.ymin === luma.ymax;
+    if (nearWhite || (flat && luma.yavg >= 235)) {
+      verdict.pass = false;
+      verdict.frame = 'blank/near-white';
+      note(`mid-frame appears blank (YAVG=${luma.yavg}${flat ? ', flat' : ''})`);
+    } else {
+      verdict.frame = 'ok';
+    }
+  } else {
+    verdict.frame = 'unverified';
+  }
+
+  // Audio non-silent when narration was expected.
+  if (expectAudio) {
+    if (!hasAudio) {
+      verdict.pass = false;
+      verdict.audio = 'absent';
+      note('expected narration but output has no audio stream');
+    } else {
+      const mv = meanVolumeDb(out, ffmpegExe);
+      if (mv === null) {
+        verdict.audio = 'present (level unverified)';
+      } else if (mv <= -70) {
+        verdict.pass = false;
+        verdict.audio = 'silent';
+        note(`audio stream is silent (mean ${mv} dB)`);
+      } else {
+        verdict.audio = 'ok';
+      }
+    }
+  } else {
+    verdict.audio = hasAudio ? 'present' : 'n/a (captions)';
+  }
+
+  if (verdict.pass && !verdict.reason) note(`frame ${verdict.frame}, audio ${verdict.audio}`);
+  return verdict;
+}
+
+// Assemble the captured clips into one walkthrough: a divider card + lower-third
+// per chapter, concatenated to a master video, with ONE timestamp-aligned master
+// audio track muxed on (issue #91). `clips[i]` pairs with `chapterPlan[i]`. Returns
+// a { selfCheck } verdict from the post-record check.
+async function assemble(clips, chapterPlan, out, ffmpegExe) {
+  const segments = []; // { video, audioClip, durMs }
+  let anyVoice = false;
+
+  for (let i = 0; i < chapterPlan.length; i++) {
+    const ch = chapterPlan[i];
+    const clipFile = clips[i];
+    if (typeof clipFile !== 'string' || !existsSync(clipFile)) continue;
+
+    // Divider card before each chapter.
+    const divider = await renderDividerCard(ch, ffmpegExe);
+    if (divider) {
+      const dnorm = await normaliseClip(divider, `div-${i}`, ffmpegExe, null);
+      if (dnorm) {
+        segments.push({
+          video: dnorm,
+          audioClip: null,
+          durMs: (clipDurationSeconds(dnorm, ffmpegExe) || 1.4) * 1000,
+        });
+      }
+    }
+
+    // Chapter clip with a persistent lower-third (title — role).
+    const lower = ch.role ? `${ch.title} — ${ch.role}` : ch.title;
+    const cnorm = await normaliseClip(clipFile, String(i), ffmpegExe, lower);
+    if (!cnorm) continue;
+    const audioClip =
+      ch.clip && ch.clip.mode === 'voice' && ch.clip.file && existsSync(ch.clip.file)
+        ? ch.clip.file
+        : null;
+    if (audioClip) anyVoice = true;
+    segments.push({
+      video: cnorm,
+      audioClip,
+      durMs: (clipDurationSeconds(cnorm, ffmpegExe) || 4) * 1000,
+    });
+  }
+
+  if (segments.length === 0) {
+    writeFileSync(out.replace(/\.mp4$/i, '') + '.storyboard.json', JSON.stringify(chapterPlan, null, 2));
+    return { selfCheck: { pass: false, frame: 'absent', audio: 'absent', reason: 'no usable clips to assemble' } };
+  }
+
+  // Concatenate the (silent) video segments into the master timeline.
   const listFile = path.join(cacheDir(), 'concat.txt');
-  writeFileSync(listFile, normalised.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join('\n'));
-  await run(ffmpegExe, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', out]).catch(
+  writeFileSync(listFile, segments.map((s) => `file '${s.video.replace(/'/g, "'\\''")}'`).join('\n'));
+  const silentVideo = path.join(cacheDir(), 'master-video.mp4');
+  await run(ffmpegExe, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', silentVideo]).catch(
     async () => {
-      // copy can fail across mismatched streams; re-encode as a fallback.
       await run(ffmpegExe, [
-        '-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-pix_fmt', 'yuv420p', out,
+        '-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-r', '30', '-pix_fmt', 'yuv420p', silentVideo,
       ]).catch(() => {});
     },
   );
+  if (!existsSync(silentVideo)) {
+    return { selfCheck: { pass: false, frame: 'absent', audio: 'absent', reason: 'video concat failed' } };
+  }
+
+  // Build + mux the timestamp-aligned master audio track when any chapter has voice.
+  let finalDone = false;
+  if (anyVoice) {
+    const voiced = [];
+    let offsetMs = 0;
+    for (const s of segments) {
+      if (s.audioClip) voiced.push({ file: s.audioClip, offsetMs: Math.round(offsetMs) });
+      offsetMs += s.durMs;
+    }
+    const masterAudio = await buildAlignedAudio(voiced, ffmpegExe);
+    if (masterAudio && existsSync(masterAudio)) {
+      // Map video from the silent master + audio from the aligned track. No
+      // -shortest: keep the full video timeline; narration simply ends with its
+      // last clip (no silent-tail padding, no video truncation).
+      await run(ffmpegExe, [
+        '-y', '-i', silentVideo, '-i', masterAudio,
+        '-map', '0:v:0', '-map', '1:a:0',
+        '-c:v', 'copy', '-c:a', 'aac', '-ar', '48000', out,
+      ]).catch(() => {});
+      finalDone = existsSync(out);
+    }
+  }
+  if (!finalDone) {
+    // Captions-only / no voice: the silent master video is the deliverable.
+    await run(ffmpegExe, ['-y', '-i', silentVideo, '-c', 'copy', out]).catch(() => {});
+    if (!existsSync(out)) {
+      writeFileSync(out.replace(/\.mp4$/i, '') + '.storyboard.json', JSON.stringify(chapterPlan, null, 2));
+    }
+  }
+
+  return { selfCheck: postRecordSelfCheck(out, ffmpegExe, { expectAudio: anyVoice }) };
 }
 
 function run(cmd, args) {

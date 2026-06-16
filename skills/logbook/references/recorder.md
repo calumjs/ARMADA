@@ -33,9 +33,31 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/logbook-recorder.mjs" \
   §2-3). 3-6 chapters, ~2:30 total.
 - **Environment** — TTS provider key(s) and any demo credentials the recipe references **by name**
   (e.g. `LOGBOOK_DEMO_USER`). The recorder reads these from `process.env`; it never accepts secrets
-  as flags and never writes them to disk.
+  as flags and never writes them to disk. Recording-specific vars:
+  - **`LOGBOOK_VOICE`** — the provider voice id to synthesise with.
+  - **`LOGBOOK_VOICE_NAME`** — the human-readable name that voice id is *expected* to resolve to
+    (e.g. `calum`); the preflight fetches the voice and **fails loudly on a name mismatch**.
+  - **`LOGBOOK_RECORD_URL`** — a URL known to render (the PR's preview/Vercel deployment or the live
+    site) to record against **in preference to** the worktree dev server. Also settable as
+    `recipe.recordUrl`.
 
-## Provider-pluggable TTS
+## Record against a URL that renders
+
+A fresh build **worktree** dev server (`commands.run`, e.g. `npm run dev`) is the least reliable
+surface to record: if the tree isn't fully installed/built the page may never paint, and the
+recorder captures a **white screen** for the whole narration. So the recorder records against the
+**most reliable renderable URL** it's given, in order:
+
+1. **`LOGBOOK_RECORD_URL`** (env) or **`recipe.recordUrl`** — a preview/Vercel deployment or the
+   live site. This is the preferred surface.
+2. The recipe's dev-server entry (`stage.entry` / `launch.readySignal.value`) — the **fallback**.
+
+Before recording, the recorder **warms the preferred URL and asserts it actually paints** (body has
+content, not a blank pre-paint viewport). If the preferred URL comes back blank and a dev-server
+fallback exists, it **switches to the fallback and names the switch** as a degrade — it never records
+a URL it just observed blank.
+
+## Provider-pluggable TTS — synthesised, with a loud preflight
 
 The TTS layer is an **interface, not a vendor**. A provider is selected by config/env (e.g.
 `LOGBOOK_TTS_PROVIDER`) and supplies one method — `synthesize(text, voice) -> audio`. Adding a
@@ -44,6 +66,19 @@ the environment only**:
 
 - No key committed, ever — keys come from `process.env.<PROVIDER>_API_KEY` (or the provider's
   documented var).
+- **Narration is actually synthesised.** For each uncached chapter the recorder calls the provider's
+  text-to-speech endpoint (ElevenLabs is the bundled adapter) and writes the audio to the
+  content-hash cache **before** capture — so spotlight holds read the real clip duration and the
+  master track has clips to align. A synth failure degrades **that chapter** to silent and is named;
+  it never aborts the run.
+- **Loud preflight — verify the key WORKS and the voice id resolves to the expected name.** A present
+  key is not proof it authenticates, and a valid key can still point `LOGBOOK_VOICE` at the *wrong*
+  voice. Before recording (and in `--setup`) the recorder fetches the configured voice by id: an
+  **auth rejection** (HTTP 401/403) or an **invalid voice id** (400/404/422) or a **name mismatch**
+  (the voice's real name ≠ `LOGBOOK_VOICE_NAME`) is reported as a **clear, named degrade** and the
+  run falls back to **silent captions** — it never silently narrates in the wrong voice or with no
+  audio. (These were the exact silent failures issue #91 captured: an expired key degraded to no
+  audio, and a mismatched id narrated in a cowboy voice, both with no warning.)
 - If the selected provider has no key in the environment, the recorder **falls back to silent
   captions** (burned-in narration text) and reports the fallback — it never blocks the whole video on
   a missing voice key.
@@ -141,13 +176,24 @@ rule above.
 
 ## Assemble — one video with `ffmpeg`
 
-The recorder muxes and concatenates with `ffmpeg`:
+The recorder assembles with `ffmpeg`:
 
-1. Mux each chapter clip against its narration (or caption track).
-2. Insert a **chapter divider** card (chapter title) between chapters.
-3. Burn in a **persistent lower-third** with the current role/action.
-4. Add **bookends** — an **agenda** card (chapter list) at the start and a **recap** card at the end.
-5. Concatenate to a single output file (`--out`).
+1. Insert a **chapter divider** card (title + role) before each chapter.
+2. Normalise each clip to a common size/fps and burn in a **persistent lower-third** (chapter
+   title — role).
+3. Concatenate the (silent) video segments into one master video timeline.
+4. Build **one timestamp-aligned master audio track**: each chapter's narration is delayed
+   (`adelay`) to that chapter's real start offset on the timeline and the delayed tracks are mixed
+   (`amix`), then muxed onto the master video. This is what keeps narration landing **when its
+   chapter starts** with **no long silent tail** — the audio-drift failure issue #91 captured (e.g.
+   an 83s video against a 31s audio track from naive concatenation).
+5. **Post-record self-check** (so a broken render is caught here, not shipped): sample a **mid-video
+   frame** and assert it is **not blank/near-white** (`signalstats` YAVG), and assert the file has a
+   **video stream** and — when narration was expected — a **non-silent audio stream**
+   (`volumedetect`). A failed check is **reported loudly** in the run summary and on stderr.
+
+(Agenda/recap bookend cards are optional polish a caller may add; the dividers + lower-third are the
+baseline.)
 
 ## Output
 
