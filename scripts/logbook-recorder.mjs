@@ -1515,12 +1515,17 @@ function postRecordSelfCheck(out, ffmpegExe, { expectAudio } = {}) {
   // Mid-frame not blank/near-white.
   const luma = frameLuma(out, mid, ffmpegExe);
   if (luma) {
+    // A blank/near-white capture is both very bright AND near-flat (no content
+    // variance). A legitimately bright/white-background app still renders content
+    // (text, controls), so its frame won't be flat — require BOTH to avoid a
+    // false-positive "blank" on a light UI.
+    const range = (luma.ymax ?? luma.yavg) - (luma.ymin ?? luma.yavg);
     const nearWhite = luma.yavg >= 235;
-    const flat = luma.ymin === luma.ymax;
-    if (nearWhite || (flat && luma.yavg >= 235)) {
+    const flat = range <= 8;
+    if (nearWhite && flat) {
       verdict.pass = false;
       verdict.frame = 'blank/near-white';
-      note(`mid-frame appears blank (YAVG=${luma.yavg}${flat ? ', flat' : ''})`);
+      note(`mid-frame appears blank (YAVG=${luma.yavg}, range=${range})`);
     } else {
       verdict.frame = 'ok';
     }
