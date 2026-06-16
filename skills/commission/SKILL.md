@@ -204,6 +204,12 @@ interactive §9 offer); set `"all"` to record on every PR shipwright opens. When
 shipwright invokes `logbook` non-interactively, best-effort and side-channel — a logbook failure,
 missing toolchain, or degraded render **never blocks, fails, or delays** the build or handoff.
 
+The **same key also drives [`crows-nest`](../crows-nest/SKILL.md)** (§8f): in the autonomous flow
+shipwright runs in a background subagent and *defers* the walkthrough, so crows-nest records it at the
+**PR-merged / issue-shipped reconcile** instead — idempotently (never double-records), verified before
+posting, with a bounded backfill for already-merged PRs, and fully side-channel. So `"user-visible"` /
+`"all"` covers both the open-time (shipwright) and merge-time (crows-nest) paths from one setting.
+
 `publicIntake` gates crows-nest's **public-intake track** (§2g) — the one track that reads
 **unsolicited issues from the general public** (those *without* the trigger label) instead of acting
 only on armed work. Because it reads **untrusted, attacker-controllable text**, commission writes it

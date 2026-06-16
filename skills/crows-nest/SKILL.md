@@ -121,6 +121,19 @@ Read `.armada/config.json` from the target repo:
   reconcile. Active **only when this key is not `"off"`**. Default `"off"` = never auto-runs (manual
   `/cartographer` still works); `"proposal"` = batches then only proposes a diff; `"on"` = batches
   then commits one learning into the active PR. The full convention is §8d.
+- `logbook` — gates the **walkthrough recording** [`logbook`](../logbook/SKILL.md) produces. One of
+  `"off" | "user-visible" | "all"`, **default `"off"`** (written by [`commission`](../commission/SKILL.md)).
+  `commission` documents this key as gating [`shipwright`](../shipwright/SKILL.md)'s auto-record on PR
+  *open* (§9) — but in the autonomous flow shipwright runs in a background worktree subagent and
+  **defers** the walkthrough to the foreground lookout, and crows-nest had **no logbook step**, so a
+  fleet-shipped PR got **no video** unless a human asked. This key now **also** drives crows-nest: when
+  it isn't `"off"`, at the **PR-merged reconcile (§3e)** and **issue-shipped reconcile (§5)** the
+  lookout records the walkthrough automatically — `"all"` for any merged/shipped change, `"user-visible"`
+  only for user-visible ones — under the **same best-effort side-channel discipline** as the bell (§8c)
+  and cartographer (§8d): it is **idempotent** (skips a PR that already has a walkthrough), **verified**
+  (rejects a blank/silent capture before posting), and **never blocks, fails, or delays** the tick or
+  the merge. The full convention is §8f. Default `"off"` = crows-nest never records (manual `/logbook`
+  still works).
 - `lighthouse` — gates [`lighthouse`](../lighthouse/SKILL.md), the fleet's autonomous **reconnaissance**:
   it surveys the repo for *future* work and charters it (unarmed). A block with `enabled` (**default
   `false`** = opt-in), `autoArm` (default `false`), the trigger thresholds (`intervalHours`,
@@ -687,6 +700,13 @@ over the whole batch, so concurrent pipelines don't each spawn a racing cartogra
 same `.armada/cartography/` files. Recording is cheap and synchronous; it never blocks or fails this
 reconcile.
 
+Also after a PR reaches `armada:merged` — and after the bell and the cartography record — **record a
+walkthrough for this PR** if the `logbook` key isn't `"off"` (§8f): dispatch [`logbook`](../logbook/SKILL.md)
+as a best-effort background subagent for the merged PR (gated to user-visible changes when
+`logbook: "user-visible"`), **only if** the PR doesn't already have one (idempotency, §8f). It is
+side-channel under the §8c discipline — a logbook failure never blocks, fails, or delays this reconcile
+or the merge. The merge has already landed; the recording is the last, optional step.
+
 ## 4. The review→merge pipeline (a Workflow)
 
 A scheduled PR (§3) runs through a deterministic **Workflow**: **parallel review fan-out → consolidate
@@ -750,6 +770,12 @@ cartography pass** if the `cartography` key isn't `"off"` (§8d): append it to t
 heuristics, but cartographer is **not** dispatched here — it runs **once per fleet-run** at an idle
 point (§8d.ii) over the accumulated set, de-duped against the same run already recorded at its
 PR-merge reconcile. Recording is cheap and synchronous; it never blocks or fails the close.
+
+Also when an issue closes `armada:shipped` — and after the bell and the cartography record — **record a
+walkthrough** if the `logbook` key isn't `"off"` (§8f), unless the issue's PR was already recorded at
+its §3e merge reconcile (the same idempotency guard, §8f, dedupes the two paths so a shipped issue
+whose PR already has a `🎬`/`logbook-pr-<n>` walkthrough is **not** re-recorded). Best-effort and
+background under the §8c discipline; it never blocks or fails the close.
 
 ## 6. Arm the loop — hand the /loop line to the user
 
@@ -1076,6 +1102,86 @@ sound asset and assumes no OS**. The operator points it at whatever raises an al
 The command receives the bell line as its first argument and the `ARMADA_BELL_*` env vars (above), so
 a single script can branch on `$ARMADA_BELL_EVENT` to play different sounds for shipped vs. blocked.
 
+### 8f. Logbook — record a walkthrough at merge/ship
+
+[`logbook`](../logbook/SKILL.md) turns a shipped change into a short narrated walkthrough video and
+attaches it to the PR. [#88](https://github.com/calumjs/ARMADA/issues/88) shipped the `logbook` config
+key and had [`shipwright`](../shipwright/SKILL.md) §9 auto-record on PR *open* — but it explicitly
+scoped the **crows-nest pipeline hook** as future work. In the live autonomous flow that gap bites:
+shipwright runs in a **background worktree subagent** and, rather than recording, **defers** the
+walkthrough to "the foreground lookout" and returns — and crows-nest had **no logbook step** at any
+reconcile point. So with `logbook: "all"` a fleet-shipped PR got **no video** until a human asked.
+This is that hook: when `logbook` isn't `"off"`, crows-nest records automatically at the merge/ship
+reconcile — under the **identical best-effort, side-channel discipline as the bell (§8c) and
+cartographer (§8d)**: it must **never block, derail, fail, or delay** the tick **or the merge**.
+
+#### 8f.i When it fires, and at which `logbook` level
+
+At the **two terminal reconcile points where a mergeable artifact exists** — **PR-merged (§3e)** and
+**issue-shipped (§5)** — and **only after** the consequential action has landed (the merge, the label
+swap, the issue close), the lookout records a walkthrough, gated by `logbook` from §1:
+
+- `"off"` *(default)* → **never record.** The tick behaves exactly as before (manual `/logbook` still
+  works for a human).
+- `"user-visible"` → record **only for user-visible changes** — apply shipwright §9's user-visible
+  heuristic (a new workflow / UX / role-visible behaviour, not a refactor / dep-bump / infra-only / docs
+  change). Skip silently for non-user-visible PRs.
+- `"all"` → record for **any** merged/shipped change.
+
+It is dispatched with **no human prompt** — `logbook` is invoked non-interactively for the PR number,
+exactly as shipwright would (the recipe at `.armada/logbook/staging.json` and env-keyed TTS carry the
+app-specific knowledge; §1 of logbook).
+
+#### 8f.ii Idempotent — never re-record
+
+A re-tick, the §3e and §5 paths firing for the same unit, and a backfill sweep (§8f.iv) must **never**
+produce a second video. Before recording, **skip the PR if it already has a walkthrough** — detect
+**either** a `logbook-pr-<n>` GitHub **release asset** **or** a `🎬` walkthrough **PR comment** (the two
+artifacts logbook §6 leaves). This single guard dedupes all three trigger paths: a shipped issue whose
+PR was already recorded at its merge reconcile is not recorded again at close.
+
+#### 8f.iii Verify before posting
+
+Don't attach a blank storyboard. The produced video must be **confirmed real** before it's posted —
+probe for **both a video and an audio stream** and reject a near-empty/blank capture (logbook's own
+post-record self-check does exactly this, cross-ref [#91](https://github.com/calumjs/ARMADA/issues/91)).
+If the capture fails verification, **do not post** it — log the degrade (`crows-nest logbook:`) and
+carry on; a failed recording is never attached and never fails the tick.
+
+#### 8f.iv Backfill sweep — bounded, best-effort
+
+A PR merged while `logbook` was `"off"` (or before this hook existed) has no walkthrough. When
+`logbook` isn't `"off"`, the lookout also detects **already-merged/shipped PRs within a bounded recent
+window** that carry the `logbook != "off"` intent but have **no** walkthrough release asset, and records
+one — **bounded per tick** (a small cap, e.g. 1–2 backfills) and **best-effort**, so the sweep can't
+flood the tick or the release lane. The idempotency guard (§8f.ii) keeps the sweep from touching a PR
+that already has a video. Like everything here it is side-channel: a backfill never blocks or fails the
+tick, and what was *not* backfilled this tick is logged, not silently dropped.
+
+#### 8f.v Reconcile the shipwright hand-off — no silent void
+
+shipwright §9 must not **both** defer to the lookout **and** have the lookout do nothing — that void is
+the bug. Reconcile the two so the obligation is owned exactly once:
+
+- If shipwright **recorded inline** (as #88 intended for the foreground path), it leaves the walkthrough
+  artifact — and §8f.ii's idempotency guard means crows-nest **sees it and skips**. No double video.
+- If shipwright **deferred** (the background-subagent path — it returns without recording), crows-nest
+  **picks the obligation up here** at the merge/ship reconcile and records. The deferral is the hand-off;
+  this hook is the catch. Either way the walkthrough is produced **once**, with **no silent void**
+  between them.
+
+#### 8f.vi Dispatch, isolation, and the discipline
+
+- **Background, bounded, isolated.** Dispatch `logbook` via the `Agent` tool with
+  `run_in_background: true` in its own context, handed the PR number — one dispatch per
+  not-yet-recorded merged/shipped unit (plus the bounded backfill, §8f.iv). It never holds the tick open.
+- **After the consequential action, never before.** Record only **after** the merge / issue close has
+  landed — the last, optional step of the reconcile, exactly like the bell ring and the cartography record.
+- **Never fatal.** If logbook errors, finds no recipe, the toolchain is missing, the render degrades, or
+  the key is `"off"`, the tick is **completely unaffected** — swallow any failure (log at most once,
+  prefixed `crows-nest logbook:`) and carry on. A failed or skipped recording never turns a green tick
+  red and never affects the merge.
+
 ## Inputs
 
 - `label` *(optional)* — the trigger label to watch. Defaults to `.armada/config.json` → `triggerLabel`, else `armada`.
@@ -1102,3 +1208,7 @@ a single script can branch on `$ARMADA_BELL_EVENT` to play different sounds for 
   when the notifier is unavailable, never fatal to the tick (§8) — **and**, when `bellCommand` is set
   (default `""` = off), a focus-independent local command hook fired alongside it under the same gate
   and the same best-effort/bounded discipline (§8e).
+- When `logbook` isn't `"off"` (§8f): a narrated walkthrough video recorded automatically at the
+  PR-merged / issue-shipped reconcile and attached to the PR — idempotent (never double-records),
+  verified before posting (no blank capture), bounded backfill for already-merged PRs, and fully
+  side-channel (never blocks or fails the tick or the merge).
