@@ -79,6 +79,18 @@ Read `.armada/config.json` from the target repo:
   `"flagship"` (autonomous drive-to-merge loop).
 - `baseBranch` — default base for new work.
 - `commands` — the project's `build`/`test`/`lint` (the ready-PR pipeline re-validates with these).
+- `pluginRoot` — the **fallback** location of ARMADA's bundled `scripts/` dir, recorded by
+  [`commission`](../commission/SKILL.md) §1a under a no-plugin **drop-in** install (an absolute path
+  to the dropped-in `.claude`; empty/omitted under the plugin install). The lookout invokes its
+  bundled scripts — `review-merge-pipeline.mjs` and `merge-gate.mjs` (§4) — under a
+  `${CLAUDE_PLUGIN_ROOT}/scripts/...` path, and that variable is set by the plugin installer, **not**
+  under a drop-in. **Scripts-dir resolution rule (apply wherever a bundled script is invoked): prefer
+  `${CLAUDE_PLUGIN_ROOT}` when it's set in the environment; otherwise fall back to the `pluginRoot`
+  recorded here** (treat `${CLAUDE_PLUGIN_ROOT:-<pluginRoot>}/scripts/...` as the effective path). This
+  is what makes the drop-in route work **without** a manual `CLAUDE_PLUGIN_ROOT` export — the env var
+  stays the preferred source (and a manual export still overrides), but a pure drop-in falls back to
+  the recorded `pluginRoot` automatically. If **both** are absent the repo isn't correctly
+  commissioned for the pipeline — re-run `commission`.
 - `authors` — optional allowlist of issue authors the lookout may act on (default `""` = anyone).
   Read it now; you apply it in §2a. Accepted forms:
   - **Blank / omitted / empty `""`** → the filter is **off**; process issues from anyone (current
@@ -728,6 +740,16 @@ makes it deterministic and keeps only its *output* in the lookout's context:
   `ready_awaiting_human` | `blocked`) **from the run-state JSON** — the model acts on its output and
   never eyeballs the 5-point gate. (Bundled files are referenced via `${CLAUDE_PLUGIN_ROOT}` because
   plugins are copied to a cache, so relative paths break.)
+
+**Resolve the scripts dir before invoking either: prefer `${CLAUDE_PLUGIN_ROOT}`, else fall back to
+`pluginRoot` from `.armada/config.json`.** The `${CLAUDE_PLUGIN_ROOT}` prefix above is the *preferred*
+source — the plugin installer sets it, and a manual export still overrides. But under a no-plugin
+**drop-in** install nothing sets it, so the lookout falls back to the `pluginRoot` recorded by
+[`commission`](../commission/SKILL.md) §1a (§1's config-key list): use
+`${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/...` as the effective path when launching both
+scripts. This is what lets the drop-in route run the pipeline **without** a manual
+`CLAUDE_PLUGIN_ROOT` export. If neither the env var nor `pluginRoot` resolves to a real `scripts/`
+dir, the repo isn't correctly commissioned — re-run `commission`.
 
 The full pipeline — review (§4.1), address (§4.2), verify (§4.3), the bounded address↔review loop
 (§4.4), make-mergeable / auto-rebase (§4.4b), and the gated merge (§4.5) — lives in

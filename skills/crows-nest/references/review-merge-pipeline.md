@@ -32,6 +32,15 @@ not just the prose here — so the orchestration is the same every run and only 
 > **Always reference the bundled files via `${CLAUDE_PLUGIN_ROOT}/...`.** Plugins are copied into a
 > cache, so a relative path breaks once installed — the `${CLAUDE_PLUGIN_ROOT}` prefix resolves to
 > wherever the plugin actually landed.
+>
+> **Scripts-dir resolution: prefer `${CLAUDE_PLUGIN_ROOT}`, else fall back to `pluginRoot` from
+> `.armada/config.json`.** The env var is the *preferred* source — set by the plugin installer, and a
+> manual export still overrides it — but under a no-plugin **drop-in** install nothing sets it, so
+> resolve the effective scripts path as `${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/...` using
+> the `pluginRoot` [`commission`](../../commission/SKILL.md) §1a records. That fallback is what lets a
+> pure drop-in run this pipeline **without** a manual `CLAUDE_PLUGIN_ROOT` export; if neither resolves,
+> re-run `commission`. (Apply this same rule at every `${CLAUDE_PLUGIN_ROOT}/scripts/...` invocation
+> below — `review-merge-pipeline.mjs` and `merge-gate.mjs`.)
 
 The pipeline runs against one PR `<n>` already claimed `armada:reviewing`
 ([ready-pr-watch.md §3c](ready-pr-watch.md)). The sections below describe each stage the bundled

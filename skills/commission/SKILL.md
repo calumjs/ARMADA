@@ -33,6 +33,111 @@ git rev-parse --is-inside-work-tree         # must be a git work tree
 If `gh` isn't authenticated, stop and tell the user to run `gh auth login` (or `! gh auth login`
 in-session) — don't try to proceed. If there's no GitHub remote, ARMADA can't watch issues; say so.
 
+## 1a. Detect the install mode and make bundled scripts resolvable
+
+ARMADA can be installed two ways, and they differ in **one** way that would break downstream skills if
+it went unhandled: how the **bundled scripts** a skill invokes at runtime are addressed. Skills
+reference them as `${CLAUDE_PLUGIN_ROOT}/scripts/...` (e.g. `review-merge-pipeline.mjs`,
+`merge-gate.mjs`, `foghorn-say.mjs`, `logbook-recorder.mjs`, `spyglass-snapshot.mjs`). That variable is
+set **by the plugin installer** — so under a pure **drop-in** install (skill folders copied into
+`.claude/skills/`, no plugin) it is **unset**. commission closes that gap by **recording the resolved
+scripts root as `pluginRoot` in `.armada/config.json`**, which the skills consume as a **runtime
+fallback**: the resolution rule everywhere a bundled script is invoked is **prefer
+`${CLAUDE_PLUGIN_ROOT}` when set, else fall back to the recorded `pluginRoot`** (i.e.
+`${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/...`). So a drop-in **works out of the box with no
+manual export** — the env var stays the preferred source (a manual export still overrides), but it's
+no longer a required step. (See [`crows-nest`](../crows-nest/SKILL.md) §1's config-key list and §4,
+which read `pluginRoot` and apply exactly this rule.)
+
+Detect the mode, then make the drop-in case work before anything is armed:
+
+```bash
+# Plugin mode: the installer exported CLAUDE_PLUGIN_ROOT into the environment.
+[ -n "$CLAUDE_PLUGIN_ROOT" ] && echo "plugin mode (CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT)"
+# Drop-in mode: no installer variable, but ARMADA skills are sitting under .claude/skills/.
+[ -z "$CLAUDE_PLUGIN_ROOT" ] && [ -d .claude/skills/commission ] && echo "drop-in mode"
+```
+
+- **Plugin mode** (`CLAUDE_PLUGIN_ROOT` set): nothing to do — the installer's variable already makes
+  every `${CLAUDE_PLUGIN_ROOT}/scripts/...` reference resolve. Record `installMode: "plugin"` in the
+  readiness report (§7) and carry on.
+
+- **Drop-in mode** (`CLAUDE_PLUGIN_ROOT` unset, skills under `.claude/skills/`): the bundled scripts
+  must be reachable at `${CLAUDE_PLUGIN_ROOT}/scripts/...` even though no installer set the variable.
+  Resolve it and record it so the skills work without rewriting their paths:
+
+  1. **Locate the bundled `scripts/` dir.** The drop-in must include `scripts/` alongside the dropped
+     `skills/` — the canonical layout is `.claude/scripts/` next to `.claude/skills/`. Confirm a known
+     script is present:
+
+     ```bash
+     ls .claude/scripts/review-merge-pipeline.mjs .claude/scripts/merge-gate.mjs 2>/dev/null
+     ```
+
+     If `scripts/` was **not** dropped in (only `skills/` was — the README historically said to copy
+     just the skill folders), warn the user that the bundled scripts are missing and the crows-nest
+     pipeline, foghorn bell, logbook, and spyglass cannot run until `scripts/` is copied in too
+     (recommend the plugin route, which bundles both). Don't fabricate the directory.
+
+  2. **Resolve `CLAUDE_PLUGIN_ROOT` to the directory that contains `scripts/`** (the dropped-in ARMADA
+     root — `.claude/` in the canonical layout) as an absolute path:
+
+     ```bash
+     PLUGIN_ROOT="$(cd "$(dirname .claude/scripts)" && pwd)"   # absolute path to .claude
+     ```
+
+  3. **Persist the resolved root as `pluginRoot` so the bundled-script references resolve without the
+     installer variable** — write `"pluginRoot": "<absolute path>"` into `.armada/config.json` (§3).
+     This is the **runtime fallback** the skills consume (crows-nest §1/§4 resolve
+     `${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/...`): it survives restarts, documents where
+     the scripts live, and makes the drop-in pipeline run with **no manual export**. (In plugin mode
+     leave `pluginRoot` empty/omitted — the installer's variable wins.)
+
+     **The `CLAUDE_PLUGIN_ROOT` export is now an OPTIONAL override, not a required step.** Because the
+     recorded `pluginRoot` is the fallback, a pure drop-in works out of the box. Still print the export
+     in the readiness report (§7) as a **manual override / escape hatch** — useful if the scripts live
+     somewhere `pluginRoot` doesn't capture (a moved checkout you haven't re-commissioned, a custom
+     layout), or to force a specific root for one watch session:
+
+       ```
+       export CLAUDE_PLUGIN_ROOT="<absolute path to .claude>"   # bash/zsh — optional override
+       $env:CLAUDE_PLUGIN_ROOT = "<absolute path to .claude>"   # PowerShell — optional override
+       ```
+
+  This is the drop-in contract: **commission records `pluginRoot` and the skills fall back to it
+  automatically, so the drop-in route delivers the same result as the plugin with no extra step.**
+  When `${CLAUDE_PLUGIN_ROOT}` *is* set (plugin install, or a deliberate manual export) it wins as the
+  preferred source; when it isn't, every `${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/...`
+  reference resolves via the recorded `pluginRoot`. The export remains available as an override but is
+  no longer the gap this step closes — recording `pluginRoot` is.
+
+## 1b. Warn when `.claude/` is covered by gitignore (drop-in skills won't be committed)
+
+Many repos gitignore `.claude/` (it's a common default for local Claude Code state). Under a drop-in
+install that puts the skills **inside an ignored path**, so `git add .claude/skills` is silently a
+**no-op**: the commissioning machine works, but a collaborator who clones gets **no skills and no
+warning**. Detect the collision and warn — but **never edit the user's gitignore** (out of scope):
+
+```bash
+# Is the dropped-in skills path ignored? (check-ignore exits 0 when the path IS ignored)
+git check-ignore -q .claude/skills && echo "GITIGNORED" || echo "tracked"
+```
+
+If `.claude/skills` (or `.claude/`) is ignored, print a prominent warning in the readiness report:
+
+```
+⚠ .claude/ is covered by .gitignore, so the dropped-in skills under .claude/skills/ will NOT be
+  committed — `git add .claude/skills` is a silent no-op and collaborators who clone get no skills.
+  For a shared or multi-machine repo, prefer the plugin install (it doesn't rely on committing
+  .claude/). If you must keep the drop-in, un-ignore the skills path yourself (e.g. add
+  `!.claude/skills/` to .gitignore) — commission will not modify your .gitignore for you.
+```
+
+This warning is **advisory** — it never edits `.gitignore`, stages anything, or blocks
+commissioning; it only makes the silent-no-op collision visible. (Plugin mode is unaffected: the
+plugin lives in the install cache, not in the repo's `.claude/`, so a gitignored `.claude/` doesn't
+strand it.)
+
 ## 2. Detect the project's commands and base branch
 
 ARMADA is stack-agnostic, so commissioning *discovers* how to build this specific repo instead of
@@ -65,6 +170,7 @@ overwriting** — the user may have hand-tuned it.
   "triggerLabel": "armada",        // crows-nest only acts on issues/PRs with this label
   "dispatch": "shipwright",        // "shipwright" (one build pass) or "flagship" (auto loop)
   "baseBranch": "<detected default>",
+  "pluginRoot": "",                // DROP-IN ONLY: absolute path to the dir holding bundled scripts/ (the dropped-in .claude). Runtime fallback the skills consume when CLAUDE_PLUGIN_ROOT is unset, so drop-in works with no export. "" under the plugin install — the installer's CLAUDE_PLUGIN_ROOT wins. See §1a.
   "authors": "",                   // "" = act on anyone; "alice" or "alice,bob" to restrict by author
   "autoMerge": false,              // ready-PR pipeline may merge? Default false: stop-before-merge.
   "notify": "terminal",            // ship's bell: "off" | "blocked" | "terminal" | "all". Default "terminal" (shipped + blocked).
@@ -392,6 +498,7 @@ and don't arm the loop for them** (both are the user's call):
 
 ```
 ⚓ ARMADA commissioned in <owner/repo>.
+  install mode: <"plugin" — CLAUDE_PLUGIN_ROOT set by the installer | "drop-in" — skills under .claude/skills/, pluginRoot recorded as the fallback (no export needed)>
   base branch : <base>
   build/test  : <commands, or "none detected — skills will infer">
   authors     : <"" = anyone, or the configured allowlist>
@@ -412,6 +519,18 @@ and don't arm the loop for them** (both are the user's call):
     LOCAL-VALIDATION-ONLY (muster's subagent). Charter the CI merge-gate issue (§5) and/or set autoMerge:false.
 <or omit the warning when autoMerge is off, or required checks exist.>
 
+<drop-in mode only — pluginRoot recorded; export optional (§1a):>
+  ▸ Drop-in install detected. Bundled scripts resolve via ${CLAUDE_PLUGIN_ROOT}, which no installer set —
+    so pluginRoot is recorded in .armada/config.json and the skills fall back to it automatically.
+    The drop-in works out of the box; no export needed. Optional override (force a specific root):
+       export CLAUDE_PLUGIN_ROOT="<absolute path to .claude>"     # bash/zsh — optional override
+       $env:CLAUDE_PLUGIN_ROOT = "<absolute path to .claude>"     # PowerShell — optional override
+
+<drop-in mode only — printed when .claude/ is gitignored (§1b):>
+  ⚠ .claude/ is gitignored — dropped-in skills under .claude/skills/ won't be committed (git add is a
+    silent no-op; collaborators who clone get no skills). Prefer the plugin route for shared/multi-machine
+    repos, or un-ignore .claude/skills/ yourself. commission will not modify your .gitignore.
+
 Next:
   1. Label the issues you want built with `armada`:
        gh issue edit <number> --add-label armada
@@ -419,8 +538,12 @@ Next:
        run the crows-nest skill, or say "watch for issues"
 ```
 
-The `chartered` line reports the §5 offer's outcome; the `⚠` line is the §6 warning, printed **only**
-when `autoMerge: true` and no required status checks gate the base branch.
+The `chartered` line reports the §5 offer's outcome; the `autoMerge` `⚠` line is the §6 warning,
+printed **only** when `autoMerge: true` and no required status checks gate the base branch. The
+`install mode` line and the two drop-in blocks come from §1a/§1b — the `▸` block (which records
+`pluginRoot` and notes the export is an optional override) prints **only** in drop-in mode, and the
+gitignore `⚠` prints **only** in drop-in mode when `.claude/` is ignored; both are omitted under a
+plugin install.
 
 ## Idempotency & re-runs
 
@@ -437,6 +560,11 @@ when `autoMerge: true` and no required status checks gate the base branch.
   recommended issue already exists, don't file a twin; surface the existing one instead.
 - The §6 **warning** is read-only — it never flips `autoMerge` or blocks; it just reports the
   local-only gate when `autoMerge: true` and no required checks exist.
+- **Install mode (§1a/§1b) is re-detected each run** and only ever *records* (`pluginRoot`) or
+  *warns*: the optional-export note and the gitignore-collision warning are advisory — re-running never
+  edits `.gitignore`, stages anything, or exports the variable for you. On a drop-in re-run it
+  refreshes `pluginRoot` to the current absolute path (so a moved checkout reconciles — the runtime
+  fallback follows the move with no re-export); under the plugin install it leaves `pluginRoot` empty.
 
 ## Inputs
 
@@ -445,7 +573,14 @@ when `autoMerge: true` and no required status checks gate the base branch.
 ## Output
 
 - `.armada/config.json` written (or confirmed up-to-date), with `autoMerge: false` and
-  `autoArmSelfFixes: false`.
+  `autoArmSelfFixes: false`. In **drop-in mode** it also records `pluginRoot` (the resolved absolute
+  path to the dropped-in `scripts/` dir) as the **runtime fallback** the skills consume when
+  `${CLAUDE_PLUGIN_ROOT}` is unset, so the bundled-script references resolve **without any manual
+  export**; under the plugin install `pluginRoot` is empty/omitted.
+- The detected **install mode** (`plugin` vs `drop-in`, §1a) reported in the readiness summary, plus —
+  in drop-in mode — the **optional** `export CLAUDE_PLUGIN_ROOT=...` override line and, when `.claude/`
+  is gitignored, the silent-no-op **gitignore-collision warning** (§1b). commission never edits
+  `.gitignore`.
 - The ten GitHub labels created/reconciled (issue track + PR track + shared blocked + public-intake
   `armada:considered` / `armada:flagged` + `fleet-defect`).
 - An **offer** to charter a short list of recommended setup/improvement issues (CI merge-gate first),
