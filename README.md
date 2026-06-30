@@ -54,22 +54,24 @@ anything — that knowledge lives in the skill, so any install self-sets-up.
 
 > **Prefer not to use the plugin system?** Drop **both** the `skills/` **and** `scripts/` folders into
 > your project's `.claude/` (i.e. `.claude/skills/` and `.claude/scripts/`) and run `/commission` —
-> project-scoped, with two caveats the plugin install handles for you:
+> project-scoped, and it works **out of the box**. Two things to know:
 >
-> - **Export `CLAUDE_PLUGIN_ROOT` before arming `crows-nest`.** Skills reference their bundled scripts
->   (the crows-nest review/merge pipeline, the foghorn bell, logbook, spyglass) as
->   `${CLAUDE_PLUGIN_ROOT}/scripts/...`, and that variable is set by the *plugin installer* — not under
->   a drop-in. `commission` detects drop-in mode, records the resolved path as `pluginRoot` in
->   `.armada/config.json`, and prints the exact `export CLAUDE_PLUGIN_ROOT="<path to .claude>"` line to
->   run first. Without it, those scripts can't be found. (Copying `scripts/` too — not just `skills/` —
->   is what gives the variable something to point at.)
+> - **No `CLAUDE_PLUGIN_ROOT` export needed.** Skills reference their bundled scripts (the crows-nest
+>   review/merge pipeline, the foghorn bell, logbook, spyglass) as `${CLAUDE_PLUGIN_ROOT}/scripts/...`,
+>   and that variable is set by the *plugin installer* — not under a drop-in. So `commission` detects
+>   drop-in mode and **records the resolved path as `pluginRoot`** in `.armada/config.json`, which the
+>   skills consume as a **runtime fallback**: they resolve `${CLAUDE_PLUGIN_ROOT}` when it's set, else
+>   fall back to the recorded `pluginRoot`. A pure drop-in therefore needs no manual export — exporting
+>   `CLAUDE_PLUGIN_ROOT` stays available only as an **optional override** (e.g. to force a specific
+>   root). (Copying `scripts/` too — not just `skills/` — is what gives the fallback something to point
+>   at.)
 > - **A gitignored `.claude/` means the skills aren't committed.** Many repos ignore `.claude/`, so
 >   `git add .claude/skills` is a silent no-op and collaborators who clone get no skills. `commission`
 >   warns when it detects this; for a **shared or multi-machine repo, prefer the plugin install**, which
 >   doesn't depend on committing `.claude/`.
 >
-> With those two steps the drop-in route gives the **same result** as the plugin; without them it
-> silently doesn't, which is why `commission` surfaces both.
+> So the drop-in route gives the **same result** as the plugin with no extra step — `commission`
+> records `pluginRoot` for you and only surfaces the gitignore caveat above when it applies.
 
 ### Then set sail
 
@@ -101,8 +103,10 @@ A couple of related distribution conventions:
   in a cache and relative paths break. The repo-local `test`/`lint` command in `.armada/config.json`
   is the exception: it runs against this checkout, not the installed plugin, so it intentionally uses
   a bare path. The plugin installer sets `${CLAUDE_PLUGIN_ROOT}`; under a **drop-in** install it's
-  unset, so `commission` records a `pluginRoot` and asks you to export `CLAUDE_PLUGIN_ROOT` before
-  arming the fleet (see the drop-in caveats above).
+  unset, so `commission` records a `pluginRoot` in `.armada/config.json` and the skills **fall back to
+  it** when the env var is absent (resolve `${CLAUDE_PLUGIN_ROOT}`, else `pluginRoot`) — so a drop-in
+  resolves bundled scripts with no manual export; exporting `CLAUDE_PLUGIN_ROOT` is an optional
+  override (see the drop-in notes above).
 - **The marketplace catalog tracks the shipped skill set.** When a skill ships, update the plugin
   description in `.claude-plugin/marketplace.json` so the catalog doesn't drift from reality.
 
