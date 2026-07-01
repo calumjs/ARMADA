@@ -188,7 +188,12 @@ review was posted at all. Keep the return machine-readable; the prose lives on t
   explicitly** — the top-level summary comment must state *which* lens didn't run and *why* (e.g.
   "single-lens/degraded — codex-rescue lens unavailable (no nested agents)"), never a silent
   collapse to one lens. Don't fail the whole muster for a half-loaf; a named, degraded review is
-  still worth posting — but it is a degraded review, not a green light.
+  still worth posting — but it is a degraded review, not a green light. How the **merge gate** then
+  reacts to that degrade is **conditional on `autoMerge`** (`scripts/merge-gate.mjs` gate 2, issue
+  #99): under `autoMerge: true` a degrade hard-`blocked`s (an unattended merge on a half-reviewed PR
+  stays unsafe); under `autoMerge: false` a degraded-but-clean review (0 blocking from the lens that
+  ran) resolves to `ready_awaiting_human` with the degrade named, so a person makes the merge call —
+  never an autonomous merge on a single-lens read.
 - **Both lenses fail** — post nothing, return an empty `findings` with a `"degraded": true` flag and
   a reason. The caller treats "no review produced" as **not** a green light (it must not infer
   "no findings ⇒ safe to merge").

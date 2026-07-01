@@ -24,7 +24,10 @@
 //     "pr": 150,
 //     "autoMerge": true,                 // .armada/config.json autoMerge (default false)
 //     "mergeMethod": "squash",           // merge | squash | rebase
-//     "review": { "blocking": 0, "degraded": false },  // latest muster summary
+//     "review": { "blocking": 0, "degraded": false },  // latest muster summary.
+//       degraded (a lens failed) hard-blocks ONLY under autoMerge:true; under
+//       autoMerge:false a degraded-but-clean review (blocking:0) → ready_awaiting_human
+//       with the degrade named, not blocked.
 //     "ci": "green",                     // green | pending | red  (gh pr checks rollup)
 //     "localChecks": true,               // §4.3 local build/test/lint all passed (must be true)
 //     "isDraft": false,
@@ -83,17 +86,34 @@ const rounds = Number.isFinite(s.rounds) ? s.rounds : null;
 const maxReviewRounds = Number.isFinite(s.maxReviewRounds) ? s.maxReviewRounds : 2;
 const localChecks = s.localChecks; // §4.3 local build/test/lint result; must be true to merge
 
-// --- The five gates (§4.5), each independent of autoMerge so we can report a
-//     green-but-awaiting-human PR distinctly from a blocked one. ---
+// --- The five gates (§4.5), mostly independent of autoMerge so we can report a
+//     green-but-awaiting-human PR distinctly from a blocked one. Gate 2's reaction
+//     to a *degrade* is the one autoMerge-conditional part (see below). ---
 const blockers = []; // reasons a merge is NOT safe (gates 2–5 + convergence)
 
-// Gate 2 — no unresolved blocking finding, and the review was actually produced.
-if (degraded) {
-  blockers.push('review degraded (a lens failed) — a missing review is not a green light');
-} else if (!Number.isFinite(blocking)) {
+// A degraded review (one review lens couldn't run) only HARD-blocks under
+// autoMerge:true — an unattended merge on a half-reviewed PR must stay unsafe.
+// Under autoMerge:false the PR track's terminal is ready_awaiting_human, where a
+// human makes the merge call; there, a degraded-but-otherwise-clean review is not
+// a blocker — the degrade is instead NAMED in the ready_awaiting_human reason so
+// the human sees it. (A degrade never *silently* passes; it's either a blocker or
+// a named caveat.)
+const degradeBlocks = degraded && autoMerge;
+
+// Gate 2 — no unresolved blocking finding, the review was actually produced, and
+// (only when autoMerge is on) the review wasn't degraded. The blocking-count check
+// runs regardless of degrade: a degraded review that still surfaced a blocking
+// finding is blocked on the finding, and a review with no summary at all (blocking
+// unknown) is never a green light even under autoMerge:false.
+if (!Number.isFinite(blocking)) {
   blockers.push('no review summary — cannot confirm zero blocking findings');
 } else if (blocking > 0) {
   blockers.push(`${blocking} unresolved blocking finding(s)`);
+}
+if (degradeBlocks) {
+  blockers.push(
+    'review degraded (a lens failed) — an unattended (autoMerge) merge on a half-reviewed PR is unsafe',
+  );
 }
 
 // Gate 3 — CI green (never red or pending).
@@ -131,8 +151,12 @@ if (!protectionsSatisfied) {
 // Convergence (§4.4) — bound the address↔review loop. If blocking findings or
 // red CI persist after maxReviewRounds, that is a hard block (no convergence),
 // not a "try again". Only relevant when there is still something unresolved.
+// A degrade only counts as "unresolved" here when it's a hard blocker (autoMerge)
+// — otherwise a clean-but-degraded PR under autoMerge:false would be held from
+// ready_awaiting_human once rounds hit the cap, re-hiding the state this gate is
+// meant to make reachable.
 const unresolvedThisRound =
-  degraded || !Number.isFinite(blocking) || blocking > 0 || ci !== 'green' || localChecks !== true;
+  degradeBlocks || !Number.isFinite(blocking) || blocking > 0 || ci !== 'green' || localChecks !== true;
 let noConvergence = false;
 if (rounds !== null && rounds >= maxReviewRounds && unresolvedThisRound) {
   noConvergence = true;
@@ -147,8 +171,15 @@ if (blockers.length > 0) {
   reasons = blockers;
 } else if (!autoMerge) {
   // Gates 2–5 all hold but the operator hasn't opted into autonomous merge.
+  // If the review was degraded (allowed through here only because autoMerge is
+  // off), NAME the degrade in the reason so the human making the merge call knows
+  // the PR was reviewed by a single lens.
   decision = 'ready_awaiting_human';
-  reasons = ['gates green; autoMerge is off — stop before merge'];
+  reasons = [
+    degraded
+      ? 'gates green — but review DEGRADED (a lens failed; the lens that ran found 0 blocking); autoMerge is off, so a human makes the merge call on this half-reviewed PR'
+      : 'gates green; autoMerge is off — stop before merge',
+  ];
 } else {
   decision = 'merge';
   reasons = ['all gates satisfied'];

@@ -224,8 +224,17 @@ bound, so the documented behaviour is the implementation:
 
 1. `autoMerge: true` in `.armada/config.json` (**default false** — see
    [SKILL.md §7](../SKILL.md#7-stopping-and-safety));
-2. no unresolved **blocking** finding (`summary.blocking == 0`) and the review was **not degraded**
-   (a missing/degraded review is treated as not-safe, never as "no findings");
+2. no unresolved **blocking** finding (`summary.blocking == 0`); and the review's **degrade** is
+   handled **conditionally on `autoMerge`**, not as a flat block:
+   - with **`autoMerge: true`**, a **degraded** review (a lens failed) is a hard `blocked` — an
+     unattended merge on a half-reviewed PR must stay unsafe;
+   - with **`autoMerge: false`**, a **degraded-but-otherwise-clean** review (0 blocking findings **and**
+     the lens that ran completed — i.e. `summary.blocking == 0`) resolves to **`ready_awaiting_human`**
+     with the **degrade named** in the reason, not `blocked`, so a person can review and merge the
+     single-lens PR with eyes open. A review with **no summary at all** (blocking unknown) is still
+     not-safe under either mode — "no review produced" is never "no findings";
+   (this makes `ready_awaiting_human` reachable in environments where the second lens can't run, instead
+   of every clean PR piling up under `armada:blocked` — issue #99);
 3. CI is **green** (`gh pr checks <n>` all passing) — never on red or pending;
 4. the PR is **not draft** and GitHub reports it **`mergeable`** — with `autoMerge: true` a `BEHIND`
    or `CONFLICTING` PR is first run through **make-mergeable (§4.4b)**; if it still isn't mergeable
@@ -260,6 +269,9 @@ Acting on the decision:
   This mirrors `commission`'s §6 warning so the local-only gate is visible whether it's surfaced at
   setup time or at the moment of an unattended merge.
 - **`ready_awaiting_human`** (gates 2–5 hold but `autoMerge` is off) → stop before merge; never
+  merge. This now **also** covers a **degraded-but-clean** review under `autoMerge: false` (gate 2
+  above): the terminal reason names the degrade (e.g. "review DEGRADED — a lens failed; the lens that
+  ran found 0 blocking"), so the human picking it up knows it was a single-lens review before they
   merge.
 - **`blocked`** → return the specific reason from the gate output.
 
