@@ -201,6 +201,13 @@ export function consolidateLenses(pr, lensResults) {
   const summary = { blocking: 0, major: 0, minor: 0, nit: 0 };
   for (const f of findings) if (f.severity in summary) summary[f.severity]++;
 
+  // Zero-lens case (both lenses failed → degraded, ran=0): we have NO review at
+  // all, so we must not report a confident `blocking: 0`. Null it out so the
+  // merge gate's no-summary guard (`!Number.isFinite(blocking)`) treats this as
+  // not-safe under either autoMerge mode — a review with no summary is never a
+  // green light. The 1+ lens counts above are left untouched. (issue #99 / PR #100)
+  if (ran.length === 0) summary.blocking = null;
+
   return {
     pr,
     summary,
