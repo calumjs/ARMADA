@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<!--
+  ARMADA spyglass — per-run operations dashboard (view).
+  Self-contained, no server, no external/CDN libraries, no build step. Polls the
+  sibling run-state.json written by spyglass-run-snapshot.mjs and renders each
+  in-flight run as a dark, two-column detail card with a 12-stage pipeline,
+  metadata panel, embedded "done video", and a per-model cost table.
+  READ-ONLY: it renders a snapshot; it never talks to GitHub or mutates anything.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ARMADA — per-run operations dashboard</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --card: #10151c;
+    --card-b: #1c2530;
+    --ink: #d7e0ea;
+    --muted: #8494a6;
+    --faint: #5b6775;
+    --line: #202a36;
+    --accent: #4a9eff;
+    --done: #3fb950;
+    --active: #4a9eff;
+    --upcoming: #3a4553;
+    --blocked: #f85149;
+    --chip: #161c24;
+    --seg-empty: #263140;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); font-size: 14px; line-height: 1.45;
+  }
+  .page { max-width: 1180px; margin: 0 auto; padding: 20px 18px 60px; }
+  .topbar {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 4px 6px 16px; color: var(--muted);
+  }
+  .topbar h1 { font-size: 15px; font-weight: 650; color: var(--ink); margin: 0; }
+  .topbar .meta { font-size: 12px; color: var(--faint); font-family: var(--mono); }
+  .topbar .ro { margin-left: auto; font-size: 11px; color: var(--done);
+    border: 1px solid #1e3a24; background: #0e1a10; padding: 2px 8px; border-radius: 999px; }
+
+  .runs { display: flex; flex-direction: column; gap: 18px; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--card-b); border-radius: 12px;
+    overflow: hidden;
+  }
+  .card.blocked { border-color: #4a2020; }
+
+  /* ---- header ---- */
+  .card-head {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 14px 18px; border-bottom: 1px solid var(--line);
+  }
+  .card-head .num { color: var(--done); font-family: var(--mono); font-weight: 650; }
+  .card-head .title { font-weight: 600; color: var(--ink); }
+  .card-head .spacer { flex: 1 1 40px; }
+  .card-head .cost { color: var(--muted); font-family: var(--mono); }
+  .segbar { display: inline-flex; gap: 4px; }
+  .seg { width: 15px; height: 15px; border-radius: 3px; background: var(--seg-empty); }
+  .seg.done { background: var(--done); }
+  .seg.active { background: transparent; border: 2px solid var(--active); box-shadow: 0 0 0 1px #0b0f14 inset; }
+  .seg.blocked { background: var(--blocked); }
+  .card-head .status { color: var(--accent); font-weight: 600; }
+  .card-head .status.blocked { color: var(--blocked); }
+  .card-head .elapsed { color: var(--faint); font-family: var(--mono); font-size: 12px; }
+
+  /* ---- body: two columns ---- */
+  .card-body { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 8px; padding: 6px 6px 12px; }
+
+  /* left: stage pipeline */
+  .pipeline { padding: 12px 14px; }
+  .stage { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--upcoming); flex: none; }
+  .stage.done .dot { background: var(--done); }
+  .stage.active .dot { background: var(--active); box-shadow: 0 0 6px var(--active); }
+  .stage.blocked .dot { background: var(--blocked); box-shadow: 0 0 6px var(--blocked); }
+  .stage .tag { width: 52px; font-size: 12px; font-family: var(--mono); color: var(--faint); }
+  .stage.done .tag { color: var(--done); }
+  .stage.active .tag { color: var(--active); }
+  .stage.blocked .tag { color: var(--blocked); }
+  .stage .name { color: var(--muted); font-family: var(--mono); }
+  .stage.active .name, .stage.done .name { color: var(--ink); }
+
+  /* right: metadata */
+  .meta { padding: 10px 14px; }
+  .row { display: grid; grid-template-columns: 92px 1fr; gap: 12px; align-items: start; padding: 5px 0; }
+  .row .k { color: var(--faint); text-align: right; font-size: 13px; }
+  .row .v { color: var(--ink); min-width: 0; }
+  .row .v a { color: var(--accent); text-decoration: none; }
+  .row .v a:hover { text-decoration: underline; }
+  .path { font-family: var(--mono); font-size: 12.5px; color: var(--muted); word-break: break-all; }
+  .btn {
+    display: inline-block; margin-left: 8px; padding: 1px 9px; border-radius: 6px;
+    border: 1px solid var(--card-b); background: var(--chip); color: var(--muted);
+    font-size: 11.5px; font-family: var(--mono); cursor: pointer; vertical-align: middle;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--ink); }
+  .btn.copied { border-color: var(--done); color: var(--done); }
+  .video-wrap { margin-top: 4px; }
+  .video-wrap video { width: 320px; max-width: 100%; background: #000; border-radius: 6px; border: 1px solid var(--line); }
+  .video-cap { color: var(--faint); font-size: 12px; margin-top: 4px; font-family: var(--mono); }
+  .naval { color: var(--faint); font-style: italic; }
+
+  /* ---- cost table ---- */
+  .cost-block { padding: 4px 20px 16px; }
+  .cost-h { color: var(--faint); font-size: 12px; letter-spacing: .06em; text-transform: lowercase; padding: 4px 0; }
+  table.cost { width: 100%; border-collapse: collapse; font-family: var(--mono); }
+  table.cost th {
+    text-align: left; color: var(--faint); font-weight: 600; font-size: 11px;
+    letter-spacing: .08em; padding: 6px 10px; border-bottom: 1px solid var(--line);
+  }
+  table.cost th.n, table.cost td.n { text-align: right; }
+  table.cost td { padding: 9px 10px; border-bottom: 1px solid var(--line); color: var(--muted); }
+  table.cost td.model { color: var(--ink); font-weight: 600; }
+  table.cost td.cost { color: var(--ink); font-weight: 600; }
+  table.cost td.na { color: var(--faint); }
+  .cost-foot { color: var(--faint); font-size: 12px; padding: 10px 10px 2px; }
+  .cost-foot .ptr { color: var(--muted); }
+
+  .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
+  .empty .big { font-size: 16px; color: var(--ink); margin-bottom: 6px; }
+
+  @media (max-width: 720px) {
+    .card-body { grid-template-columns: 1fr; }
+    .row { grid-template-columns: 80px 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .stage.active .dot, .stage.blocked .dot { box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <div class="topbar">
+      <h1>ARMADA — operations dashboard</h1>
+      <span class="meta" id="sub">loading…</span>
+      <span class="ro" title="This view performs zero fleet mutations.">read-only</span>
+    </div>
+    <div class="runs" id="runs"></div>
+  </div>
+<script>
+"use strict";
+
+// --- small helpers ---------------------------------------------------------
+const $ = (t, cls, txt) => { const e = document.createElement(t); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+const esc = (s) => String(s == null ? '' : s);
+
+function compact(n) {
+  if (n == null || !Number.isFinite(n)) return null;
+  if (Math.abs(n) >= 1000) return (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1).replace(/\.0$/, '') + 'k';
+  return String(n);
+}
+function money(n) { return (n == null || !Number.isFinite(n)) ? null : '$' + n.toFixed(2); }
+function ageText(iso) {
+  if (!iso) return null;
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60); if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60); if (h < 24) return h + 'h';
+  return Math.floor(h / 24) + 'd';
+}
+function copyBtn(label, text) {
+  const b = $('button', 'btn', label);
+  if (text == null) { b.disabled = true; b.style.opacity = .4; return b; }
+  b.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked — best effort */ }
+    b.classList.add('copied'); const old = b.textContent; b.textContent = 'copied';
+    setTimeout(() => { b.classList.remove('copied'); b.textContent = old; }, 1200);
+  });
+  return b;
+}
+function openBtn(pathStr) {
+  const b = $('a', 'btn', 'open');
+  if (pathStr == null) { b.style.opacity = .4; return b; }
+  // Browsers can't open an arbitrary local folder for security; a file:// link
+  // is the best-effort affordance, and copy path always works.
+  b.href = 'file:///' + String(pathStr).replace(/\\/g, '/').replace(/^\/+/, '');
+  b.target = '_blank'; b.rel = 'noopener';
+  return b;
+}
+
+// render() is defined in the second block below.
+window.__renderPlaceholder = true;
+</script>
+<script>
+// (render logic appended here)
+</script>
+</body>
+</html>
