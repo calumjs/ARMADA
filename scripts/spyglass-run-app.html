@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<!--
+  ARMADA spyglass — per-run operations dashboard (view).
+  Self-contained, no server, no external/CDN libraries, no build step. Polls the
+  sibling run-state.json written by spyglass-run-snapshot.mjs and renders each
+  in-flight run as a dark, two-column detail card with a 12-stage pipeline,
+  metadata panel, embedded "done video", and a per-model cost table.
+  READ-ONLY: it renders a snapshot; it never talks to GitHub or mutates anything.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ARMADA — per-run operations dashboard</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --card: #10151c;
+    --card-b: #1c2530;
+    --ink: #d7e0ea;
+    --muted: #8494a6;
+    --faint: #5b6775;
+    --line: #202a36;
+    --accent: #4a9eff;
+    --done: #3fb950;
+    --active: #4a9eff;
+    --upcoming: #3a4553;
+    --blocked: #f85149;
+    --chip: #161c24;
+    --seg-empty: #263140;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); font-size: 14px; line-height: 1.45;
+  }
+  .page { max-width: 1180px; margin: 0 auto; padding: 20px 18px 60px; }
+  .topbar {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 4px 6px 16px; color: var(--muted);
+  }
+  .topbar h1 { font-size: 15px; font-weight: 650; color: var(--ink); margin: 0; }
+  .topbar .meta { font-size: 12px; color: var(--faint); font-family: var(--mono); }
+  .topbar .ro { margin-left: auto; font-size: 11px; color: var(--done);
+    border: 1px solid #1e3a24; background: #0e1a10; padding: 2px 8px; border-radius: 999px; }
+
+  .runs { display: flex; flex-direction: column; gap: 18px; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--card-b); border-radius: 12px;
+    overflow: hidden;
+  }
+  .card.blocked { border-color: #4a2020; }
+
+  /* ---- header ---- */
+  .card-head {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 14px 18px; border-bottom: 1px solid var(--line);
+  }
+  .card-head .num { color: var(--done); font-family: var(--mono); font-weight: 650; }
+  .card-head .title { font-weight: 600; color: var(--ink); }
+  .card-head .spacer { flex: 1 1 40px; }
+  .card-head .cost { color: var(--muted); font-family: var(--mono); }
+  .segbar { display: inline-flex; gap: 4px; }
+  .seg { width: 15px; height: 15px; border-radius: 3px; background: var(--seg-empty); }
+  .seg.done { background: var(--done); }
+  .seg.active { background: transparent; border: 2px solid var(--active); box-shadow: 0 0 0 1px #0b0f14 inset; }
+  .seg.blocked { background: var(--blocked); }
+  .card-head .status { color: var(--accent); font-weight: 600; }
+  .card-head .status.blocked { color: var(--blocked); }
+  .card-head .elapsed { color: var(--faint); font-family: var(--mono); font-size: 12px; }
+
+  /* ---- body: two columns ---- */
+  .card-body { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 8px; padding: 6px 6px 12px; }
+
+  /* left: stage pipeline */
+  .pipeline { padding: 12px 14px; }
+  .stage { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--upcoming); flex: none; }
+  .stage.done .dot { background: var(--done); }
+  .stage.active .dot { background: var(--active); box-shadow: 0 0 6px var(--active); }
+  .stage.blocked .dot { background: var(--blocked); box-shadow: 0 0 6px var(--blocked); }
+  .stage .tag { width: 52px; font-size: 12px; font-family: var(--mono); color: var(--faint); }
+  .stage.done .tag { color: var(--done); }
+  .stage.active .tag { color: var(--active); }
+  .stage.blocked .tag { color: var(--blocked); }
+  .stage .name { color: var(--muted); font-family: var(--mono); }
+  .stage.active .name, .stage.done .name { color: var(--ink); }
+
+  /* right: metadata */
+  .meta { padding: 10px 14px; }
+  .row { display: grid; grid-template-columns: 92px 1fr; gap: 12px; align-items: start; padding: 5px 0; }
+  .row .k { color: var(--faint); text-align: right; font-size: 13px; }
+  .row .v { color: var(--ink); min-width: 0; }
+  .row .v a { color: var(--accent); text-decoration: none; }
+  .row .v a:hover { text-decoration: underline; }
+  .path { font-family: var(--mono); font-size: 12.5px; color: var(--muted); word-break: break-all; }
+  .btn {
+    display: inline-block; margin-left: 8px; padding: 1px 9px; border-radius: 6px;
+    border: 1px solid var(--card-b); background: var(--chip); color: var(--muted);
+    font-size: 11.5px; font-family: var(--mono); cursor: pointer; vertical-align: middle;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--ink); }
+  .btn.copied { border-color: var(--done); color: var(--done); }
+  .video-wrap { margin-top: 4px; }
+  .video-wrap video { width: 320px; max-width: 100%; background: #000; border-radius: 6px; border: 1px solid var(--line); }
+  .video-cap { color: var(--faint); font-size: 12px; margin-top: 4px; font-family: var(--mono); }
+  .naval { color: var(--faint); font-style: italic; }
+
+  /* ---- cost table ---- */
+  .cost-block { padding: 4px 20px 16px; }
+  .cost-h { color: var(--faint); font-size: 12px; letter-spacing: .06em; text-transform: lowercase; padding: 4px 0; }
+  table.cost { width: 100%; border-collapse: collapse; font-family: var(--mono); }
+  table.cost th {
+    text-align: left; color: var(--faint); font-weight: 600; font-size: 11px;
+    letter-spacing: .08em; padding: 6px 10px; border-bottom: 1px solid var(--line);
+  }
+  table.cost th.n, table.cost td.n { text-align: right; }
+  table.cost td { padding: 9px 10px; border-bottom: 1px solid var(--line); color: var(--muted); }
+  table.cost td.model { color: var(--ink); font-weight: 600; }
+  table.cost td.cost { color: var(--ink); font-weight: 600; }
+  table.cost td.na { color: var(--faint); }
+  .cost-foot { color: var(--faint); font-size: 12px; padding: 10px 10px 2px; }
+  .cost-foot .ptr { color: var(--muted); }
+
+  .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
+  .empty .big { font-size: 16px; color: var(--ink); margin-bottom: 6px; }
+
+  @media (max-width: 720px) {
+    .card-body { grid-template-columns: 1fr; }
+    .row { grid-template-columns: 80px 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .stage.active .dot, .stage.blocked .dot { box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <div class="topbar">
+      <h1>ARMADA — operations dashboard</h1>
+      <span class="meta" id="sub">loading…</span>
+      <span class="ro" title="This view performs zero fleet mutations.">read-only</span>
+    </div>
+    <div class="runs" id="runs"></div>
+  </div>
+<script>
+"use strict";
+
+// --- small helpers ---------------------------------------------------------
+const $ = (t, cls, txt) => { const e = document.createElement(t); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+const esc = (s) => String(s == null ? '' : s);
+
+function compact(n) {
+  if (n == null || !Number.isFinite(n)) return null;
+  if (Math.abs(n) >= 1000) return (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1).replace(/\.0$/, '') + 'k';
+  return String(n);
+}
+function money(n) { return (n == null || !Number.isFinite(n)) ? null : '$' + n.toFixed(2); }
+function ageText(iso) {
+  if (!iso) return null;
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60); if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60); if (h < 24) return h + 'h';
+  return Math.floor(h / 24) + 'd';
+}
+function copyBtn(label, text) {
+  const b = $('button', 'btn', label);
+  if (text == null) { b.disabled = true; b.style.opacity = .4; return b; }
+  b.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked — best effort */ }
+    b.classList.add('copied'); const old = b.textContent; b.textContent = 'copied';
+    setTimeout(() => { b.classList.remove('copied'); b.textContent = old; }, 1200);
+  });
+  return b;
+}
+function openBtn(pathStr) {
+  const b = $('a', 'btn', 'open');
+  if (pathStr == null) { b.style.opacity = .4; return b; }
+  // Browsers can't open an arbitrary local folder for security; a file:// link
+  // is the best-effort affordance, and copy path always works.
+  b.href = 'file:///' + String(pathStr).replace(/\\/g, '/').replace(/^\/+/, '');
+  b.target = '_blank'; b.rel = 'noopener';
+  return b;
+}
+
+// render() is defined in the second block below.
+window.__renderPlaceholder = true;
+</script>
+<script>
+"use strict";
+
+// --- header: issue #, title, 12-segment stage bar, cost, status, elapsed -----
+function renderHead(run) {
+  const head = $('div', 'card-head' );
+  head.appendChild($('span', 'num', '#' + (run.issueNumber ?? run.prNumber ?? '?')));
+  head.appendChild($('span', 'title', esc(run.title)));
+  head.appendChild($('span', 'spacer'));
+
+  const cost = money(run.cost && run.cost.totalCost);
+  head.appendChild($('span', 'cost', cost || '$0.00'));
+
+  const bar = $('span', 'segbar');
+  const n = (run.stages || []).length || 12;
+  for (let i = 0; i < n; i++) {
+    const seg = $('span', 'seg');
+    if (run.blocked && i === run.activeIndex) seg.classList.add('blocked');
+    else if (i < run.activeIndex) seg.classList.add('done');
+    else if (i === run.activeIndex) seg.classList.add(run.terminal ? 'done' : 'active');
+    bar.appendChild(seg);
+  }
+  head.appendChild(bar);
+
+  const st = $('span', 'status' + (run.blocked ? ' blocked' : ''), run.blocked ? 'Blocked' : esc(run.status));
+  head.appendChild(st);
+  const el = ageText(run.startedAt);
+  if (el) head.appendChild($('span', 'elapsed', el));
+  return head;
+}
+
+// --- left column: the vertical stage pipeline with status dots ---------------
+function renderPipeline(run) {
+  const col = $('div', 'pipeline');
+  (run.stages || []).forEach((name, i) => {
+    let cls = 'stage', tag = '';
+    if (run.blocked && i === run.activeIndex) { cls += ' blocked'; tag = 'blocked'; }
+    else if (i < run.activeIndex) { cls += ' done'; tag = 'done'; }
+    else if (i === run.activeIndex) { cls += run.terminal ? ' done' : ' active'; tag = run.terminal ? 'done' : 'active'; }
+    const row = $('div', cls);
+    row.appendChild($('span', 'dot'));
+    row.appendChild($('span', 'tag', tag));
+    row.appendChild($('span', 'name', name));
+    col.appendChild(row);
+  });
+  return col;
+}
+
+// --- right column: metadata panel (issue, branch, worktree, folder, video) ---
+function metaRow(k, valueNode) {
+  const row = $('div', 'row');
+  row.appendChild($('div', 'k', k));
+  const v = $('div', 'v');
+  if (valueNode instanceof Node) v.appendChild(valueNode); else v.textContent = esc(valueNode);
+  row.appendChild(v);
+  return row;
+}
+
+function renderMeta(run) {
+  const col = $('div', 'meta');
+
+  // issue link
+  const issueV = $('span');
+  if (run.issueUrl) {
+    const a = $('a', null, '#' + run.issueNumber); a.href = run.issueUrl; a.target = '_blank'; a.rel = 'noopener';
+    issueV.appendChild(a);
+  } else issueV.appendChild($('span', 'naval', run.prUrl ? '' : 'n/a'));
+  if (run.prUrl) {
+    issueV.appendChild(document.createTextNode('  '));
+    const p = $('a', null, 'PR #' + run.prNumber); p.href = run.prUrl; p.target = '_blank'; p.rel = 'noopener';
+    issueV.appendChild(p);
+  }
+  col.appendChild(metaRow('issue', issueV));
+
+  // branch + copy
+  const brV = $('span');
+  if (run.branch) {
+    brV.appendChild($('span', 'path', '⎇ ' + run.branch));
+    brV.appendChild(copyBtn('copy', run.branch));
+  } else brV.appendChild($('span', 'naval', 'n/a'));
+  col.appendChild(metaRow('branch', brV));
+
+  // worktree + open + copy path
+  const wtV = $('span');
+  if (run.worktree) {
+    wtV.appendChild($('span', 'path', run.worktree));
+    wtV.appendChild(openBtn(run.worktree));
+    wtV.appendChild(copyBtn('copy path', run.worktree));
+  } else wtV.appendChild($('span', 'naval', 'n/a — no local worktree'));
+  col.appendChild(metaRow('worktree', wtV));
+
+  // folder + open + copy path
+  const foV = $('span');
+  if (run.folder) {
+    foV.appendChild($('span', 'path', run.folder));
+    foV.appendChild(openBtn(run.folder));
+    foV.appendChild(copyBtn('copy path', run.folder));
+  } else foV.appendChild($('span', 'naval', 'n/a'));
+  col.appendChild(metaRow('folder', foV));
+
+  // done video (embedded player) or graceful absence
+  const vidV = $('div');
+  if (run.doneVideo && run.doneVideo.url) {
+    const wrap = $('div', 'video-wrap');
+    const v = document.createElement('video');
+    v.controls = true; v.preload = 'metadata'; v.src = run.doneVideo.url;
+    wrap.appendChild(v);
+    const cap = [run.doneVideo.name, ageText(run.doneVideo.updatedAt) ? ageText(run.doneVideo.updatedAt) + ' old' : null, 'fullscreen via player controls']
+      .filter(Boolean).join(' · ');
+    wrap.appendChild($('div', 'video-cap', cap));
+    vidV.appendChild(wrap);
+  } else {
+    vidV.appendChild($('span', 'naval', 'no done video yet'));
+  }
+  col.appendChild(metaRow('done video', vidV));
+
+  return col;
+}
+
+// --- cost table + footer -----------------------------------------------------
+function renderCost(run) {
+  const block = $('div', 'cost-block');
+  block.appendChild($('div', 'cost-h', 'cost'));
+  const c = run.cost || {};
+  const table = $('table', 'cost');
+  const thead = $('thead'); const htr = $('tr');
+  ['MODEL', 'IN', 'OUT', 'CACHE R', 'CACHE W', '≈ COST'].forEach((h, i) => {
+    const th = $('th', i === 0 ? '' : 'n', h); htr.appendChild(th);
+  });
+  thead.appendChild(htr); table.appendChild(thead);
+
+  const tbody = $('tbody');
+  const models = (c.present && Array.isArray(c.models)) ? c.models : [];
+  if (models.length) {
+    for (const m of models) {
+      const tr = $('tr');
+      tr.appendChild($('td', 'model', esc(m.model)));
+      const cell = (v) => { const td = $('td', 'n'); const t = compact(v); if (t == null) { td.textContent = 'n/a'; td.classList.add('na'); } else td.textContent = t; return td; };
+      tr.appendChild(cell(m.in));
+      tr.appendChild(cell(m.out));
+      tr.appendChild(cell(m.cacheRead));
+      tr.appendChild(cell(m.cacheWrite));
+      const costTd = $('td', 'n cost'); const mv = money(m.cost);
+      if (mv == null) { costTd.textContent = 'n/a'; costTd.className = 'n na'; } else costTd.textContent = mv;
+      tr.appendChild(costTd);
+      tbody.appendChild(tr);
+    }
+  } else {
+    const tr = $('tr'); const td = $('td', 'na'); td.colSpan = 6;
+    td.textContent = 'n/a — no out/costs/<run>.json cost post-mortem for this run yet';
+    tr.appendChild(td); tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  block.appendChild(table);
+
+  // footer: sessions/subagents · codex · match · caveat · unpriced · pointer
+  const parts = [];
+  if (c.present) {
+    if (c.sessions != null || c.subagents != null)
+      parts.push(`${c.sessions ?? 0} claude session(s) + ${c.subagents ?? 0} subagents`);
+    if (c.codex != null) parts.push(`${c.codex} codex`);
+    if (c.matchMode) parts.push('match: ' + c.matchMode);
+  }
+  parts.push('API-equivalent estimate, not billing');
+  if (c.present && c.unpriced && c.unpriced.length) parts.push('unpriced: ' + c.unpriced.join(', '));
+  const foot = $('div', 'cost-foot', parts.join(' · '));
+  const ptr = $('div', 'cost-foot');
+  ptr.appendChild(document.createTextNode('post-mortem detail: '));
+  ptr.appendChild($('span', 'ptr', (c.pointer || 'out/costs/<run>.json')));
+  block.appendChild(foot); block.appendChild(ptr);
+  return block;
+}
+
+function renderCard(run) {
+  const card = $('div', 'card' + (run.blocked ? ' blocked' : ''));
+  card.appendChild(renderHead(run));
+  const body = $('div', 'card-body');
+  body.appendChild(renderPipeline(run));
+  body.appendChild(renderMeta(run));
+  card.appendChild(body);
+  card.appendChild(renderCost(run));
+  return card;
+}
+
+function render(state) {
+  const sub = document.getElementById('sub');
+  const wrap = document.getElementById('runs');
+  wrap.textContent = '';
+  const runs = (state && state.runs) || [];
+  const stamp = state && state.generatedAt ? new Date(state.generatedAt).toLocaleTimeString() : '';
+  sub.textContent = `${esc(state && state.repo)} · ${runs.length} run(s) · ${esc(state && state.summary || '')}${stamp ? ' · ' + stamp : ''}`;
+
+  if (state && state.degraded) {
+    const e = $('div', 'empty');
+    e.appendChild($('div', 'big', 'no runs to show'));
+    e.appendChild($('div', null, esc(state.degraded)));
+    wrap.appendChild(e);
+    return;
+  }
+  if (!runs.length) {
+    const e = $('div', 'empty');
+    e.appendChild($('div', 'big', 'no in-flight runs'));
+    e.appendChild($('div', null, 'The fleet is idle — no armed issues or open PRs to chart.'));
+    wrap.appendChild(e);
+    return;
+  }
+  for (const run of runs) wrap.appendChild(renderCard(run));
+}
+
+// --- polling: fetch the sibling snapshot, re-render on change -----------------
+let lastStamp = null;
+async function poll() {
+  try {
+    const res = await fetch('./run-state.json?t=' + Date.now(), { cache: 'no-store' });
+    if (res.ok) {
+      const state = await res.json();
+      if (state.generatedAt !== lastStamp) { lastStamp = state.generatedAt; render(state); }
+    }
+  } catch (e) {
+    const sub = document.getElementById('sub');
+    if (sub && lastStamp == null) sub.textContent = 'waiting for run-state.json …';
+  }
+}
+poll();
+setInterval(poll, 4000);
+</script>
+</body>
+</html>

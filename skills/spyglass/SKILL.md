@@ -197,6 +197,120 @@ spyglass never hard-fails on a thin or uncommissioned repo:
 - **No armed issues or PRs**: an empty, calm sea ("an empty sea — no armed issues or PRs").
 - **No `.armada/cartography/`**: the cartography layer is omitted, with a note (§4).
 
+## 6. Per-run operations dashboard (companion mode)
+
+The sea-chart shows the **whole fleet at a glance**; its companion the **per-run operations
+dashboard** zooms in on **each in-flight run** as a focused detail card — a 12-stage pipeline, its
+worktree/branch/folder metadata, its logbook **"done video"**, and a **per-model cost table**. It is
+the natural companion to the chart (issue #101) and shares spyglass's core promise: it is
+**READ-ONLY with respect to the fleet**.
+
+> **One run:** **snapshot** the same live GitHub state the chart reads (the §2a `gh issue list` /
+> `gh pr list` queries) → **correlate** each issue with the PR that closes it → **enrich** each run
+> with local read-only detail (its git worktree path, its `out/costs/<run>.json` cost post-mortem,
+> its logbook done-video release asset) → **map** the coarse `armada:*` labels onto the 12 finer
+> operator stages → **write** `run-state.json` + the bundled dashboard app into a scratch/output dir
+> → **open** it in the browser. The page polls the snapshot, so re-running (or `--watch`) keeps it
+> live.
+
+```bash
+# one-shot: snapshot in-flight runs and open the dashboard
+node "${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-run-snapshot.mjs" --open
+
+# keep it live (re-snapshot on a cadence; the open window auto-refreshes)
+node "${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-run-snapshot.mjs" --watch 15
+
+# alongside a crows-nest watch via /loop (open once, keep the data fresh)
+/loop 15s node "${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-run-snapshot.mjs" --no-open
+```
+
+It takes the **same flags** as the chart driver (`--label`, `--out`, `--repo`, `--open`/`--no-open`,
+`--watch <seconds>`); the default output dir is `<os-tmp>/armada-spyglass-run/<repo-slug>/`.
+
+### Read-only — enforced and documented
+
+The dashboard makes **zero mutations**. Every source it touches is a read:
+
+- **GitHub:** `gh repo view`, `gh issue list`, `gh pr list`, and GET-only `gh api .../releases`.
+  There is **no** `gh` write anywhere — no label, comment, review, merge, or close. (The driver's
+  code contains only `... list` / `repo view` / `api ... releases` invocations.)
+- **Local disk:** `git worktree list` (to resolve a run's on-disk worktree path) and
+  `out/costs/<run>.json` (the cost post-mortem, **consumed** when present). It **never produces**
+  `out/costs/*.json` — that is out of scope (a separate concern).
+
+The only files it writes are the snapshot (`run-state.json`) and the copied app
+(`spyglass-run.html`), in the scratch/output dir — **never the tracked repo**.
+
+### Each run is a detail card
+
+Modelled on the reference mock (dark two-column card, cost table below):
+
+- **Header** — issue `#number`, run title, a **segmented 12-stage progress bar** (done segments
+  filled, the active one outlined, blocked runs flagged red), a live **status label** (e.g.
+  "Watching PR"), **elapsed** time (since the issue/PR opened), and **running cost**.
+- **Left — the stage pipeline** — the 12 stages, each with a **status dot** (done / active /
+  upcoming, or blocked). Stages: **Feasibility, Scoping, Planning, Building, Testing, AI review, PR
+  submitted, Watching PR, Feedback, Approved, Merged, Harvest**.
+- **Right — the metadata panel** — the **issue link**, the **branch** (with a copy action), the
+  **worktree** and **folder** paths (each with open / copy-path actions), and an embedded **done
+  video** player (the logbook walkthrough release asset, standard `<video controls>`). Every field
+  **degrades gracefully** when absent (branch/worktree `n/a`, "no done video yet", etc.).
+- **Cost table** — one row per model with **MODEL · IN · OUT · CACHE R · CACHE W · ≈ COST**, plus a
+  footer summarising **session/subagent/codex counts**, the **match mode**, the *"API-equivalent
+  estimate, not billing"* caveat, and a pointer to `out/costs/<run>.json`. It reads that file **when
+  present** and shows a graceful **`n/a`/empty** state when absent.
+
+### Stage mapping — 12 finer stages from the coarse `armada:*` labels
+
+The 12 operator stages are finer than the `armada:*` label state machine crows-nest runs, so several
+are **inferred** from PR draft/CI/review sub-state. The active stage marks earlier stages **done**
+and later stages **upcoming**; `armada:blocked` overrides the active dot to **blocked**:
+
+| Unit + state                              | Active stage    | Done (implied)        |
+| ----------------------------------------- | --------------- | --------------------- |
+| issue `armada` (queued, unclaimed)        | **Feasibility** | —                     |
+| issue `armada:underway` (shipwright building) | **Building**    | Feasibility→Planning  |
+| issue `armada:done` (built, PR opening)   | **PR submitted**| Feasibility→AI review |
+| PR draft (`isDraft`)                      | **PR submitted**| Feasibility→AI review |
+| PR `armada` ready (crows-nest will pick up) | **Watching PR** | …→PR submitted        |
+| PR `armada` ready + `reviewDecision APPROVED` | **Approved**    | …→Feedback            |
+| PR `armada:reviewing` (muster / address-review) | **Feedback**    | …→Watching PR         |
+| PR `armada:merged` (gated merge in progress) | **Merged**      | …→Approved            |
+| PR `armada:shipped` (merged & done → cartographer) | **Harvest**     | …→Merged (complete)   |
+| any `armada:blocked`                      | *(last reached)* — **blocked** | up to that stage |
+
+Feasibility/Scoping/Planning collapse onto the pre-build/build labels (a queued issue sits at
+Feasibility; an underway issue has cleared scoping+planning into Building); AI review is the
+pre-submit self-review that precedes **PR submitted**; **Feedback** is the muster review +
+address-review loop on the open PR; **Harvest** is the post-merge cartographer learning pass.
+
+### Cost post-mortem schema (consumed, not produced)
+
+When a future feature writes `out/costs/<run>.json` (keyed by the run's **branch**, e.g.
+`out/costs/hubx-6676-atx-insert-at-cursor.json`), the dashboard consumes this shape (all fields
+tolerant/optional — missing values render `n/a`):
+
+```json
+{
+  "run": "hubx-6676-atx-insert-at-cursor",
+  "models": [
+    { "model": "opus-4-8", "in": 29000, "out": 704, "cacheRead": 74000, "cacheWrite": 41000, "cost": 0.61 },
+    { "model": "gpt-5.4", "in": 113000, "out": 6000, "cacheRead": 86000, "cacheWrite": 0, "cost": null }
+  ],
+  "sessions": 1, "subagents": 0, "codex": 3,
+  "matchMode": "heuristic", "unpriced": ["gpt-5.4"], "totalCost": 0.61
+}
+```
+
+When the file is **absent**, the cost table shows an empty `n/a` state and the footer still points at
+the conventional `out/costs/<run>.json` path.
+
+### Degrades gracefully
+
+Same posture as the chart (§5): an uncommissioned repo, an unauthenticated/failing `gh`, or no armed
+issues/PRs all render a calm **"no runs to show"** empty state rather than crashing; the dashboard
+honours **`prefers-reduced-motion`** (drops the active-dot glow).
+
 ## Bundled assets
 
 All rendering ships under the plugin and is referenced via `${CLAUDE_PLUGIN_ROOT}` (per the repo's
@@ -210,8 +324,17 @@ plugin-cache rule — relative paths break once a plugin is installed to its cac
   step**). Copied next to the snapshot at run time so it can fetch `./fleet-state.json` locally with
   no server.
 
-The **only** files written at run time are the snapshot (`fleet-state.json`) and the rendered HTML
-(`spyglass.html`), in the scratch/output dir — never the tracked repo.
+Per-run operations dashboard (companion mode, §6):
+
+- **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-run-snapshot.mjs`** — the read-only per-run snapshot +
+  correlate + enrich + write + open driver (Node built-ins + `gh`/`git` only, dependency-free).
+- **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-run-app.html`** — the self-contained, no-server dark
+  dashboard (vanilla HTML/CSS/JS, **no external/CDN libraries, no build step**). Copied next to its
+  snapshot at run time so it can fetch `./run-state.json` locally with no server.
+
+The **only** files written at run time are the snapshots (`fleet-state.json` / `run-state.json`) and
+the rendered HTML (`spyglass.html` / `spyglass-run.html`), in the scratch/output dir — never the
+tracked repo.
 
 ### Dev-only sea-trial harness (not shipped into the view)
 
