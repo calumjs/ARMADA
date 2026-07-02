@@ -193,7 +193,230 @@ function openBtn(pathStr) {
 window.__renderPlaceholder = true;
 </script>
 <script>
-// (render logic appended here)
+"use strict";
+
+// --- header: issue #, title, 12-segment stage bar, cost, status, elapsed -----
+function renderHead(run) {
+  const head = $('div', 'card-head' );
+  head.appendChild($('span', 'num', '#' + (run.issueNumber ?? run.prNumber ?? '?')));
+  head.appendChild($('span', 'title', esc(run.title)));
+  head.appendChild($('span', 'spacer'));
+
+  const cost = money(run.cost && run.cost.totalCost);
+  head.appendChild($('span', 'cost', cost || '$0.00'));
+
+  const bar = $('span', 'segbar');
+  const n = (run.stages || []).length || 12;
+  for (let i = 0; i < n; i++) {
+    const seg = $('span', 'seg');
+    if (run.blocked && i === run.activeIndex) seg.classList.add('blocked');
+    else if (i < run.activeIndex) seg.classList.add('done');
+    else if (i === run.activeIndex) seg.classList.add(run.terminal ? 'done' : 'active');
+    bar.appendChild(seg);
+  }
+  head.appendChild(bar);
+
+  const st = $('span', 'status' + (run.blocked ? ' blocked' : ''), run.blocked ? 'Blocked' : esc(run.status));
+  head.appendChild(st);
+  const el = ageText(run.startedAt);
+  if (el) head.appendChild($('span', 'elapsed', el));
+  return head;
+}
+
+// --- left column: the vertical stage pipeline with status dots ---------------
+function renderPipeline(run) {
+  const col = $('div', 'pipeline');
+  (run.stages || []).forEach((name, i) => {
+    let cls = 'stage', tag = '';
+    if (run.blocked && i === run.activeIndex) { cls += ' blocked'; tag = 'blocked'; }
+    else if (i < run.activeIndex) { cls += ' done'; tag = 'done'; }
+    else if (i === run.activeIndex) { cls += run.terminal ? ' done' : ' active'; tag = run.terminal ? 'done' : 'active'; }
+    const row = $('div', cls);
+    row.appendChild($('span', 'dot'));
+    row.appendChild($('span', 'tag', tag));
+    row.appendChild($('span', 'name', name));
+    col.appendChild(row);
+  });
+  return col;
+}
+
+// --- right column: metadata panel (issue, branch, worktree, folder, video) ---
+function metaRow(k, valueNode) {
+  const row = $('div', 'row');
+  row.appendChild($('div', 'k', k));
+  const v = $('div', 'v');
+  if (valueNode instanceof Node) v.appendChild(valueNode); else v.textContent = esc(valueNode);
+  row.appendChild(v);
+  return row;
+}
+
+function renderMeta(run) {
+  const col = $('div', 'meta');
+
+  // issue link
+  const issueV = $('span');
+  if (run.issueUrl) {
+    const a = $('a', null, '#' + run.issueNumber); a.href = run.issueUrl; a.target = '_blank'; a.rel = 'noopener';
+    issueV.appendChild(a);
+  } else issueV.appendChild($('span', 'naval', run.prUrl ? '' : 'n/a'));
+  if (run.prUrl) {
+    issueV.appendChild(document.createTextNode('  '));
+    const p = $('a', null, 'PR #' + run.prNumber); p.href = run.prUrl; p.target = '_blank'; p.rel = 'noopener';
+    issueV.appendChild(p);
+  }
+  col.appendChild(metaRow('issue', issueV));
+
+  // branch + copy
+  const brV = $('span');
+  if (run.branch) {
+    brV.appendChild($('span', 'path', '⎇ ' + run.branch));
+    brV.appendChild(copyBtn('copy', run.branch));
+  } else brV.appendChild($('span', 'naval', 'n/a'));
+  col.appendChild(metaRow('branch', brV));
+
+  // worktree + open + copy path
+  const wtV = $('span');
+  if (run.worktree) {
+    wtV.appendChild($('span', 'path', run.worktree));
+    wtV.appendChild(openBtn(run.worktree));
+    wtV.appendChild(copyBtn('copy path', run.worktree));
+  } else wtV.appendChild($('span', 'naval', 'n/a — no local worktree'));
+  col.appendChild(metaRow('worktree', wtV));
+
+  // folder + open + copy path
+  const foV = $('span');
+  if (run.folder) {
+    foV.appendChild($('span', 'path', run.folder));
+    foV.appendChild(openBtn(run.folder));
+    foV.appendChild(copyBtn('copy path', run.folder));
+  } else foV.appendChild($('span', 'naval', 'n/a'));
+  col.appendChild(metaRow('folder', foV));
+
+  // done video (embedded player) or graceful absence
+  const vidV = $('div');
+  if (run.doneVideo && run.doneVideo.url) {
+    const wrap = $('div', 'video-wrap');
+    const v = document.createElement('video');
+    v.controls = true; v.preload = 'metadata'; v.src = run.doneVideo.url;
+    wrap.appendChild(v);
+    const cap = [run.doneVideo.name, ageText(run.doneVideo.updatedAt) ? ageText(run.doneVideo.updatedAt) + ' old' : null, 'fullscreen via player controls']
+      .filter(Boolean).join(' · ');
+    wrap.appendChild($('div', 'video-cap', cap));
+    vidV.appendChild(wrap);
+  } else {
+    vidV.appendChild($('span', 'naval', 'no done video yet'));
+  }
+  col.appendChild(metaRow('done video', vidV));
+
+  return col;
+}
+
+// --- cost table + footer -----------------------------------------------------
+function renderCost(run) {
+  const block = $('div', 'cost-block');
+  block.appendChild($('div', 'cost-h', 'cost'));
+  const c = run.cost || {};
+  const table = $('table', 'cost');
+  const thead = $('thead'); const htr = $('tr');
+  ['MODEL', 'IN', 'OUT', 'CACHE R', 'CACHE W', '≈ COST'].forEach((h, i) => {
+    const th = $('th', i === 0 ? '' : 'n', h); htr.appendChild(th);
+  });
+  thead.appendChild(htr); table.appendChild(thead);
+
+  const tbody = $('tbody');
+  const models = (c.present && Array.isArray(c.models)) ? c.models : [];
+  if (models.length) {
+    for (const m of models) {
+      const tr = $('tr');
+      tr.appendChild($('td', 'model', esc(m.model)));
+      const cell = (v) => { const td = $('td', 'n'); const t = compact(v); if (t == null) { td.textContent = 'n/a'; td.classList.add('na'); } else td.textContent = t; return td; };
+      tr.appendChild(cell(m.in));
+      tr.appendChild(cell(m.out));
+      tr.appendChild(cell(m.cacheRead));
+      tr.appendChild(cell(m.cacheWrite));
+      const costTd = $('td', 'n cost'); const mv = money(m.cost);
+      if (mv == null) { costTd.textContent = 'n/a'; costTd.className = 'n na'; } else costTd.textContent = mv;
+      tr.appendChild(costTd);
+      tbody.appendChild(tr);
+    }
+  } else {
+    const tr = $('tr'); const td = $('td', 'na'); td.colSpan = 6;
+    td.textContent = 'n/a — no out/costs/<run>.json cost post-mortem for this run yet';
+    tr.appendChild(td); tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  block.appendChild(table);
+
+  // footer: sessions/subagents · codex · match · caveat · unpriced · pointer
+  const parts = [];
+  if (c.present) {
+    if (c.sessions != null || c.subagents != null)
+      parts.push(`${c.sessions ?? 0} claude session(s) + ${c.subagents ?? 0} subagents`);
+    if (c.codex != null) parts.push(`${c.codex} codex`);
+    if (c.matchMode) parts.push('match: ' + c.matchMode);
+  }
+  parts.push('API-equivalent estimate, not billing');
+  if (c.present && c.unpriced && c.unpriced.length) parts.push('unpriced: ' + c.unpriced.join(', '));
+  const foot = $('div', 'cost-foot', parts.join(' · '));
+  const ptr = $('div', 'cost-foot');
+  ptr.appendChild(document.createTextNode('post-mortem detail: '));
+  ptr.appendChild($('span', 'ptr', (c.pointer || 'out/costs/<run>.json')));
+  block.appendChild(foot); block.appendChild(ptr);
+  return block;
+}
+
+function renderCard(run) {
+  const card = $('div', 'card' + (run.blocked ? ' blocked' : ''));
+  card.appendChild(renderHead(run));
+  const body = $('div', 'card-body');
+  body.appendChild(renderPipeline(run));
+  body.appendChild(renderMeta(run));
+  card.appendChild(body);
+  card.appendChild(renderCost(run));
+  return card;
+}
+
+function render(state) {
+  const sub = document.getElementById('sub');
+  const wrap = document.getElementById('runs');
+  wrap.textContent = '';
+  const runs = (state && state.runs) || [];
+  const stamp = state && state.generatedAt ? new Date(state.generatedAt).toLocaleTimeString() : '';
+  sub.textContent = `${esc(state && state.repo)} · ${runs.length} run(s) · ${esc(state && state.summary || '')}${stamp ? ' · ' + stamp : ''}`;
+
+  if (state && state.degraded) {
+    const e = $('div', 'empty');
+    e.appendChild($('div', 'big', 'no runs to show'));
+    e.appendChild($('div', null, esc(state.degraded)));
+    wrap.appendChild(e);
+    return;
+  }
+  if (!runs.length) {
+    const e = $('div', 'empty');
+    e.appendChild($('div', 'big', 'no in-flight runs'));
+    e.appendChild($('div', null, 'The fleet is idle — no armed issues or open PRs to chart.'));
+    wrap.appendChild(e);
+    return;
+  }
+  for (const run of runs) wrap.appendChild(renderCard(run));
+}
+
+// --- polling: fetch the sibling snapshot, re-render on change -----------------
+let lastStamp = null;
+async function poll() {
+  try {
+    const res = await fetch('./run-state.json?t=' + Date.now(), { cache: 'no-store' });
+    if (res.ok) {
+      const state = await res.json();
+      if (state.generatedAt !== lastStamp) { lastStamp = state.generatedAt; render(state); }
+    }
+  } catch (e) {
+    const sub = document.getElementById('sub');
+    if (sub && lastStamp == null) sub.textContent = 'waiting for run-state.json …';
+  }
+}
+poll();
+setInterval(poll, 4000);
 </script>
 </body>
 </html>

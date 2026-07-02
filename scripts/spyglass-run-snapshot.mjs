@@ -268,22 +268,29 @@ function normalizeCost(cost) {
 function snapshot({ label, repo, commissioned }) {
   const repoArgs = repo ? ['--repo', repo] : [];
 
+  // Read-only §2a reads. NOTE: crows-nest DROPS the base trigger label when it
+  // claims a run (an underway issue carries `armada:underway`, not `armada`), so
+  // a server-side `--label armada` filter would miss every in-flight run — the
+  // exact runs this dashboard exists to show. We fetch open issues/PRs and keep
+  // any carrying the trigger label OR one of its `armada:*` state labels.
+  const inFleet = (labels) => labelNames(labels).some((n) => n === label || n.startsWith(label + ':'));
+
   const rawIssues = commissioned
     ? ghJson([
-        'issue', 'list', ...repoArgs, '--label', label, '--state', 'open',
+        'issue', 'list', ...repoArgs, '--state', 'open',
         '--json', 'number,title,labels,createdAt,updatedAt,author,body', '--limit', '50',
       ])
     : null;
   const rawPrs = commissioned
     ? ghJson([
-        'pr', 'list', ...repoArgs, '--label', label, '--state', 'open',
+        'pr', 'list', ...repoArgs, '--state', 'open',
         '--json', 'number,title,isDraft,labels,headRefName,baseRefName,mergeable,reviewDecision,statusCheckRollup,createdAt,updatedAt,body', '--limit', '50',
       ])
     : null;
 
   const ghOk = rawIssues !== null || rawPrs !== null;
-  const issues = rawIssues || [];
-  const prs = rawPrs || [];
+  const issues = (rawIssues || []).filter((it) => inFleet(it.labels));
+  const prs = (rawPrs || []).filter((pr) => inFleet(pr.labels));
 
   const wt = worktreeMap();
   const assets = ghOk ? releaseAssets(repo) : [];
