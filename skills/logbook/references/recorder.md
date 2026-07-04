@@ -40,6 +40,14 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/logbook-recorder.mjs" \
   - **`LOGBOOK_RECORD_URL`** — a URL known to render (the PR's preview/Vercel deployment or the live
     site) to record against **in preference to** the worktree dev server. Also settable as
     `recipe.recordUrl`.
+  - **`LOGBOOK_BROWSER_EXECUTABLE`** — a full path to a **system browser** (e.g. `msedge.exe` /
+    `chrome`) to drive `web` capture with when Playwright's own Chromium isn't installed. Also settable
+    as `recipe.browserExecutable`. Launched via Playwright's `executablePath` — the reliable route.
+  - **`LOGBOOK_BROWSER_CHANNEL`** — a Playwright browser **channel** (`msedge` / `chrome`) to launch
+    instead of bundled Chromium. Also `recipe.browserChannel`. `executablePath` is preferred where a
+    path is known.
+  - **`LOGBOOK_NODE_PATH`** / **`LOGBOOK_PLAYWRIGHT_PATH`** — extra `node_modules` root(s) from which to
+    resolve an **out-of-repo** (global/scratch) Playwright, on top of the cwd and `NODE_PATH`.
 
 ## Record against a URL that renders
 
@@ -107,6 +115,26 @@ For each chapter the recorder **stages via the recipe** (launches the app with t
 command — which reuses `.armada/config.json` `commands.run` — waits for the `readySignal`, runs the
 `stage` steps), then **replays that chapter's `reach`** while capturing. Each chapter is captured as
 its own clip so an edit re-records just that chapter. The app is torn down cleanly between chapters.
+
+### `web` capture works without a Playwright-Chromium install — use a system browser
+
+The `web` driver does **not** require Playwright's own bundled Chromium. A host that has a **system
+browser** (Microsoft Edge / Chrome) but no Playwright-Chromium must still record **live motion** — not
+degrade to a captioned storyboard (issue #103). The recorder therefore:
+
+- **Resolves the driver from outside the repo.** Capture-backend detection resolves Playwright from the
+  cwd, `NODE_PATH`, **and** `LOGBOOK_NODE_PATH` / `LOGBOOK_PLAYWRIGHT_PATH` — so a global/scratch
+  install isn't falsely reported degraded.
+- **Launches a system browser via `executablePath` (preferred) or `channel`.** In launch-order:
+  1. an explicit `LOGBOOK_BROWSER_EXECUTABLE` / `recipe.browserExecutable` path (the reliable route —
+     on win-arm64 `executablePath → msedge.exe` launches cleanly where `channel:'msedge'` did not);
+  2. an explicit `LOGBOOK_BROWSER_CHANNEL` / `recipe.browserChannel`;
+  3. Playwright's bundled Chromium (the default when installed);
+  4. an **auto-detected** system Edge/Chrome, if the bundled-Chromium launch fails because none is
+     installed.
+- **Reports the system-browser path in `--setup`.** The preflight names the resolved system-browser
+  path as a ready capture backend when Chromium is absent but Edge/Chrome + Playwright are available, so
+  a Chromium-less host reads as recordable, not degraded.
 
 ### Capture readiness — wait for paint, warm the route, and report blank captures
 
