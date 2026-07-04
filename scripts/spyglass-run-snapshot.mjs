@@ -348,19 +348,27 @@ function recentOutcome({ issue, pr }) {
   const prMerged = !!(pr && (String(pr.state).toUpperCase() === 'MERGED' || pr.mergedAt));
   const prClosedUnmerged = !!(pr && String(pr.state).toUpperCase() === 'CLOSED' && !pr.mergedAt);
   const issueClosed = !!(issue && String(issue.state).toUpperCase() === 'CLOSED');
+  // stateReason separates a completed close from a not-planned/duplicate one. Only a
+  // COMPLETED close is a "Shipped" voyage; an absent/unknown reason (older gh, reopened)
+  // is treated leniently as completed so a genuine ship is never lost.
+  const reason = issue ? String(issue.stateReason || '').toUpperCase() : '';
+  const issueCompleted = reason === '' || reason === 'COMPLETED';
   if (has('armada:blocked') || (prClosedUnmerged && !prMerged)) {
     return {
       activeIndex: pr ? IDX.IN_REVIEW : IDX.BUILDING,
       blocked: true, status: 'Blocked', outcome: 'Blocked', terminal: true, group: 'blocked',
     };
   }
-  if (has('armada:shipped') || (issueClosed && prMerged)) {
+  if (has('armada:shipped') || (issueClosed && prMerged && issueCompleted)) {
     return { activeIndex: IDX.SHIPPED, blocked: false, status: 'Shipped', outcome: 'Shipped', terminal: true, group: 'done' };
   }
   if (prMerged || has('armada:merged')) {
     return { activeIndex: IDX.MERGED, blocked: false, status: 'Merged', outcome: 'Merged', terminal: true, group: 'done' };
   }
-  // A closed issue that completed with no observable PR — count it as shipped.
+  // No terminal label, no merged PR. A closed issue with no PR: a completed (or
+  // unknown-reason) close counts as shipped; a not-planned/duplicate close is not a
+  // voyage outcome — return null so the recent-scan skips it (never enters the harbour).
+  if (issueClosed && !issueCompleted) return null;
   return { activeIndex: IDX.SHIPPED, blocked: false, status: 'Shipped', outcome: 'Shipped', terminal: true, group: 'done' };
 }
 
@@ -502,6 +510,9 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap }) {
     const stage = recent
       ? recentOutcome({ issue, pr })
       : (pr ? stageForPr(pr) : stageForIssue(issue.labels));
+    // A recent run whose outcome is a non-voyage close (not-planned/duplicate, no PR)
+    // is excluded from the harbour lane entirely.
+    if (recent && !stage) return null;
     // Worktree: git worktree list by branch, else the run map's recorded path.
     const worktree = (branch && wt[branch]) || (runRec && runRec.worktree) || null;
     const costRaw = readCost(branch, issueNumber);
@@ -610,7 +621,9 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap }) {
       if (!inFleet(issue.labels)) continue;
       if (seen.has(issue.number)) continue; // still shown as in-flight — don't double-list
       const pr = prByIssueR[issue.number] || null;
-      built.push(buildRun({ issue, pr, recent: true }));
+      const run = buildRun({ issue, pr, recent: true });
+      if (!run) continue; // not-planned/duplicate close with no PR — not a voyage
+      built.push(run);
       seenR.add('i' + issue.number);
       if (pr) seenR.add('p' + pr.number);
     }
@@ -620,7 +633,9 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap }) {
       if (!inFleet(pr.labels)) continue;
       const iss = closesIssue(pr);
       if (iss != null && (seen.has(iss) || seenR.has('i' + iss))) continue;
-      built.push(buildRun({ issue: null, pr, recent: true }));
+      const run = buildRun({ issue: null, pr, recent: true });
+      if (!run) continue;
+      built.push(run);
       seenR.add('p' + pr.number);
     }
 
