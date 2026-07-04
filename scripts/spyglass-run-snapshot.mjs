@@ -54,19 +54,35 @@
 //                                  [--repo <owner/name>] [--open]
 //                                  [--watch <seconds>] [--no-open]
 //                                  [--recent-hours <N>] [--recent-cap <N>]
+//                                  [--served-root <dir>] [--strict]
+//
+// TWO OPERATOR GUARDRAILS keep a live dashboard from silently freezing on stale
+// data (issue #133 — a real incident: several stale --watch drivers overwrote the
+// same run-state.json while the web server served a DIFFERENT directory, so the
+// board showed a 2-day-old snapshot and nothing errored):
+//
+//   * SINGLE-DRIVER LOCK — a `--watch` driver takes an exclusive lock (pid +
+//     startedAt) in its --out dir. A SECOND watcher against the same --out refuses
+//     to start and names the live pid; a dead holder's lock is transparently taken
+//     over; the lock is released on clean exit. A one-shot (non-watch) snapshot is
+//     UNaffected — it neither takes nor is blocked by the lock.
+//   * SERVED-DIR SANITY CHECK — `--served-root <dir>` (or SPYGLASS_SERVED_ROOT /
+//     spyglass.servedRoot, or a best-effort auto-detect of a running static server)
+//     names the directory actually served over HTTP. If --out is not that dir the
+//     driver warns LOUDLY on startup, and REFUSES to start under `--strict`.
 //
 // The recent-voyages window is bounded and configurable (flag > env > config >
 // default): `--recent-hours` / `SPYGLASS_RECENT_HOURS` / `spyglass.recentWindowHours`
 // (default 24; <=0 = no time filter, cap only) and `--recent-cap` /
 // `SPYGLASS_RECENT_CAP` / `spyglass.recentCap` (default 12; <=0 = recent lane off).
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync, renameSync, rmSync, realpathSync, statSync } from 'fs';
 import http from 'http';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { execFileSync, spawn } from 'child_process';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -131,6 +147,8 @@ function parseArgs(argv) {
     else if (a === '--recent-hours') args.recentHours = argv[++i];
     else if (a === '--recent-cap') args.recentCap = argv[++i];
     else if (a === '--est-burn') args.estBurn = argv[++i];
+    else if (a === '--served-root') args.servedRoot = argv[++i];
+    else if (a === '--strict') args.strict = true;
   }
   return args;
 }
@@ -151,6 +169,309 @@ function resolveNum(flagVal, envName, cfgVal, def) {
   const e = pick(process.env[envName]); if (e != null) return e;
   const c = pick(cfgVal); if (c != null) return c;
   return def;
+}
+
+// ---------------------------------------------------------------------------
+// GUARDRAIL 1 — single-driver lock (#133)
+//
+// A `--watch` driver is a long-lived PRODUCER: it rewrites <out>/run-state.json on
+// every tick. Two (or four) of them against the same --out silently race, each
+// clobbering the other's snapshot, so the board freezes on whichever wrote last.
+// The lock makes that impossible: the first watcher writes a lockfile with its pid
+// + startedAt into --out; a second watcher sees the LIVE holder and refuses,
+// naming the pid so the operator can kill it. A holder whose pid is dead (crash,
+// kill -9) left a STALE lock — the newcomer transparently takes it over. The lock
+// is a plain file in the scratch/output dir (never the tracked repo), so the
+// spyglass read-only invariant holds. One-shot (non-watch) snapshots never take
+// or consult the lock — they write once and exit, so they can't wedge the board.
+// ---------------------------------------------------------------------------
+// The lock is a DIRECTORY (`mkdirSync` is an atomic exclusive arbiter — see
+// acquireWatchLock); the holder's metadata (pid / startedAt / nonce) is a plain file
+// written INSIDE it. A directory lock is used — not an O_EXCL file lock — because a
+// FILE lock's stale-takeover cannot be made race-free with fs primitives (unlink then
+// create leaves a gap where two takers of the same dead lock both win); a directory
+// can be CLAIMED atomically by a single rename, closing that gap. (Issue #147, folded
+// into #144.)
+const LOCK_NAME = '.spyglass-run.lock';   // the lock DIRECTORY
+const LOCK_INFO = 'owner.json';           // holder metadata file, written INSIDE it
+
+// Is `pid` a live process? `kill(pid, 0)` sends no signal but validates existence:
+// ESRCH → gone (stale); EPERM → alive but owned by another user (still live). Any
+// non-integer / non-positive pid is treated as dead so a corrupt lock is takeable.
+function pidAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  try { process.kill(n, 0); return true; }
+  catch (e) { return e && e.code === 'EPERM'; }
+}
+
+// Acquire the watch lock in `outDir`. Returns { ok:true, lockPath, nonce, tookOver }
+// on success (fresh acquire or stale-takeover), or { ok:false, holder, lockPath } when
+// a LIVE holder already owns it. Never throws for the caller's decision path.
+//
+// PROTOCOL — a DIRECTORY lock. This CLOSES the structural stale-takeover race that a
+// file lock can't (the unlink-then-create gap where two takers of one dead lock both
+// win). A far narrower, unreproduced residual remains: the mkdir→write-owner.json gap
+// (see readHolder) — a winner preempted for longer than the ~30ms read grace between
+// creating the dir and writing owner.json can be misjudged stale and have its live
+// lock claimed. It is benign for this read-only view (worst case: two drivers briefly
+// refresh the same run-state.json, which is idempotent) and has not been reproduced.
+//
+//   * FRESH acquire: `mkdirSync(lockDir)` is atomically exclusive — of N racers
+//     creating the lock exactly one succeeds; the rest get EEXIST. (`writeFileSync`
+//     with `wx` gives the same fresh guarantee, but see below for why a file lock is
+//     insufficient.)
+//   * STALE takeover: the dead dir is CLAIMED with a single
+//     `renameSync(lockDir → lockDir.stale.<pid>.<nonce>)`. A directory rename atomically
+//     moves the ONE existing source: of N takers racing to rename the SAME stale dir,
+//     exactly one succeeds; the losers get ENOENT (the source already moved) and retry
+//     from the top. The winner deletes the renamed-away dir and `mkdirSync`s a fresh
+//     lock. The arbiter is the single successful rename, then the single successful
+//     mkdir — there is no unlink-then-create gap. (A file lock CAN'T do this: `wx` only
+//     arbitrates concurrent CREATES, so two takers of the same DEAD file lock both pass
+//     the liveness guard, both unlink, and an interleaving lets BOTH create+win.)
+//   * The `nonce` is our OWNER TOKEN. Release removes the lock only when BOTH pid and
+//     nonce match, so a later taker never deletes a lock we no longer own.
+function acquireWatchLock(outDir) {
+  mkdirSync(outDir, { recursive: true });
+  const lockPath = path.join(outDir, LOCK_NAME);
+  const infoPath = path.join(lockPath, LOCK_INFO);
+  const nonce = randomBytes(12).toString('hex');
+
+  const writeInfo = () => writeFileSync(infoPath, JSON.stringify({
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    out: path.resolve(outDir),
+    nonce,
+  }, null, 2));
+
+  // Atomic exclusive create of the lock DIR. true → we now own it; false → it already
+  // existed (EEXIST). Any other error is a real fault and propagates.
+  const tryMkdir = () => {
+    try { mkdirSync(lockPath); return true; }
+    catch (e) { if (e && e.code === 'EEXIST') return false; throw e; }
+  };
+  // Bounded synchronous sleep (no busy-spin): the mid-write grace + a short backoff
+  // between takeover attempts.
+  const sleepMs = (ms) => {
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* SAB off → skip */ }
+  };
+  // Read the current holder's metadata. mkdir creates the dir THEN writeInfo writes
+  // owner.json, so a racer reading in that gap would see the dir but no (or a
+  // half-written) info file and wrongly judge a LIVE mid-write winner as stale. Give a
+  // brief grace: if the dir is present but owner.json isn't parseable yet, re-read a
+  // few times before concluding it's stale. A genuinely empty/corrupt lock costs only
+  // this small grace, then reads as null (→ takeable).
+  const readHolder = () => {
+    for (let i = 0; i < 6; i++) {
+      try { return JSON.parse(readFileSync(infoPath, 'utf8')); } catch { /* absent/mid-write/corrupt */ }
+      if (!existsSync(lockPath)) return null;  // dir vanished → truly gone
+      sleepMs(5);
+    }
+    return null;
+  };
+  // A live foreign holder (a real pid, not ours, still running).
+  const liveForeign = (h) => {
+    const p = h ? Number(h.pid) : NaN;
+    return Number.isInteger(p) && p !== process.pid && pidAlive(p);
+  };
+
+  // Bounded acquire loop: fresh-create → refuse-if-live → atomically claim the stale
+  // dir and recreate. A losing takeover retries from the top; the bound stops any
+  // pathological livelock (it then refuses conservatively rather than spin forever).
+  for (let attempt = 0; attempt < 100; attempt++) {
+    // 1) Try to win a FRESH lock outright.
+    if (tryMkdir()) { writeInfo(); return { ok: true, lockPath, nonce, tookOver: null }; }
+
+    // 2) It already existed. If a LIVE holder owns it, refuse (name the pid).
+    const holder = readHolder();
+    if (liveForeign(holder)) return { ok: false, holder, lockPath };
+
+    // 3) Stale (dead / corrupt / our own leftover). CLAIM it atomically by renaming the
+    //    dead dir away — exactly one taker's rename of the single source succeeds; the
+    //    losers get ENOENT and retry. No unlink-then-create gap.
+    const hpid = holder ? Number(holder.pid) : NaN;
+    const tookOver = (holder && Number.isInteger(hpid) && hpid !== process.pid) ? holder : null;
+    const staleName = `${lockPath}.stale.${process.pid}.${nonce}.${attempt}`;
+    try {
+      renameSync(lockPath, staleName);
+    } catch {
+      // Lost the claim (ENOENT: another taker already moved it; or a transient Windows
+      // EPERM). Back off briefly and retry from the top to re-evaluate the holder.
+      sleepMs(5);
+      continue;
+    }
+    // We won the claim. Drop the renamed-away dead dir, then create a fresh lock.
+    try { rmSync(staleName, { recursive: true, force: true }); } catch { /* best-effort */ }
+    if (tryMkdir()) { writeInfo(); return { ok: true, lockPath, nonce, tookOver }; }
+    // A brand-new acquirer slipped in and mkdir'd the fresh dir between our rename and
+    // ours. Loop: re-read the new holder and refuse-if-live / re-contend for takeover.
+    sleepMs(5);
+  }
+
+  // Exhausted the bound — refuse conservatively rather than risk two concurrent drivers.
+  const holder = readHolder();
+  return { ok: false, holder, lockPath };
+}
+
+// Release the lock — but ONLY if it's still ours (pid AND owner nonce match), guarding
+// against deleting a lock a newer takeover already claimed. Best-effort; swallows all
+// errors. Removes the whole lock dir.
+function releaseWatchLock(lockPath, nonce) {
+  try {
+    if (!lockPath || !existsSync(lockPath)) return;
+    const held = JSON.parse(readFileSync(path.join(lockPath, LOCK_INFO), 'utf8'));
+    const ours = held && Number(held.pid) === process.pid && (nonce == null || held.nonce === nonce);
+    if (ours) rmSync(lockPath, { recursive: true, force: true });
+  } catch { /* best-effort */ }
+}
+
+// Register clean-exit release across normal exit and the signals a Ctrl-C / kill
+// sends, so the lock doesn't outlive the process and wedge the next watcher.
+function installLockRelease(lockPath, nonce) {
+  let released = false;
+  const release = () => { if (!released) { released = true; releaseWatchLock(lockPath, nonce); } };
+  process.on('exit', release);
+  process.on('SIGINT', () => { release(); process.exit(130); });
+  process.on('SIGTERM', () => { release(); process.exit(143); });
+  process.on('SIGHUP', () => { release(); process.exit(129); });
+}
+
+// ---------------------------------------------------------------------------
+// GUARDRAIL 2 — served-dir sanity check (#133)
+//
+// The dashboard is polled over HTTP by a static file server. If the driver writes
+// run-state.json to a directory the server does NOT serve, the board reads a
+// different (older, or empty) file and freezes — exactly the second half of the
+// incident. This check compares --out against the directory actually served and
+// warns LOUDLY (or, under --strict, refuses) on a mismatch. The served dir is
+// resolved: --served-root > SPYGLASS_SERVED_ROOT > spyglass.servedRoot > a
+// best-effort auto-detect of a running static server. When it can't be determined
+// the check stays silent. The auto-detect matches only unambiguous static servers,
+// but an UNRELATED static server running on the box CAN still trigger a warn — so
+// the mismatch is a loud warning by default; refusal (--strict) is opt-in. READ-ONLY.
+// ---------------------------------------------------------------------------
+
+// Normalise a path for comparison: absolute, symlinks resolved when possible,
+// case-folded on Windows (its filesystem is case-insensitive).
+function normPath(p) {
+  let r = path.resolve(p);
+  try { r = realpathSync(r); } catch { /* not yet created — resolve() is enough */ }
+  return process.platform === 'win32' ? r.toLowerCase() : r;
+}
+function samePath(a, b) { return normPath(a) === normPath(b); }
+
+// List running process command lines (best-effort, cross-platform, short timeout).
+// Used only by the auto-detect — any failure yields [] so detection silently
+// declines rather than erroring.
+function listProcessCommandLines() {
+  try {
+    if (process.platform === 'win32') {
+      const out = execFileSync('powershell', [
+        '-NoProfile', '-Command',
+        'Get-CimInstance Win32_Process | Select-Object -ExpandProperty CommandLine',
+      ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 4000 });
+      return out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    }
+    const out = execFileSync('ps', ['-eo', 'args='], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 4000,
+    });
+    return out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  } catch { return []; }
+}
+
+// Extract a served root from ONE static-server command line — but only when the
+// directory is EXPLICIT in the command (a server serving an implicit cwd isn't
+// recoverable from its args, so we decline rather than guess). Recognises the
+// common static servers; requires the candidate to resolve to an existing dir.
+function servedRootFromCommand(cmd) {
+  if (!cmd) return null;
+  // Only UNAMBIGUOUS dedicated static file servers — recognising a bare `serve`
+  // token would collide with unrelated `... serve` subcommands (e.g. an app-server
+  // broker), producing a false alarm, so the npm `serve` package is matched ONLY
+  // via an `npx serve` / `pnpm dlx serve` / `yarn dlx serve` invocation.
+  const isHttpServer = /\bhttp-server\b/.test(cmd);          // node http-server
+  const isPyHttp = /\bhttp\.server\b/.test(cmd);             // python -m http.server
+  const isPhp = /\bphp\b.*\s-S\s/.test(cmd);                 // php -S host:port
+  const isServePkg = /\b(?:npx|pnpm\s+dlx|yarn\s+dlx)\s+serve\b/.test(cmd);
+  if (!(isHttpServer || isPyHttp || isPhp || isServePkg)) return null;
+  // A candidate must resolve to an existing DIRECTORY (a file/log that merely
+  // exists must never be mistaken for the served root).
+  const asDir = (d) => {
+    if (!d) return null;
+    const cleaned = d.replace(/^["']|["']$/g, '');
+    try {
+      if (existsSync(cleaned) && statSync(cleaned).isDirectory()) { realpathSync(cleaned); return cleaned; }
+    } catch { /* skip */ }
+    return null;
+  };
+  // Explicit directory flags first: -d / --directory (python http.server,
+  // http-server), -t (php -S document root).
+  const flag = cmd.match(/(?:^|\s)(?:-d|--directory|-t)[=\s]+("[^"]+"|'[^']+'|\S+)/);
+  if (flag) { const d = asDir(flag[1]); if (d) return d; }
+  // Else the first bare (non-flag) token after the server keyword that resolves to
+  // an existing directory — the positional root of `http-server <dir>` / `serve <dir>`.
+  const after = cmd.match(/(?:\bhttp-server\b|(?:npx|pnpm\s+dlx|yarn\s+dlx)\s+serve\b)\s+(.*)$/);
+  if (after) {
+    for (const tok of after[1].split(/\s+/)) {
+      if (!tok || tok.startsWith('-')) continue;
+      const d = asDir(tok);
+      if (d) return d;
+    }
+  }
+  return null;
+}
+
+// Best-effort auto-detect of the served root from a running static server.
+function detectServedRoot() {
+  for (const cmd of listProcessCommandLines()) {
+    const root = servedRootFromCommand(cmd);
+    if (root) return { root, via: 'auto-detect' };
+  }
+  return null;
+}
+
+// Resolve the served root with documented precedence, or null when unknown.
+function resolveServedRoot(flagVal, cfgVal) {
+  const pick = (v) => { const s = v == null ? '' : String(v).trim(); return s || null; };
+  const f = pick(flagVal); if (f) return { root: f, via: '--served-root' };
+  const e = pick(process.env.SPYGLASS_SERVED_ROOT); if (e) return { root: e, via: 'SPYGLASS_SERVED_ROOT' };
+  const c = pick(cfgVal); if (c) return { root: c, via: 'spyglass.servedRoot' };
+  return detectServedRoot(); // { root, via:'auto-detect' } or null
+}
+
+// Run the served-dir sanity check. On a mismatch: warn LOUDLY, and under `strict`
+// print the banner to stderr and exit(1) (before any snapshot is written). When
+// the served root is unknown, or matches --out, this is a silent no-op. Returns
+// true when a mismatch was detected (for tests / callers).
+function checkServedRoot({ outDir, served, strict, log = console }) {
+  if (!served || !served.root) return false;
+  if (samePath(served.root, outDir)) return false;
+  const outAbs = path.resolve(outDir);
+  const srvAbs = path.resolve(served.root);
+  const banner = [
+    '',
+    '  ############################################################',
+    `  # spyglass-run: SERVED-DIR MISMATCH${strict ? ' — REFUSING (--strict)' : ' — WARNING'}`,
+    '  #',
+    '  #  --out is NOT the directory being served over HTTP, so the',
+    '  #  dashboard will poll a DIFFERENT run-state.json and FREEZE',
+    '  #  on stale data. Nothing will error — the board just lies.',
+    '  #',
+    `  #    writing snapshot to : ${outAbs}`,
+    `  #    server is serving   : ${srvAbs}  (via ${served.via})`,
+    '  #',
+    '  #  Fix: point --out at the served dir, or serve --out.',
+    '  ############################################################',
+    '',
+  ].join('\n');
+  if (strict) {
+    (log.error || log.log).call(log, banner);
+    (log.error || log.log).call(log, 'spyglass-run: refusing to start under --strict (served-dir mismatch)');
+    process.exit(1);
+  }
+  (log.error || log.log).call(log, banner);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1187,6 +1508,35 @@ function main() {
   // (#111) — mirrors crows-nest's maxConcurrentBuilds (§1); config, else default 3.
   const maxConcurrentBuilds = resolveNum(args.maxBuilds, 'ARMADA_MAX_BUILDS', config.maxConcurrentBuilds, 3);
 
+  // GUARDRAIL 2 (#133) — served-dir sanity check. Runs for BOTH one-shot and watch
+  // startups (writing to the wrong dir is a mistake either way); under --strict a
+  // mismatch refuses BEFORE any snapshot / lock work.
+  const served = resolveServedRoot(args.servedRoot, sg.servedRoot);
+  checkServedRoot({ outDir, served, strict: !!args.strict });
+
+  // GUARDRAIL 1 (#133) — single-driver lock. Only a --watch driver (a long-lived
+  // producer) takes the lock; a one-shot snapshot is unaffected. A live holder →
+  // refuse and name its pid; a dead holder's stale lock → transparently take over.
+  if (args.watch > 0) {
+    const lock = acquireWatchLock(outDir);
+    if (!lock.ok) {
+      const h = lock.holder || {};
+      console.error(
+        `spyglass-run: refusing to start — a live --watch driver already owns ${path.resolve(outDir)}\n` +
+        `  held by pid ${h.pid}${h.startedAt ? ` (started ${h.startedAt})` : ''}.\n` +
+        `  Stop that driver first (e.g. kill ${h.pid}), or point --out at a different dir.`,
+      );
+      process.exit(1);
+    }
+    if (lock.tookOver) {
+      console.log(
+        `spyglass-run: took over a stale lock — previous holder pid ${lock.tookOver.pid} is no longer running` +
+        `${lock.tookOver.startedAt ? ` (started ${lock.tookOver.startedAt})` : ''}.`,
+      );
+    }
+    installLockRelease(lock.lockPath, lock.nonce);
+  }
+
   function once(firstRun) {
     const state = snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePerMin, maxConcurrentBuilds });
     const out = writeOutputs(outDir, state);
@@ -1238,4 +1588,15 @@ function main() {
   return first;
 }
 
-main();
+// Run only when invoked as the entry script, so tests can `import` the guardrail
+// helpers below without kicking off a live snapshot / watch loop.
+const isEntry = process.argv[1]
+  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (isEntry) main();
+
+// Exported for unit tests (spyglass-run-snapshot.test.mjs) — the guardrail
+// primitives. Importing this module never triggers main() (see isEntry above).
+export {
+  LOCK_NAME, LOCK_INFO, pidAlive, acquireWatchLock, releaseWatchLock,
+  samePath, servedRootFromCommand, resolveServedRoot, checkServedRoot, parseArgs,
+};
