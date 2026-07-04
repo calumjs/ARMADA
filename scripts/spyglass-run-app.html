@@ -199,6 +199,10 @@
   .s-cost { color: var(--ink-dim); font-family: var(--mono); text-align: right; font-size: 13px; }
   .s-cost.est { color: var(--brass); }
   .s-elapsed { color: var(--ink-faint); font-family: var(--mono); font-size: 12px; text-align: right; }
+  /* completed-voyage landing time ("shipped 1h 08m ago") — wider text than the
+     compact elapsed clock, so it must NOT wrap inside the time column (recent
+     rows widen that column below). */
+  .s-when { color: var(--ink-faint); font-family: var(--mono); font-size: 12px; text-align: right; white-space: nowrap; }
   .chev { color: var(--ink-faint); font-size: 10px; text-align: center; transition: transform .14s ease; }
   .run.expanded > .voyage-row .chev { transform: rotate(90deg); color: var(--brass); }
 
@@ -223,6 +227,9 @@
   .run.recent > .voyage-row {
     background: linear-gradient(180deg, #12222f, #0e1c29);
     border-color: var(--wood-edge); border-left: 3px solid var(--brass-dim);
+    /* widen the time column (was 66px) so "shipped 1h 08m ago" fits on one line
+       instead of wrapping/overlapping; the title (1fr) absorbs the difference. */
+    grid-template-columns: 30px 60px minmax(0,1fr) 150px 96px 92px max-content 14px;
   }
   .run.recent.blocked > .voyage-row { border-left-color: var(--blocked); }
   .run.recent > .voyage-row:hover { border-color: var(--wood-edge-2); }
@@ -652,7 +659,7 @@ function renderCard(run) {
 function renderRun(run) {
   const key = runKey(run);
   const isOpen = expanded.has(key);
-  const block = $("div", "run" + (run.blocked ? " blocked" : "") + (run.terminal ? " terminal" : "") + (isOpen ? " expanded" : ""));
+  const block = $("div", "run" + (run.recent ? " recent" : "") + (run.blocked ? " blocked" : "") + (run.terminal ? " terminal" : "") + (isOpen ? " expanded" : ""));
   block.dataset.key = key;
   const row = renderRow(run, isOpen);
   const toggle = () => {
