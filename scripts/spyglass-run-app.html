@@ -262,7 +262,7 @@
        up cleanly across both lanes (#121). The time column is fixed (not max-content)
        and wide enough for the longest completed-voyage stamp ("shipped 45m 06s ago"),
        so it never drifts row-to-row and the recent lane aligns with the in-flight rows. */
-    grid-template-columns: 30px 60px minmax(0,1fr) 150px 96px 92px 140px 14px;
+    grid-template-columns: 30px 60px minmax(0,1fr) 150px 96px 92px 96px 140px 14px;
     padding: 11px 15px;
     background: linear-gradient(180deg, var(--wood-2), var(--wood));
     border: 1px solid var(--wood-edge); border-radius: 12px;
@@ -337,6 +337,29 @@
   /* per-run token usage, sat next to cost ("$2.68 · 1.2M tok") — #149 */
   .s-tok { color: var(--ink-faint); font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
   .s-tok::before { content: "·"; margin-right: 4px; color: var(--ink-faint); }
+  /* which model(s) the run used, as a compact chip on the row — #151. Sits after
+     the cost/token figures; the primary (busiest) model shows, "+N" hints the rest,
+     and the title tooltip carries the full %-per-model split. Degrades to hidden
+     when no model info is available. */
+  .s-model { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .02em; color: var(--brass);
+    border: 1px solid var(--brass-dim); border-radius: 999px; padding: 1px 7px;
+    background: rgba(198,168,106,.08); }
+  .s-model .s-model-more { color: var(--ink-faint); }
+  .s-model-cell { display: flex; justify-content: flex-start; min-width: 0; overflow: hidden; }
+  /* %-per-model split in the expanded ledger — a stacked share bar + legend (#151) */
+  .model-split { margin-top: 10px; }
+  .model-split .msplit-h { font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--ink-faint); margin-bottom: 6px; }
+  .model-bar { display: flex; width: 100%; height: 9px; border-radius: 999px; overflow: hidden;
+    border: 1px solid var(--wood-edge); background: var(--wood-2); }
+  .model-bar .seg { height: 100%; min-width: 2px; }
+  .model-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; }
+  .model-legend .mitem { display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); }
+  .model-legend .msw { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+  .model-legend .mpct { color: var(--brass-bright); font-weight: 650; }
+  .model-legend .mtok { color: var(--ink-faint); font-size: 10.5px; }
   @keyframes cost-pulse { 0%,100% { opacity: 1; } 50% { opacity: .62; } }
   .s-elapsed { color: var(--ink-faint); font-family: var(--mono); font-size: 12px; text-align: right; }
   /* completed-voyage landing time ("shipped 1h 08m ago") — sits in the SAME fixed
@@ -502,7 +525,7 @@
     .pipeline { border-right: 0; border-bottom: 1px solid var(--line); }
     .row { grid-template-columns: 76px 1fr; }
     .voyage-row { grid-template-columns: 26px 50px minmax(0,1fr) auto 62px 14px; }
-    .voyage-row .voyage, .voyage-row .s-elapsed { display: none; }
+    .voyage-row .voyage, .voyage-row .s-elapsed, .voyage-row .s-model-cell { display: none; }
     .m-cost { margin-left: 0; }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -595,6 +618,53 @@ function tokenInfo(run) {
   if (typeof t.cacheWrite === "number" && t.cacheWrite > 0) parts.push("cache w " + compactTok(t.cacheWrite));
   const title = "tokens — total " + total.toLocaleString() + (parts.length ? " (" + parts.join(" · ") + ")" : "");
   return { text, title, total, input: t.input, output: t.output };
+}
+// ---- per-run MODEL breakdown (#151) ---------------------------------------
+// A short, friendly label from a raw model id: "claude-opus-4-8" → "Opus 4.8";
+// "claude-sonnet-4-5-20250929" → "Sonnet 4.5"; "gpt-5.4" → "GPT-5.4"; a codex
+// signal → "Codex". Falls back to a trimmed raw id so an unknown model still
+// reads as something rather than vanishing.
+function shortModel(raw) {
+  const s = String(raw == null ? "" : raw).trim();
+  if (!s) return "?";
+  const low = s.toLowerCase();
+  const cap = (w) => w.charAt(0).toUpperCase() + w.slice(1);
+  let m = low.match(/(opus|sonnet|haiku)[-_.]?(\d+)[-_.](\d+)/);
+  if (m) return cap(m[1]) + " " + m[2] + "." + m[3];
+  m = low.match(/(opus|sonnet|haiku)[-_.]?(\d+)/);
+  if (m) return cap(m[1]) + " " + m[2];
+  if (/codex/.test(low)) return "Codex";
+  m = low.match(/gpt[-_ ]?([\d.]+)/);
+  if (m) return "GPT-" + m[1];
+  let t = s.replace(/[-_]\d{6,8}$/, "");            // strip a trailing YYYYMMDD
+  return t.length > 18 ? t.slice(0, 17) + "…" : t;
+}
+// Stable, distinct swatch palette for the model share bar — brass-led so it sits
+// in the ARMADA theme, then a spread of legible accents. Assigned by sorted order.
+const MODEL_COLORS = ["#c6a86a", "#5aa9e6", "#37b58c", "#d98a5b", "#a98adf", "#e0563f", "#7cc4b0"];
+// Per-run model breakdown for the card (#151). Reads run.cost.modelUsage (threaded
+// from the same per-model cost rows) → { models:[{label,full,share,tokens,cost,color}],
+// primary, count } or null when unavailable. share = token share, else cost share,
+// else null — so a token-less/unpriced file still lists which models ran.
+function modelInfo(run) {
+  const mu = run && run.cost && run.cost.modelUsage;
+  if (!Array.isArray(mu) || !mu.length) return null;
+  const models = mu.map((r, i) => ({
+    label: shortModel(r.model),
+    full: String(r.model == null ? "?" : r.model),
+    share: (typeof r.tokenShare === "number") ? r.tokenShare
+         : (typeof r.costShare === "number") ? r.costShare : null,
+    tokens: (typeof r.tokens === "number") ? r.tokens : null,
+    cost: (typeof r.cost === "number") ? r.cost : null,
+    color: MODEL_COLORS[i % MODEL_COLORS.length],
+  }));
+  return { models, primary: models[0], count: models.length };
+}
+// A one-line "Opus 4.8 72% · Sonnet 4.5 28%" summary for tooltips.
+function modelSummary(mi) {
+  return mi.models
+    .map((m) => m.label + (m.share != null ? " " + Math.round(m.share * 100) + "%" : ""))
+    .join(" · ");
 }
 // elapsed from an ISO start, in a compact ship's-log form; ticks live (see below).
 function elapsedText(iso) {
@@ -793,6 +863,21 @@ function renderRow(run, isOpen) {
   if (cd.title) c.title = cd.title;
   row.appendChild(c);
 
+  // which model(s) the run used — a compact chip in its own column (#151). Primary
+  // model labelled, "+N" hints the rest; the full %-per-model split is in the tooltip
+  // and the expanded ledger. The cell is ALWAYS appended (empty when there's no model
+  // info) so the shared grid template stays aligned across every row and lane.
+  const mCell = $("span", "s-model-cell");
+  const mi = modelInfo(run);
+  if (mi) {
+    const chip = $("span", "s-model");
+    chip.appendChild(document.createTextNode(mi.primary.label));
+    if (mi.count > 1) chip.appendChild($("span", "s-model-more", "+" + (mi.count - 1)));
+    chip.title = "models — " + modelSummary(mi);
+    mCell.appendChild(chip);
+  }
+  row.appendChild(mCell);
+
   if (run.recent) {
     // A completed voyage: show when it landed (static), not a live-ticking clock.
     const when = $("span", "s-when");
@@ -977,6 +1062,40 @@ function renderLedger(run) {
     tfoot.appendChild(document.createTextNode("tokens: "));
     tfoot.appendChild($("span", "ptr", tparts.join(" · ")));
     block.appendChild(tfoot);
+  }
+  // %-per-model split (#151) — WHICH models the run used and how the work divided,
+  // as a stacked share bar + legend. Uses token share where present, else cost
+  // share. Omitted when there's no model breakdown (older/empty file).
+  const mi = modelInfo(run);
+  if (mi) {
+    const split = $("div", "model-split");
+    split.appendChild($("div", "msplit-h", mi.count > 1 ? "model usage" : "model"));
+    const haveShares = mi.models.some((m) => typeof m.share === "number");
+    if (haveShares) {
+      const bar = $("div", "model-bar");
+      for (const m of mi.models) {
+        const seg = $("div", "seg");
+        seg.style.background = m.color;
+        seg.style.width = (m.share != null ? Math.max(m.share * 100, 0) : 0) + "%";
+        seg.style.flex = m.share != null ? "0 0 auto" : "1 1 auto";
+        seg.title = m.label + (m.share != null ? " — " + Math.round(m.share * 100) + "%" : "");
+        bar.appendChild(seg);
+      }
+      split.appendChild(bar);
+    }
+    const legend = $("div", "model-legend");
+    for (const m of mi.models) {
+      const item = $("div", "mitem");
+      const sw = $("span", "msw"); sw.style.background = m.color; item.appendChild(sw);
+      const nm = $("span", "mname", m.label); nm.title = m.full; item.appendChild(nm);
+      if (m.share != null) item.appendChild($("span", "mpct", Math.round(m.share * 100) + "%"));
+      const tokTxt = (typeof m.tokens === "number") ? compactTok(m.tokens) + " tok"
+        : (typeof m.cost === "number") ? money(m.cost) : null;
+      if (tokTxt) item.appendChild($("span", "mtok", tokTxt));
+      legend.appendChild(item);
+    }
+    split.appendChild(legend);
+    block.appendChild(split);
   }
   const parts = [];
   if (c.present) {

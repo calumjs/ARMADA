@@ -140,7 +140,16 @@
         "costSince": "2026-07-04T09:00:00.000Z",
         "estRatePerMin": 0.03,
         "estTotalCost": null,
-        "updatedAt": "2026-07-04T11:40:00.000Z"
+        "updatedAt": "2026-07-04T11:40:00.000Z",
+        "modelUsage": [
+          {
+            "model": "claude-opus-4-8",
+            "tokens": 1557000,
+            "cost": 4.12,
+            "tokenShare": 1,
+            "costShare": 1
+          }
+        ]
       },
       "recent": false,
       "outcome": null,
@@ -216,7 +225,23 @@
         "costSince": "2026-07-04T06:00:00.000Z",
         "estRatePerMin": 0.03,
         "estTotalCost": null,
-        "updatedAt": "2026-07-04T11:40:00.000Z"
+        "updatedAt": "2026-07-04T11:40:00.000Z",
+        "modelUsage": [
+          {
+            "model": "claude-opus-4-8",
+            "tokens": 2521000,
+            "cost": 5.91,
+            "tokenShare": 0.8317387000989772,
+            "costShare": 0.8602620087336245
+          },
+          {
+            "model": "claude-haiku-4-5",
+            "tokens": 510000,
+            "cost": 0.96,
+            "tokenShare": 0.16826129990102276,
+            "costShare": 0.13973799126637554
+          }
+        ]
       },
       "recent": false,
       "outcome": null,
@@ -284,7 +309,16 @@
         "costSince": null,
         "estRatePerMin": 0.03,
         "estTotalCost": null,
-        "updatedAt": "2026-07-04T11:40:00.000Z"
+        "updatedAt": "2026-07-04T11:40:00.000Z",
+        "modelUsage": [
+          {
+            "model": "claude-opus-4-8",
+            "tokens": 2039000,
+            "cost": 5.03,
+            "tokenShare": 1,
+            "costShare": 1
+          }
+        ]
       },
       "recent": false,
       "outcome": null,
@@ -352,7 +386,16 @@
         "costSince": null,
         "estRatePerMin": 0.03,
         "estTotalCost": null,
-        "updatedAt": "2026-07-04T11:40:00.000Z"
+        "updatedAt": "2026-07-04T11:40:00.000Z",
+        "modelUsage": [
+          {
+            "model": "claude-opus-4-8",
+            "tokens": 1235000,
+            "cost": 3.44,
+            "tokenShare": 1,
+            "costShare": 1
+          }
+        ]
       },
       "recent": false,
       "outcome": null,
