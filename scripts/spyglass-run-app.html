@@ -885,11 +885,31 @@ setInterval(() => {
 
 // ---- polling --------------------------------------------------------------
 let lastStamp = null;
+let bootVersion = null;       // appVersion captured on the first successful load
+let pendingVersion = null;    // a differing appVersion seen once — reload only if it persists (debounce)
 async function poll() {
   try {
     const res = await fetch("./run-state.json?t=" + Date.now(), { cache: "no-store" });
     if (res.ok) {
       const state = await res.json();
+      // Auto-reload when a NEW dashboard version ships (SKILL §6). Capture the
+      // boot version on first load; thereafter, if the snapshot carries a
+      // DIFFERENT appVersion, reload to load the new UI — but only after the new
+      // value repeats on a second consecutive poll (debounce), so a mid-deploy
+      // snapshot can't thrash. If appVersion is absent (older driver) this is
+      // inert: we never reload, and the app data-polls exactly as before.
+      const ver = state.appVersion;
+      if (ver == null) {
+        // Absent stamp (older driver / unreadable app): fully inert — never reload,
+        // and clear any pending debounce so a null gap can't stand in for a
+        // consecutive confirming poll (reload needs two ACTUAL equal readings).
+        pendingVersion = null;
+      } else if (bootVersion == null) {
+        bootVersion = ver;
+      } else if (ver !== bootVersion) {
+        if (pendingVersion === ver) { location.reload(); return; }
+        pendingVersion = ver;
+      } else pendingVersion = null;
       if (state.generatedAt !== lastStamp) { lastStamp = state.generatedAt; render(state); }
     }
   } catch (e) {
