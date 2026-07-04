@@ -450,6 +450,16 @@ The dashboard shows the phase everywhere: the compact row (`~$X est` / `accruing
 final `$X`), a **phase banner** on the ledger card, and the caveated **fleet cost**. A **queued** run
 (not yet building) shows `—`, not an estimate — nothing is burning yet.
 
+**A completed run shows its final cost, or `—` — never a misleading `$0.00` (#121).** A
+terminal (shipped / merged / blocked) run reads the **final** figure from `out/costs/<run>.json`
+when a *priced* cost was recorded; when the file is **absent**, or present but has **no priced
+usage** (an all-unpriced codex/gpt run — the producer writes `totalCost: null`, never a `0`
+sum), the row degrades to a graceful **`—`**. The dashboard **never** renders `$0.00` for a
+terminal run: a recorded total that is not a *positive* number is treated as no-data (`—`), and
+a genuine sub-cent cost reads **`<$0.01`** rather than rounding to `$0.00`. This is enforced
+**read-only, dashboard-side** — it holds whether or not the crows-nest producer finalised the
+file (crows-nest §8g.ii finalises at ship where it can; the view degrades regardless).
+
 ### The horizon — a dependency-graph of the waiting runs (#111)
 
 The overview shows what's **under way**; the **horizon** shows what's **waiting** and **why**. Instead

@@ -1301,6 +1301,20 @@ node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-cost-postmorte
   record --run <branch|issue> --final --usage-json '[{ "role": "ship", ... }]'
 ```
 
+**Always finalise at ship — even with no new usage (so a shipped run has a definitive
+figure, never a stale accruing one or a misleading `$0.00`).** The ship reconcile (§5) is
+the one point that MUST run this `record --final`, *even when there is no new usage to add*
+(the shipped run added nothing since the last reconcile, or its usage couldn't be
+extracted). Pass an empty usage payload (`--usage-json '[]'`) — the producer still writes
+(or re-stamps) `out/costs/<run>.json` with `final: true`, latching whatever real usage
+accumulated. This guarantees every shipped run ends with a **finalised** file, so the
+read-only dashboard renders the **final** figure — or, when no *priced* usage was ever
+recorded (e.g. an all-unpriced codex/gpt run, or nothing extracted), a graceful **`—`**
+(#121). The producer writes `totalCost: null` when nothing is priced, and the dashboard
+degrades to `—` **regardless** of whether this write happened at all — a terminal run never
+shows `$0.00`. This write is still best-effort/side-channel (§8g.iv): if it's skipped or
+fails, the dashboard simply shows `—` for that run's cost, never a wrong number.
+
 #### 8g.iii Expose the scheduler-state (waiting-runs graph) at scheduling (§2c)
 
 After building the cross-track graph and selecting the frontier (§2b/§2c) — and **after** the

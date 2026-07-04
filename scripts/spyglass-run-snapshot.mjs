@@ -514,8 +514,15 @@ function normalizeCost(cost) {
     cacheWrite: num(m.cacheWrite ?? m.cache_write ?? m.cacheW),
     cost: num(m.cost),
   })) : [];
+  // totalCost is only a real number when at least one PRICED model contributed.
+  // A run whose only usage is unpriced (codex / gpt — the review second lens) has
+  // NO priced cost: the producer writes `totalCost:null`, and the fallback below
+  // must NOT reduce a list of all-null model costs to a misleading `0` — a terminal
+  // run with unpriced-only usage must degrade to `—`, never `$0.00` (#121). So sum
+  // only the priced models, and yield null when none are priced.
+  const anyPriced = models.some((m) => typeof m.cost === 'number');
   const totalCost = num(d.totalCost ?? d.total_cost) ??
-    (models.length ? models.reduce((a, m) => a + (m.cost || 0), 0) : null);
+    (anyPriced ? models.reduce((a, m) => a + (typeof m.cost === 'number' ? m.cost : 0), 0) : null);
   return {
     present: true,
     pointer: cost.pointer,
