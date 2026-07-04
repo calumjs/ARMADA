@@ -253,9 +253,10 @@ The dashboard makes **zero mutations**. Every source it touches is a read:
   scan (#113) adds only more **read** list queries — it stays inside the same read-verb allowlist.
 - **Local disk (reads only):** `git worktree list` (to resolve a run's on-disk worktree path);
   `out/costs/_runs.json` (the crows-nest-written run→(branch, worktree) map, so an **in-flight** run's
-  branch/worktree/folder resolve **before** a PR exists); and `out/costs/<run>.json` (the per-model
-  cost post-mortem, **consumed** when present). The **driver never PRODUCES** any of these — it only
-  reads them. The producer is **crows-nest-side** (`spyglass-cost-postmortem.mjs`, crows-nest §8g),
+  branch/worktree/folder resolve **before** a PR exists); `out/costs/<run>.json` (the per-model
+  cost post-mortem, **consumed** when present); and `out/costs/_schedule.json` (the crows-nest
+  scheduler-state — the waiting-runs dependency graph, **consumed** when present; see **The horizon**
+  below). The **driver never PRODUCES** any of these — it only reads them. The producer is **crows-nest-side** (`spyglass-cost-postmortem.mjs`, crows-nest §8g),
   writing **only** under `out/costs/` (gitignored). Keeping the writer out of the read-only driver is
   what preserves the driver's zero-mutation guarantee.
 
@@ -292,10 +293,13 @@ The manifest **groups** are derived from the real voyage stages (see the mapping
 **queued** = Queued; **building** = Building; **reviewing** = PR opened + In review; **awaiting-merge**
 = Awaiting merge; **done** = Merged + Shipped; and **blocked** overrides all of them for any blocked
 run. The snapshot emits each run's `group` and a top-level `rollup` object (counts per group +
-`inFlight` + `totalCost` + `costKnown` + `estIncluded` + `recent` + `shippedToday`), **additively —
-schema 4** (an older snapshot is regrouped client-side against the same rule; a schema-2 snapshot with
-no `recentRuns` simply shows no harbour lane; a pre-4 snapshot without the cost estimate fields just
-shows recorded cost or `n/a`, never a wrong figure). **`estIncluded`** flags that `totalCost` folds in
+`inFlight` + `totalCost` + `costKnown` + `estIncluded` + `recent` + `shippedToday` + `waiting` +
+`eligible` + `held`), **additively — schema 5** (an older snapshot is regrouped client-side against the
+same rule; a schema-2 snapshot with no `recentRuns` simply shows no harbour lane; a pre-4 snapshot
+without the cost estimate fields just shows recorded cost or `n/a`, never a wrong figure; a pre-5
+snapshot without the `scheduler` block simply shows no horizon graph — the waiting runs stay in the
+voyage list as before). The waiting-runs **`scheduler`** block (schema 5, #111) is documented under
+**The horizon** below. **`estIncluded`** flags that `totalCost` folds in
 non-final (estimated / accruing) figures, so the manifest caveats it (**`~$X · incl. live estimates`**)
 rather than presenting a moving number as settled.
 
@@ -445,6 +449,75 @@ Two things fix this, keeping the dashboard **strictly read-only**:
 The dashboard shows the phase everywhere: the compact row (`~$X est` / `accruing…` / `$X so far` /
 final `$X`), a **phase banner** on the ledger card, and the caveated **fleet cost**. A **queued** run
 (not yet building) shows `—`, not an estimate — nothing is burning yet.
+
+### The horizon — a dependency-graph of the waiting runs (#111)
+
+The overview shows what's **under way**; the **horizon** shows what's **waiting** and **why**. Instead
+of a flat, ambiguous list of queued issues, the waiting runs render as a **dependency graph** — the
+same cross-track dependency/conflict graph [`crows-nest`](../crows-nest/SKILL.md) builds every tick
+(§2b/§2c) — so an operator sees at a glance **what's runnable now vs held behind a prerequisite**, and
+the order the fleet will work them. It sits between the manifest and the in-flight voyages; the waiting
+runs move **out** of the voyage list into the graph (no double-listing). Read-only, live-updating on the
+poll, ARMADA-themed to match the overview.
+
+- **Nodes = queued/held runs** (+ any still-in-flight prerequisite they wait on), laid out in
+  **dependency-depth columns** (prerequisites left, dependents right). **Directed edges** are the §2b
+  relationships: hard prerequisites (`depends on #N` / `blocked by #N`), **same-file** and
+  **shared-lockfile** conflicts (serialise), and **base-about-to-move** — each styled (solid / dashed /
+  dotted) with a legend, and an SVG arrowhead pointing at the prerequisite.
+- **Accurate Eligible / Held status — NOT the mock's "Feasibility".** Each node shows a real status from
+  the scheduler state: **Eligible** (armed, no unsatisfied edge — on the **runnable frontier**) or
+  **Held**, carrying the **reason** verbatim from crows-nest §2e — *"waiting on #N"* / *"conflicts with
+  #M on `<file>`"* / *"lockfile merge #M first"* / *"base #K merging first"* / *"queued: N/M builds in
+  flight"*. A referenced prerequisite still in flight shows its own real stage (**Building** / **In
+  review**).
+- **The runnable frontier is visually distinguished.** Eligible hulls **glow brass** ("⛵ clear to
+  sail"); held hulls are **dimmed with an amber seam** and their reason chips — "these can start now;
+  those wait on these".
+
+**Where the graph comes from — producer first, inference as graceful degrade.** The scheduler state
+(edges + held reasons) is **crows-nest-internal**, not in GitHub labels. The producer that exposes it
+read-only is `spyglass-cost-postmortem.mjs schedule` (crows-nest §2c/§8g), which writes
+`out/costs/_schedule.json`; the **strictly read-only** driver **consumes** that file when present
+(`source: "producer"`, authoritative). When it's **absent**, the driver does **not** fabricate — it
+degrades to a **best-effort** graph inferred from the issue/PR bodies + file overlap it already
+fetched (`source: "inferred"`, clearly badged **"best-effort graph"** on the panel), dropping ubiquitous
+repo-meta files so prose overlap doesn't wire spurious edges. With **no** waiting runs the panel is
+hidden; with waiting runs but **no** edges it degrades further to a **flat frontier list** ("every hull
+is clear to sail"). It never renders a graph it can't substantiate.
+
+The snapshot carries a top-level **`scheduler`** block (additive; `rollup` gains `waiting` / `eligible` /
+`held`). Its shape — and the `_schedule.json` the producer writes — is:
+
+```json
+{
+  "scheduler": {
+    "present": true,
+    "source": "producer",            // "producer" | "inferred" | "none"
+    "note": null,                    // best-effort caveat when inferred
+    "maxConcurrentBuilds": 3,
+    "inFlightBuilds": 1,
+    "nodes": [
+      { "unit": "issue", "number": 142, "title": "Add CSV export",
+        "waiting": true, "eligible": true, "held": false, "status": "Eligible",
+        "reasons": [], "files": [] },
+      { "unit": "issue", "number": 143, "title": "Wire the export button",
+        "waiting": true, "eligible": false, "held": true, "status": "Held",
+        "reasons": ["waiting on #142"], "files": [] }
+    ],
+    "edges": [
+      { "from": 143, "to": 142, "kind": "depends", "file": null,
+        "reason": "waiting on #142", "satisfied": false }
+    ]
+  }
+}
+```
+
+The producer accepts the graph crows-nest built (`schedule --nodes-json … --edges-json … --max-builds N
+--in-flight N`, or a whole doc on stdin) and writes exactly the `nodes` / `edges` the driver reads;
+`kind` is one of `depends` / `same-file` / `lockfile` / `base`. Keep the schema in **lockstep** with
+`buildScheduler` in `spyglass-run-snapshot.mjs`, `renderHorizon` in `spyglass-run-app.html`, and the
+`schedule` subcommand in `spyglass-cost-postmortem.mjs`.
 
 ### ARMADA nautical theme + live motion
 

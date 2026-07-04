@@ -40,6 +40,17 @@
 //       Record/refresh out/costs/_runs.json[<issue>] = { issue, branch, worktree, startedAt }
 //       so the driver surfaces in-flight branch/worktree/folder before a PR exists.
 //
+//   schedule --nodes-json '<json>' --edges-json '<json>' [--max-builds N]
+//            [--in-flight N] [--tick N] [--out <dir>]   (or a whole doc on stdin)
+//       Expose the crows-nest scheduler-state (the waiting-runs dependency graph it
+//       builds each tick, §2b/§2c) read-only for the dashboard: write
+//       out/costs/_schedule.json = { schema, generatedAt, tick, maxConcurrentBuilds,
+//       inFlightBuilds, nodes:[{ unit, number, held, eligible, reasons[], files[] }],
+//       edges:[{ from, to, kind:'depends'|'same-file'|'lockfile'|'base', file?, reason,
+//       satisfied }] }. The strictly read-only spyglass driver CONSUMES this file when
+//       present (authoritative); absent it, it infers a best-effort graph itself. This
+//       is the producer half of the waiting-graph view (spyglass §6, #111).
+//
 //   check | --check
 //       Doctor: print the baked price table + the resolved out dir. Writes NOTHING.
 
@@ -76,7 +87,9 @@ function priceFor(model) {
 function parseArgs(argv) {
   const args = { _: [] };
   const valued = new Set(['--run', '--repo', '--out', '--usage-json', '--usage-file',
-    '--issue', '--branch', '--worktree', '--started-at']);
+    '--issue', '--branch', '--worktree', '--started-at',
+    '--nodes-json', '--edges-json', '--nodes-file', '--edges-file',
+    '--max-builds', '--in-flight', '--tick']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--check') { args.check = true; continue; }
@@ -233,6 +246,79 @@ function mapRun(args) {
 }
 
 // ---------------------------------------------------------------------------
+// schedule — expose the crows-nest scheduler-state (waiting-runs graph) read-only
+// for the dashboard (#111). crows-nest builds this graph every tick (§2b/§2c); this
+// writes it to out/costs/_schedule.json, which the strictly read-only spyglass
+// driver consumes (authoritative) when present. Additive, side-channel (§8g).
+// ---------------------------------------------------------------------------
+function schedule(args) {
+  const dir = outDirOf(args);
+  const file = path.join(dir, '_schedule.json');
+  const parseArr = (json, fileArg) => {
+    let raw = json;
+    if (raw == null && fileArg) raw = readFileSync(fileArg, 'utf8');
+    raw = (raw || '').trim();
+    if (!raw) return null;
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { throw new Error('schedule payload is not valid JSON'); }
+    return parsed;
+  };
+  let nodes = parseArr(args.nodesJson, args.nodesFile);
+  let edges = parseArr(args.edgesJson, args.edgesFile);
+  let tick = args.tick, maxBuilds = args.maxBuilds, inFlight = args.inFlight;
+  // Whole-doc form on stdin ({ nodes, edges, tick, maxConcurrentBuilds, inFlightBuilds }).
+  if (nodes == null && edges == null) {
+    let raw = '';
+    try { raw = readFileSync(0, 'utf8'); } catch { raw = ''; }
+    raw = raw.trim();
+    if (raw) {
+      let doc;
+      try { doc = JSON.parse(raw); } catch { throw new Error('schedule payload is not valid JSON'); }
+      nodes = doc.nodes; edges = doc.edges;
+      if (tick == null) tick = doc.tick;
+      if (maxBuilds == null) maxBuilds = doc.maxConcurrentBuilds;
+      if (inFlight == null) inFlight = doc.inFlightBuilds;
+    }
+  }
+  nodes = Array.isArray(nodes) ? nodes : [];
+  edges = Array.isArray(edges) ? edges : [];
+  const normNodes = nodes.map((n) => {
+    const out = {
+      unit: n.unit === 'pr' ? 'pr' : 'issue',
+      number: num(n.number),
+      held: !!n.held,
+      eligible: n.eligible != null ? !!n.eligible : !n.held,
+      reasons: Array.isArray(n.reasons) ? n.reasons.map(String) : [],
+      files: Array.isArray(n.files) ? n.files.map(String) : [],
+    };
+    if (n.title != null) out.title = String(n.title);
+    return out;
+  }).filter((n) => Number.isFinite(n.number));
+  const KINDS = ['depends', 'same-file', 'lockfile', 'base'];
+  const normEdges = edges.map((e) => ({
+    from: num(e.from), to: num(e.to),
+    kind: KINDS.includes(e.kind) ? e.kind : 'depends',
+    file: e.file != null ? String(e.file) : null,
+    reason: e.reason != null ? String(e.reason) : null,
+    satisfied: !!e.satisfied,
+  })).filter((e) => Number.isFinite(e.from) && Number.isFinite(e.to));
+  const doc = {
+    schema: 1,
+    generatedAt: new Date().toISOString(),
+    tick: num(tick),
+    maxConcurrentBuilds: num(maxBuilds),
+    inFlightBuilds: num(inFlight),
+    nodes: normNodes,
+    edges: normEdges,
+  };
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(file, JSON.stringify(doc, null, 2));
+  const rel = path.relative(process.cwd(), file).replace(/\\/g, '/');
+  console.log(`spyglass-cost: ${rel} · ${normNodes.length} node(s) · ${normEdges.length} edge(s) · ${normNodes.filter((n) => n.eligible).length} eligible`);
+  return file;
+}
+
+// ---------------------------------------------------------------------------
 // check — doctor (writes nothing)
 // ---------------------------------------------------------------------------
 function check(args) {
@@ -256,8 +342,10 @@ function main() {
     if (args.check || cmd === 'check') return check(args);
     if (cmd === 'record') return record(args);
     if (cmd === 'map') return mapRun(args);
+    if (cmd === 'schedule') return schedule(args);
     console.error('usage: spyglass-cost-postmortem.mjs record --run <branch|issue> [--final] [--usage-json <json>|--usage-file <path>|stdin]');
     console.error('       spyglass-cost-postmortem.mjs map --issue <n> --branch <b> [--worktree <path>] [--started-at <iso>]');
+    console.error('       spyglass-cost-postmortem.mjs schedule --nodes-json <json> --edges-json <json> [--max-builds N] [--in-flight N] [--tick N]');
     console.error('       spyglass-cost-postmortem.mjs check');
     process.exitCode = 2;
   } catch (e) {

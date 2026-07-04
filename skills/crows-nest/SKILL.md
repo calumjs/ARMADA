@@ -595,6 +595,14 @@ crows-nest: #142 build completed → PR #150 opened (armada:done)
 crows-nest: #150 review pipeline completed → merged (armada:merged)
 ```
 
+**Expose the schedule read-only for the dashboard (spyglass §6, #111).** The dependency/conflict graph
+you just built (§2b) and the held reasons you just reported are **crows-nest-internal** — not in GitHub
+labels — so [`spyglass`](../spyglass/SKILL.md)'s **horizon** view (its waiting-runs dependency graph)
+can't see them without help. If the `costs` key isn't `"off"` (§8g), hand the graph to the spyglass
+producer so the strictly read-only dashboard can render it — **best-effort, side-channel, never
+blocking the tick** (§8g.iii). This is a *view* of the schedule you already computed; it never changes
+the scheduling decision (§2c).
+
 ### 2f. Opportunistic background recon — dispatch lighthouse when capacity is free
 
 Every dispatch above is **reactive** — it acts on work a human already filed (issues) or a PR that
@@ -1293,10 +1301,34 @@ node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-cost-postmorte
   record --run <branch|issue> --final --usage-json '[{ "role": "ship", ... }]'
 ```
 
-#### 8g.iii Gating and the discipline
+#### 8g.iii Expose the scheduler-state (waiting-runs graph) at scheduling (§2c)
 
-- **Gated by `costs` (§1).** `"off"` → never map, never record (the dashboard shows `n/a` cost + no
-  in-flight worktree — degrades cleanly). Default `"on"` when absent.
+After building the cross-track graph and selecting the frontier (§2b/§2c) — and **after** the
+consequential dispatches have landed — expose the schedule read-only so spyglass's **horizon** view can
+render it (spyglass §6, #111). Hand the same nodes + edges you already computed to the producer's
+`schedule` subcommand, which writes `out/costs/_schedule.json` (the strictly read-only driver consumes
+it authoritatively; absent it, the driver infers a best-effort graph itself):
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-cost-postmortem.mjs" \
+  schedule --max-builds <maxConcurrentBuilds> --in-flight <builds-in-flight> --tick <n> \
+  --nodes-json '[{ "unit":"issue","number":143,"held":true,"eligible":false,
+                   "reasons":["waiting on #142"] }]' \
+  --edges-json '[{ "from":143,"to":142,"kind":"depends","reason":"waiting on #142" }]'
+```
+
+`kind` is one of `depends` / `same-file` / `lockfile` / `base` (the §2b edge kinds); each held node's
+`reasons` are the **same strings** §2e reports ("waiting on #N" / "conflicts with #M on `<file>`" /
+"lockfile merge #M first" / "base #K merging first" / "queued: N/M builds in flight"). It's a *view* of
+the schedule, written once per tick — it never influences the decision (§2c). Same best-effort,
+side-channel, `costs`-gated discipline as the cost writes above: if it errors or the producer is absent,
+the tick is unaffected (the dashboard just infers the graph itself).
+
+#### 8g.iv Gating and the discipline
+
+- **Gated by `costs` (§1).** `"off"` → never map, never record, never expose the schedule (the
+  dashboard shows `n/a` cost + no in-flight worktree, and infers the waiting-graph itself — degrades
+  cleanly). Default `"on"` when absent.
 - **Never fatal.** If the producer errors or isn't available, the tick is **completely unaffected** —
   swallow any failure (log at most once, prefixed `crows-nest cost:`) and carry on. The producer itself
   never throws (it prints + exits non-zero), so a failed write is always log-and-ignore.
