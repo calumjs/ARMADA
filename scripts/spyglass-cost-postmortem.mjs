@@ -55,6 +55,7 @@
 //       Doctor: print the baked price table + the resolved out dir. Writes NOTHING.
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import path from 'path';
 
 // ---------------------------------------------------------------------------
@@ -107,8 +108,41 @@ function parseArgs(argv) {
   return args;
 }
 
+// Resolve the CANONICAL repo root for cost data — the MAIN worktree, not whichever
+// isolated build worktree this producer happens to be invoked from (#157). crows-nest
+// dispatches each build into `.claude/worktrees/<agent>/`, and a reconcile that runs
+// with its cwd inside that worktree would otherwise write `out/costs/<run>.json` there
+// — where the read-only dashboard driver (which reads the MAIN repo's `out/costs/`)
+// never looks, and which is DELETED when the worktree is cleaned up on ship. So a run's
+// real cost + token data never survived to the board.
+//
+// `git rev-parse --git-common-dir` yields the SHARED `.git` (the main repo's) even from
+// a linked worktree; its parent is the main worktree root. Every run — from any
+// worktree — thus consolidates its cost file into the one main-repo `out/costs/`, where
+// the driver reads and where it outlives worktree cleanup. Read-only w.r.t. git; on any
+// failure (not a git repo, bare repo, git absent) it degrades to `cwd` — never throws.
+function mainRepoRoot() {
+  try {
+    const common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (!common) return process.cwd();
+    // For the standard `<root>/.git` layout (main or linked worktree) the parent of the
+    // common git dir is the main worktree root.
+    const root = path.dirname(common);
+    return root || process.cwd();
+  } catch {
+    return process.cwd();
+  }
+}
+
+// The cost data dir. An explicit `--out` always wins (tests / an operator override).
+// Absent it, consolidate into the MAIN repo's `out/costs/` (#157) rather than the raw
+// cwd, so a reconcile invoked from inside a build worktree still lands where the
+// dashboard driver reads and survives worktree cleanup.
 function outDirOf(args) {
-  return path.join(args.out || process.cwd(), 'out', 'costs');
+  const base = args.out || mainRepoRoot();
+  return path.join(base, 'out', 'costs');
 }
 
 // Read `budget.perRunUSD` from .armada/config.json (read-only), for the
