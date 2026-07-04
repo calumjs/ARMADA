@@ -100,6 +100,23 @@ feature is a release" — a feature here *is* a new or updated skill — any PR 
 (or a bundled `scripts/` file a skill invokes) must bump `.claude-plugin/plugin.json` `version` in
 the same PR. No version bump → downstream installs silently stay on the old skill.
 
+**Version-bump conflicts auto-resolve.** Because *every* PR bumps the same `version` line, two PRs in
+flight collide on it — the second to merge would need a hand-resolve. A custom git **merge driver**
+kills that: `.gitattributes` marks `.claude-plugin/plugin.json` with `merge=semver-higher`, and
+[`scripts/semver-higher-merge.mjs`](scripts/semver-higher-merge.mjs) 3-way-merges the file and, for a
+conflict that is *only* the `version` line, keeps the **higher** semver and drops the markers (any
+*other* conflict is still left for a human). Git merge drivers are configured per-clone (never
+committed — a repo can't run code on your machine just by being cloned), so **run this once after
+cloning**:
+
+```bash
+node scripts/setup-merge-driver.mjs      # registers the driver for this clone
+```
+
+Until you run it, git falls back to a normal conflict — safe, just not automatic. Verify with
+`node scripts/semver-higher-merge.test.mjs` (spins up a throwaway repo, merges two branches bumping to
+different versions, asserts a clean merge on the higher one).
+
 A couple of related distribution conventions:
 
 - **Bundled-file paths use `${CLAUDE_PLUGIN_ROOT}`.** Any script or asset a *skill* references at
