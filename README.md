@@ -52,6 +52,11 @@ it auto-detects your build/test/lint/run commands and base branch, writes `.arma
 creates the ARMADA labels, and tells you how to arm the watch. You don't hand-configure
 anything — that knowledge lives in the skill, so any install self-sets-up.
 
+> **What you need installed.** Only `gh` (authenticated), Node.js, and git are **required**; every
+> other tool is **optional with a documented fallback**. See **[REQUIREMENTS.md](REQUIREMENTS.md)** for
+> the full reference — what each external tool (ElevenLabs, Codex, `ffmpeg`, Playwright, `gh`) is for,
+> required vs optional, how to provide it, its alternatives, and exactly what happens without it.
+
 > **Prefer not to use the plugin system?** Drop **both** the `skills/` **and** `scripts/` folders into
 > your project's `.claude/` (i.e. `.claude/skills/` and `.claude/scripts/`) and run `/commission` —
 > project-scoped, and it works **out of the box**. Two things to know:
@@ -94,6 +99,23 @@ once: a new skill didn't appear for installs until the version went `0.1.0` → 
 feature is a release" — a feature here *is* a new or updated skill — any PR that touches `skills/`
 (or a bundled `scripts/` file a skill invokes) must bump `.claude-plugin/plugin.json` `version` in
 the same PR. No version bump → downstream installs silently stay on the old skill.
+
+**Version-bump conflicts auto-resolve.** Because *every* PR bumps the same `version` line, two PRs in
+flight collide on it — the second to merge would need a hand-resolve. A custom git **merge driver**
+kills that: `.gitattributes` marks `.claude-plugin/plugin.json` with `merge=semver-higher`, and
+[`scripts/semver-higher-merge.mjs`](scripts/semver-higher-merge.mjs) 3-way-merges the file and, for a
+conflict that is *only* the `version` line, keeps the **higher** semver and drops the markers (any
+*other* conflict is still left for a human). Git merge drivers are configured per-clone (never
+committed — a repo can't run code on your machine just by being cloned), so **run this once after
+cloning**:
+
+```bash
+node scripts/setup-merge-driver.mjs      # registers the driver for this clone
+```
+
+Until you run it, git falls back to a normal conflict — safe, just not automatic. Verify with
+`node scripts/semver-higher-merge.test.mjs` (spins up a throwaway repo, merges two branches bumping to
+different versions, asserts a clean merge on the higher one).
 
 A couple of related distribution conventions:
 
@@ -159,6 +181,13 @@ A couple of related distribution conventions:
     "minIdleToDispatch": true, // BOOLEAN guard (default true): only auto-dispatch when the runnable frontier is fully idle. Never overrides existing-work-always-wins.
     "budget": { "maxRuntimeSec": 300, "maxPlaywrightSec": 120, "maxIssuesPerRun": 3, "maxFindings": 20 }
   },
+  // Launch the spyglass dashboard alongside the crows-nest watch — ON by default (a read-only view).
+  //   "off"   → nothing auto-launches; manual /spyglass still works
+  //   "run"   → the per-run operations dashboard (default)
+  //   "chart" → the whole-fleet sea-chart
+  //   "both"  → both views
+  // crows-nest hands the launch line when you arm the watch; the view serves over http://127.0.0.1.
+  "spyglass": "run",
   // Your project's commands. Any can be omitted; skills will infer or ask.
   "commands": {
     "build":  "npm run build",

@@ -201,6 +201,7 @@ overwriting** — the user may have hand-tuned it.
     }
   },
   "logbook": "off",               // auto-record walkthrough? shipwright on PR open + crows-nest at merge/ship. "off" | "user-visible" | "all". Default "off" (opt-in).
+  "spyglass": "run",              // launch the spyglass dashboard alongside the crows-nest watch? "off" | "run" (per-run ops dashboard) | "chart" (sea-chart) | "both". Default "run" (ON — read-only view; crows-nest §6 hands the launch line). Set "off" to disable.
   "publicIntake": {                // screen UNSOLICITED public issues (no trigger label) and charter the safe, good ones. The ONLY track that reads untrusted input.
     "enabled": false,              // master switch. Default false (opt-in) — the track is inert until on. Reads attacker-controllable text, so off by default.
     "authors": "",                 // optional allowlist of public authors to consider. "" = anyone (the point of the feature). Same form as top-level "authors".
@@ -315,6 +316,18 @@ shipwright runs in a background subagent and *defers* the walkthrough, so crows-
 **PR-merged / issue-shipped reconcile** instead — idempotently (never double-records), verified before
 posting, with a bounded backfill for already-merged PRs, and fully side-channel. So `"user-visible"` /
 `"all"` covers both the open-time (shipwright) and merge-time (crows-nest) paths from one setting.
+
+`spyglass` makes the [`spyglass`](../spyglass/SKILL.md) dashboard **part of the default fleet
+experience** — running the fleet the normal way (commission → arm the crows-nest watch) also brings
+up the live view, no extra step. **Unlike the opt-in autonomy keys above, write `"run"` (ON)** — a
+fresh repo gets the per-run operations dashboard by default. spyglass is **read-only w.r.t. the
+fleet** (a view, never a controller — spyglass §0), so defaulting it on changes nothing about what
+the fleet builds, reviews, or merges. The value picks which view launches: `"run"` (the per-run ops
+dashboard), `"chart"` (the whole-fleet sea-chart), `"both"`, or `"off"` to auto-launch nothing. When
+it isn't `"off"`, [`crows-nest`](../crows-nest/SKILL.md) §6 hands a spyglass launch line alongside the
+`/loop` arming line (a single `--watch` process that snapshots, **serves the view over a localhost
+http server**, and live-refreshes — the http-serve is why the dashboard renders instead of a blocked
+`file://` fetch; see spyglass §1a). Manual `/spyglass` works regardless of this key.
 
 `publicIntake` gates crows-nest's **public-intake track** (§2g) — the one track that reads
 **unsolicited issues from the general public** (those *without* the trigger label) instead of acting
@@ -510,6 +523,7 @@ and don't arm the loop for them** (both are the user's call):
   foghorn     : flavour="a gruff, proud nautical harbourmaster" · verbosity=normal · gate=terminal · provider="" · voice="" — spoken narrator (set provider/voice for a cloud voice, key via env/.env; set bellCommand to hear it)
   lighthouse  : enabled=false · autoArm=false (defaults) — autonomous recon never auto-runs; run /lighthouse by hand any time (files unarmed backlog issues for human review)
   logbook     : off (default) — shipwright offers walkthrough interactively only; set user-visible or all to auto-record on PR open (see shipwright §9)
+  spyglass    : run (default, ON) — the per-run dashboard launches with the crows-nest watch (read-only view); off | run | chart | both. crows-nest §6 hands the launch line
   publicIntake: enabled=false (default) — never reads public issues; set enabled=true to screen unsolicited public suggestions (untrusted input; defended in layers — crows-nest §2g)
   labels      : armada, armada:underway, armada:done, armada:shipped, armada:reviewing, armada:merged, armada:blocked, armada:considered, armada:flagged, fleet-defect ✓
   chartered   : <e.g. "#84 ci merge-gate (unarmed)" — or "none (offered, declined)" / "none (CI already gates PRs)">
