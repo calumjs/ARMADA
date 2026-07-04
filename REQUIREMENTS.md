@@ -151,9 +151,19 @@ the driver serves its scratch output dir over a **minimal localhost http server*
 See spyglass §1a. This is why the dashboard renders live instead of hanging on "waiting for
 run-state.json …".
 
+## Notes on the quartermaster cost governor
+
+[`quartermaster`](skills/quartermaster/SKILL.md) governs the fleet's spend against optional
+`budget.perRunUSD` / `budget.perDayUSD` keys in `.armada/config.json` (both absent = ungoverned, the
+default). It needs **no extra tooling** — it reads the same read-only cost signals spyglass consumes
+(`out/costs/<run>.json`, written by the cost-postmortem producer when crows-nest's `costs` key is on,
+the default). It never fetches or writes anything, and **degrades open**: no budget → allow; no cost
+data → allow + warn — so a budget can never block the fleet on missing data. crows-nest consults
+`quartermaster check` before dispatching new builds.
+
 ## See also
 
 - [`commission`](skills/commission/SKILL.md) — writes `.armada/config.json`, including the non-secret
-  `foghorn.provider`/`foghorn.voice`, the `logbook` and `spyglass` keys.
+  `foghorn.provider`/`foghorn.voice`, the `logbook`, `spyglass`, and `budget` keys.
 - [Per-repo configuration](README.md#per-repo-configuration) — the full config shape and every key.
 - [Safety](README.md#safety) — the `autoMerge` gate the Codex degrade is conditional on.

@@ -157,6 +157,13 @@ Read `.armada/config.json` from the target repo:
   (gitignored); under the **same best-effort side-channel discipline** as the bell (§8c), cartographer
   (§8d), and logbook (§8f) — it never blocks, fails, or delays the tick. The full convention is §8g.
   Default `"off"` = never produce (the dashboard just shows `n/a` cost + no in-flight worktree).
+- `budget` — the fleet's **spend governor** ([`quartermaster`](../quartermaster/SKILL.md)). An optional
+  object with `perRunUSD` and/or `perDayUSD` (both optional; **absent = ungoverned**, the default). When
+  set, the lookout consults `quartermaster check` **before dispatching new builds (§2d)** and **holds**
+  new build dispatches — with the reason surfaced (§2e) — when today's projected spend would exceed
+  `perDayUSD` or a single run has exceeded `perRunUSD`. Read-only w.r.t. cost data and **degrades open**
+  (no budget → allow; no cost data → allow + warn), so it never blocks the fleet on missing data. The
+  full convention is [`quartermaster`](../quartermaster/SKILL.md); the consult is §2d.
 - `spyglass` — makes the [`spyglass`](../spyglass/SKILL.md) dashboard **part of the default fleet
   experience**: launch it alongside the watch. One of `"off" | "run" | "chart" | "both"`, **default
   `"run"`** (written by [`commission`](../commission/SKILL.md) — ON, since spyglass is a **read-only
@@ -431,7 +438,32 @@ and return — the loop checks again next interval. Don't invent work to look bu
 
 ### 2d. Dispatch the scheduled issue builds
 
-For each issue on the frontier (§2c), within the `maxConcurrentBuilds` budget:
+Before dispatching **any** new build this tick, consult the
+[`quartermaster`](../quartermaster/SKILL.md) cost governor **once** — it reads the same read-only
+cost signals spyglass consumes and returns an allow/pause verdict against the fleet's budgets
+(`.armada/config.json` → `budget.perRunUSD` / `budget.perDayUSD`):
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/quartermaster.mjs" check --json
+```
+
+- **ALLOW** (including the ungoverned "no budget" case and the degrade-open "no cost data" case) —
+  dispatch the frontier's builds normally.
+- **PAUSE** — **hold this tick's *new build dispatches*** and report the quartermaster `reason` as the
+  hold reason (§2e: e.g. *"held: quartermaster — today's projected spend $52.10 would exceed the
+  per-day budget $50.00"*), instead of spending blind. Work already in flight is **never**
+  interrupted — a governor gates *new* spend, it doesn't kill running builds — and the next tick
+  re-evaluates once spend drops back under budget. The ready-PR pipeline (§3) still runs; only new
+  *issue-build* dispatches hold.
+
+`quartermaster check` **always exits 0** and degrades OPEN (no budget → allow; no cost data → allow +
+warn; even an internal error → allow), so this consult can **never block the fleet on missing data or
+a governor bug** — a PAUSE only ever comes from a *real* budget breach. This is a best-effort,
+side-channel read exactly like the cost producer (§8g): if the script is somehow absent, treat it as
+ALLOW and carry on. The full governor convention is [`quartermaster`](../quartermaster/SKILL.md).
+
+For each issue on the frontier (§2c) — once the quartermaster verdict is ALLOW — within the
+`maxConcurrentBuilds` budget:
 
 #### 2d.i Claim it
 
