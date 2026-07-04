@@ -128,12 +128,67 @@
   .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
   .empty .big { font-size: 16px; color: var(--ink); margin-bottom: 6px; }
 
+  /* ---- status roll-up header (multi-run overview) ---- */
+  .rollup {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 12px 14px; margin-bottom: 14px;
+    background: var(--card); border: 1px solid var(--card-b); border-radius: 12px;
+  }
+  .rollup .rl-total { font-weight: 650; color: var(--ink); font-size: 15px; margin-right: 4px; }
+  .rollup .rl-total .n { color: var(--accent); font-family: var(--mono); }
+  .stat {
+    display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 10px;
+    border: 1px solid var(--line); background: var(--chip); border-radius: 999px;
+    color: var(--muted); font-size: 12.5px;
+  }
+  .stat .n { font-family: var(--mono); font-weight: 650; color: var(--ink); font-size: 13.5px; }
+  .stat .lbl { letter-spacing: .02em; }
+  .stat.zero { opacity: .45; }
+  .stat.building .n { color: var(--active); }
+  .stat.reviewing .n { color: #d2a34a; }
+  .stat.awaiting-merge .n { color: var(--done); }
+  .stat.done .n { color: var(--faint); }
+  .stat.blocked { border-color: #4a2020; }
+  .stat.blocked:not(.zero) { background: #1a0f10; }
+  .stat.blocked .n { color: var(--blocked); }
+  .rollup .rl-cost { margin-left: auto; color: var(--muted); font-family: var(--mono); }
+  .rollup .rl-cost .n { color: var(--ink); font-weight: 650; }
+
+  /* ---- compact summary row (the default overview view) ---- */
+  .run { margin-bottom: 10px; }
+  .summary {
+    display: grid; align-items: center; gap: 12px;
+    grid-template-columns: 18px 62px minmax(0, 1fr) auto auto 118px 70px;
+    padding: 11px 14px;
+    background: var(--card); border: 1px solid var(--card-b); border-radius: 12px;
+    cursor: pointer; user-select: none;
+  }
+  .summary:hover { border-color: #2b3a4d; }
+  .summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .run.expanded > .summary { border-color: var(--accent); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  .run.blocked > .summary { border-color: #4a2020; }
+  .chev { color: var(--faint); font-size: 11px; transition: transform .12s ease; text-align: center; }
+  .run.expanded > .summary .chev { transform: rotate(90deg); color: var(--accent); }
+  .summary .s-num { color: var(--done); font-family: var(--mono); font-weight: 650; }
+  .summary .s-title { color: var(--ink); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .summary .s-stage { color: var(--muted); font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+  .summary .s-status { color: var(--accent); font-weight: 600; font-size: 13px; white-space: nowrap; text-align: right; }
+  .summary .s-status.blocked { color: var(--blocked); }
+  .summary .s-cost { color: var(--muted); font-family: var(--mono); text-align: right; }
+  .segbar.mini .seg { width: 9px; height: 9px; border-radius: 2px; }
+  .segbar.mini .seg.active { border-width: 2px; }
+  .run.expanded > .card { border-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+
   @media (max-width: 720px) {
     .card-body { grid-template-columns: 1fr; }
     .row { grid-template-columns: 80px 1fr; }
+    .summary { grid-template-columns: 16px 52px minmax(0, 1fr) auto 64px; }
+    .summary .s-stage, .summary .segbar { display: none; }
+    .rollup .rl-cost { margin-left: 0; }
   }
   @media (prefers-reduced-motion: reduce) {
     .stage.active .dot, .stage.blocked .dot { box-shadow: none; }
+    .chev { transition: none; }
   }
 </style>
 </head>
@@ -195,6 +250,36 @@ window.__renderPlaceholder = true;
 <script>
 "use strict";
 
+// --- multi-run overview: run identity, group fallback, shared segment bar ----
+const runKey = (run) => 'r:' + (run.issueNumber != null ? 'i' + run.issueNumber : 'p' + run.prNumber);
+const expanded = new Set(); // run keys the operator has opened — preserved across polls
+
+// Coarse fleet group — mirrors the driver's groupForStage() so an older snapshot
+// (pre-#108, no run.group) still groups correctly. Keep in lockstep with the driver.
+function groupOf(run) {
+  if (run.group) return run.group;
+  if (run.blocked) return 'blocked';
+  const i = run.activeIndex;
+  if (run.terminal || i >= 10) return 'done';
+  if (i === 8) return 'reviewing';
+  if (i === 6 || i === 7 || i === 9) return 'awaiting-merge';
+  return 'building';
+}
+
+// A 12-segment stage bar, shared by the compact summary row and the detail header.
+function buildSegbar(run, mini) {
+  const bar = $('span', 'segbar' + (mini ? ' mini' : ''));
+  const n = (run.stages || []).length || 12;
+  for (let i = 0; i < n; i++) {
+    const seg = $('span', 'seg');
+    if (run.blocked && i === run.activeIndex) seg.classList.add('blocked');
+    else if (i < run.activeIndex) seg.classList.add('done');
+    else if (i === run.activeIndex) seg.classList.add(run.terminal ? 'done' : 'active');
+    bar.appendChild(seg);
+  }
+  return bar;
+}
+
 // --- header: issue #, title, 12-segment stage bar, cost, status, elapsed -----
 function renderHead(run) {
   const head = $('div', 'card-head' );
@@ -205,16 +290,7 @@ function renderHead(run) {
   const cost = money(run.cost && run.cost.totalCost);
   head.appendChild($('span', 'cost', cost || '$0.00'));
 
-  const bar = $('span', 'segbar');
-  const n = (run.stages || []).length || 12;
-  for (let i = 0; i < n; i++) {
-    const seg = $('span', 'seg');
-    if (run.blocked && i === run.activeIndex) seg.classList.add('blocked');
-    else if (i < run.activeIndex) seg.classList.add('done');
-    else if (i === run.activeIndex) seg.classList.add(run.terminal ? 'done' : 'active');
-    bar.appendChild(seg);
-  }
-  head.appendChild(bar);
+  head.appendChild(buildSegbar(run, false));
 
   const st = $('span', 'status' + (run.blocked ? ' blocked' : ''), run.blocked ? 'Blocked' : esc(run.status));
   head.appendChild(st);
@@ -376,6 +452,86 @@ function renderCard(run) {
   return card;
 }
 
+// --- status roll-up header: counts by group, total in-flight, total cost -----
+const GROUP_LABELS = [
+  ['building', 'building'], ['reviewing', 'reviewing'],
+  ['awaiting-merge', 'awaiting-merge'], ['blocked', 'blocked'], ['done', 'done'],
+];
+function renderRollup(state, runs) {
+  const r = state && state.rollup;
+  const counts = {}; for (const [k] of GROUP_LABELS) counts[k] = 0;
+  let total = 0, costKnown = false;
+  if (r) {
+    for (const [k] of GROUP_LABELS) counts[k] = r[k] || 0;
+    total = r.totalCost || 0; costKnown = !!r.costKnown;
+  } else {
+    // Back-compat: recompute client-side when the snapshot predates the roll-up.
+    for (const run of runs) {
+      const g = groupOf(run); counts[g] = (counts[g] || 0) + 1;
+      const tc = run.cost && run.cost.present ? run.cost.totalCost : null;
+      if (typeof tc === 'number' && Number.isFinite(tc)) { total += tc; costKnown = true; }
+    }
+  }
+  const bar = $('div', 'rollup');
+  const tot = $('div', 'rl-total');
+  tot.appendChild(document.createTextNode('in flight '));
+  tot.appendChild($('span', 'n', String(runs.length)));
+  bar.appendChild(tot);
+  for (const [key, label] of GROUP_LABELS) {
+    const n = counts[key] || 0;
+    const chip = $('span', 'stat ' + key + (n === 0 ? ' zero' : ''));
+    chip.appendChild($('span', 'n', String(n)));
+    chip.appendChild($('span', 'lbl', label));
+    bar.appendChild(chip);
+  }
+  const cost = $('div', 'rl-cost');
+  cost.appendChild(document.createTextNode('total cost '));
+  cost.appendChild($('span', 'n', costKnown ? (money(total) || '$0.00') : 'n/a'));
+  bar.appendChild(cost);
+  return bar;
+}
+
+// --- compact summary row (default view) — click / keyboard to expand ----------
+function renderSummaryRow(run, isOpen) {
+  const num = '#' + (run.issueNumber ?? run.prNumber ?? '?');
+  const row = $('div', 'summary');
+  row.setAttribute('role', 'button');
+  row.setAttribute('tabindex', '0');
+  row.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  row.setAttribute('aria-label', `${num} ${run.title || ''} — ${run.blocked ? 'Blocked' : (run.status || '')} — ${isOpen ? 'expanded' : 'collapsed'}`);
+  row.appendChild($('span', 'chev', '▶'));
+  row.appendChild($('span', 's-num', num));
+  row.appendChild($('span', 's-title', esc(run.title)));
+  row.appendChild($('span', 's-stage', esc((run.stages && run.stages[run.activeIndex]) || run.status || '')));
+  row.appendChild(buildSegbar(run, true));
+  row.appendChild($('span', 's-status' + (run.blocked ? ' blocked' : ''), run.blocked ? 'Blocked' : esc(run.status)));
+  row.appendChild($('span', 's-cost', money(run.cost && run.cost.totalCost) || '$0.00'));
+  return row;
+}
+
+// A run block = the summary row + (when expanded) the full detail card. Rows
+// expand independently; toggling one re-renders only that block in place so the
+// other rows and the scroll position are untouched.
+function renderRun(run) {
+  const key = runKey(run);
+  const isOpen = expanded.has(key);
+  const block = $('div', 'run' + (run.blocked ? ' blocked' : '') + (isOpen ? ' expanded' : ''));
+  const row = renderSummaryRow(run, isOpen);
+  const toggle = () => {
+    if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
+    const next = renderRun(run);
+    block.replaceWith(next);
+    if (expanded.has(key)) { const s = next.querySelector('.summary'); if (s) s.focus(); }
+  };
+  row.addEventListener('click', toggle);
+  row.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); toggle(); }
+  });
+  block.appendChild(row);
+  if (isOpen) block.appendChild(renderCard(run));
+  return block;
+}
+
 function render(state) {
   const sub = document.getElementById('sub');
   const wrap = document.getElementById('runs');
@@ -383,6 +539,10 @@ function render(state) {
   const runs = (state && state.runs) || [];
   const stamp = state && state.generatedAt ? new Date(state.generatedAt).toLocaleTimeString() : '';
   sub.textContent = `${esc(state && state.repo)} · ${runs.length} run(s) · ${esc(state && state.summary || '')}${stamp ? ' · ' + stamp : ''}`;
+
+  // Prune expand state for runs that have left the fleet (keep it bounded).
+  const live = new Set(runs.map(runKey));
+  for (const k of Array.from(expanded)) if (!live.has(k)) expanded.delete(k);
 
   if (state && state.degraded) {
     const e = $('div', 'empty');
@@ -398,7 +558,10 @@ function render(state) {
     wrap.appendChild(e);
     return;
   }
-  for (const run of runs) wrap.appendChild(renderCard(run));
+  // Overview: the status roll-up header, then one compact summary row per run
+  // (expand any row into its full detail card). Legible with many concurrent runs.
+  wrap.appendChild(renderRollup(state, runs));
+  for (const run of runs) wrap.appendChild(renderRun(run));
 }
 
 // --- polling: fetch the sibling snapshot, re-render on change -----------------
