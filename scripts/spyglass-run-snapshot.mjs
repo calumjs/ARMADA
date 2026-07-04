@@ -556,10 +556,25 @@ function readRunMap() {
 // Consume the cost post-mortem for a run when present. This dashboard is a
 // CONSUMER — it never produces this file (crows-nest writes it, §8g). Tries
 // out/costs/<branch>.json then out/costs/<issue>.json. Degrades to null.
-function readCost(branch, issueNumber) {
+//
+// Path resolution (#157): the producer now consolidates every run's cost file into the
+// MAIN repo's out/costs/ (surviving worktree cleanup), so the main-repo path is the
+// authoritative source and is tried FIRST. But an IN-FLIGHT run's reconcile MAY still
+// have written into its own build worktree (a producer invoked with cwd inside the
+// worktree under older behaviour, or an explicit --out=<worktree>), so when we know the
+// run's worktree we also look under <worktree>/out/costs/ as a fallback. A file in the
+// main repo always wins over the worktree copy (it's the reconciled/consolidated one).
+// The run's cost-file basename is <branch> or <issue> with path separators flattened to
+// match the producer's `String(run).replace(/[\\/]/g, '-')` on write.
+function readCost(branch, issueNumber, worktree) {
+  const safe = (s) => String(s).replace(/[\\/]/g, '-');
+  const roots = [path.join(process.cwd(), 'out', 'costs')];
+  if (worktree) roots.push(path.join(worktree, 'out', 'costs'));
   const candidates = [];
-  if (branch) candidates.push(path.join(process.cwd(), 'out', 'costs', `${branch}.json`));
-  if (issueNumber != null) candidates.push(path.join(process.cwd(), 'out', 'costs', `${issueNumber}.json`));
+  for (const root of roots) {
+    if (branch) candidates.push(path.join(root, `${safe(branch)}.json`));
+    if (issueNumber != null) candidates.push(path.join(root, `${safe(issueNumber)}.json`));
+  }
   for (const c of candidates) {
     if (existsSync(c)) {
       try {
@@ -570,8 +585,8 @@ function readCost(branch, issueNumber) {
   }
   // Report the conventional pointer even when absent, so the footer can show it.
   const pointer = branch
-    ? `out/costs/${branch}.json`
-    : (issueNumber != null ? `out/costs/${issueNumber}.json` : 'out/costs/<run>.json');
+    ? `out/costs/${safe(branch)}.json`
+    : (issueNumber != null ? `out/costs/${safe(issueNumber)}.json` : 'out/costs/<run>.json');
   return { data: null, pointer };
 }
 
@@ -1273,7 +1288,7 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
     if (recent && !stage) return null;
     // Worktree: git worktree list by branch, else the run map's recorded path.
     const worktree = (branch && wt[branch]) || (runRec && runRec.worktree) || null;
-    const costRaw = readCost(branch, issueNumber);
+    const costRaw = readCost(branch, issueNumber, worktree);
     const cost = normalizeCost(costRaw);
 
     // --- Estimated (in-flight) vs final (reconciled) cost — #115 -------------
