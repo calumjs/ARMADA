@@ -19,9 +19,15 @@
 // Dependency-free (Node built-ins only), to match validate-skills.
 //
 // Subcommands:
-//   record  --run <branch|issue> [--repo <owner/name>] [--out <dir>]
+//   record  --run <branch|issue> [--final] [--repo <owner/name>] [--out <dir>]
 //           (--usage-json '<json>' | --usage-file <path> | stdin)
 //       Accumulate one or more usage entries into out/costs/<run>.json.
+//       --final stamps `"final": true` — the run has reconciled its last usage
+//       (the issue-shipped reconcile, crows-nest §5/§8g.ii). Without it the doc is
+//       `"final": false`: real numbers RECORDED SO FAR, but the run is still
+//       accruing (more usage to come at review/address/ship). The read-only
+//       dashboard uses this to distinguish an in-flight/partial figure from the
+//       final reconciled cost (spyglass §6). Once final, re-records stay final.
 //       A usage entry (single object or an array of them):
 //         { "role": "build"|"review"|"address"|"codex"|..., "model": "claude-opus-4-8",
 //           "usage": { "input_tokens": N, "output_tokens": N,
@@ -137,7 +143,7 @@ function loadDoc(file, run) {
   if (existsSync(file)) {
     try { return JSON.parse(readFileSync(file, 'utf8')); } catch { /* corrupt — restart */ }
   }
-  return { schema: 1, run, models: [], sessions: 0, subagents: 0, codex: 0, matchMode: 'heuristic', unpriced: [], totalCost: 0 };
+  return { schema: 1, run, models: [], sessions: 0, subagents: 0, codex: 0, matchMode: 'heuristic', unpriced: [], totalCost: 0, final: false, estimated: false };
 }
 
 function record(args) {
@@ -179,12 +185,19 @@ function record(args) {
   doc.unpriced = Array.from(unpriced);
   doc.matchMode = 'heuristic';
   doc.totalCost = anyPriced ? Number(total.toFixed(4)) : null;
+  // The recorded figures are always REAL usage (never a live estimate — that is a
+  // read-only, dashboard-side derivation from elapsed, spyglass §6). `final` marks
+  // whether this is the last reconcile: --final (the ship reconcile) latches it true
+  // and it never un-latches, so a re-record after ship can't demote a final run back
+  // to accruing. Absent --final the doc is `final:false` = real-so-far, still accruing.
+  doc.estimated = false;
+  doc.final = !!args.final || !!doc.final;
   doc.updatedAt = new Date().toISOString();
 
   mkdirSync(dir, { recursive: true });
   writeFileSync(file, JSON.stringify(doc, null, 2));
   const rel = path.relative(process.cwd(), file).replace(/\\/g, '/');
-  console.log(`spyglass-cost: ${rel} · ${doc.models.length} model(s) · total ${doc.totalCost == null ? 'n/a' : '$' + doc.totalCost.toFixed(2)}${doc.unpriced.length ? ' · unpriced ' + doc.unpriced.join(',') : ''}`);
+  console.log(`spyglass-cost: ${rel} · ${doc.models.length} model(s) · total ${doc.totalCost == null ? 'n/a' : '$' + doc.totalCost.toFixed(2)} · ${doc.final ? 'final' : 'accruing'}${doc.unpriced.length ? ' · unpriced ' + doc.unpriced.join(',') : ''}`);
   return file;
 }
 
@@ -243,7 +256,7 @@ function main() {
     if (args.check || cmd === 'check') return check(args);
     if (cmd === 'record') return record(args);
     if (cmd === 'map') return mapRun(args);
-    console.error('usage: spyglass-cost-postmortem.mjs record --run <branch|issue> [--usage-json <json>|--usage-file <path>|stdin]');
+    console.error('usage: spyglass-cost-postmortem.mjs record --run <branch|issue> [--final] [--usage-json <json>|--usage-file <path>|stdin]');
     console.error('       spyglass-cost-postmortem.mjs map --issue <n> --branch <b> [--worktree <path>] [--started-at <iso>]');
     console.error('       spyglass-cost-postmortem.mjs check');
     process.exitCode = 2;
