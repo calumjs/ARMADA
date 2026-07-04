@@ -200,10 +200,13 @@ spyglass never hard-fails on a thin or uncommissioned repo:
 ## 6. Per-run operations dashboard (companion mode)
 
 The sea-chart shows the **whole fleet at a glance**; its companion the **per-run operations
-dashboard** zooms in on **each in-flight run** as a focused detail card — a 12-stage pipeline, its
-worktree/branch/folder metadata, its logbook **"done video"**, and a **per-model cost table**. It is
-the natural companion to the chart (issue #101) and shares spyglass's core promise: it is
-**READ-ONLY with respect to the fleet**.
+dashboard** zooms in on the **in-flight runs**. It defaults to a scannable **multi-run overview** —
+every concurrent run as a compact summary row under a fleet **status roll-up** — and lets the
+operator **expand** any row into the full per-run detail card (a 12-stage pipeline, its
+worktree/branch/folder metadata, its logbook **"done video"**, and a **per-model cost table**). So a
+busy fleet reads at a glance and you drill into a single run on demand. It is the natural companion
+to the chart (issue #101) and shares spyglass's core promise: it is **READ-ONLY with respect to the
+fleet**.
 
 > **One run:** **snapshot** the same live GitHub state the chart reads (the §2a `gh issue list` /
 > `gh pr list` queries) → **correlate** each issue with the PR that closes it → **enrich** each run
@@ -241,7 +244,35 @@ The dashboard makes **zero mutations**. Every source it touches is a read:
 The only files it writes are the snapshot (`run-state.json`) and the copied app
 (`spyglass-run.html`), in the scratch/output dir — **never the tracked repo**.
 
-### Each run is a detail card
+### Multi-run overview — the default view
+
+When the fleet is busy the dashboard opens on the **overview**, not a stack of full cards:
+
+- **Status roll-up header** — the fleet at a glance: **total in-flight**, a count **per group**
+  (**building · reviewing · awaiting-merge · blocked · done**), and **total cost** across all runs.
+  The blocked chip flags red when non-zero; empty groups dim. It **recomputes on every poll** as runs
+  appear, move group, or leave.
+- **Compact summary rows** — one row per concurrent run (the default, no scrolling through full
+  cards): **issue #**, **title**, its **current stage**, a live **status label**, a **compact
+  12-segment stage/progress indicator** (done filled, active outlined, blocked red), and **running
+  cost**. Legible with many concurrent runs (6+); a blocked run's status reads red.
+- **Expand on demand** — any summary row **expands** into the full per-run detail card below it and
+  **collapses** again. It is **click + keyboard accessible** (each row is a `role="button"`,
+  `tabindex="0"` with `aria-expanded`; **Enter**/**Space** toggles) and rows **expand independently**
+  — open as many as you like. Expanded state is **preserved across the live poll** and pruned when a
+  run leaves the fleet.
+- **Graceful empty state** — an idle fleet (or an uncommissioned/failing `gh`) shows the calm "no
+  runs to show" / "no in-flight runs" state, exactly as the chart does.
+
+The roll-up **groups** are derived from the 12 operator stages (see the mapping table below):
+**building** = Feasibility…AI review (pre-PR + build/test + the pre-submit self-review);
+**awaiting-merge** = PR submitted / Watching PR / Approved (open, waiting on the gate);
+**reviewing** = Feedback (the muster + address-review loop); **done** = Merged / Harvest; and
+**blocked** overrides all of them for any blocked run. The snapshot emits each run's `group` and a
+top-level `rollup` object (counts + `inFlight` + `totalCost`), **additively — schema 1, back-compat**
+(an older snapshot with no `group`/`rollup` is regrouped client-side).
+
+### Each run expands to a detail card
 
 Modelled on the reference mock (dark two-column card, cost table below):
 
