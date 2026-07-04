@@ -208,13 +208,18 @@ run's real pipeline, its worktree/branch/folder metadata, its logbook **"done vi
 single run on demand. It is the natural companion to the chart (issue #101) and shares spyglass's core
 promise: it is **READ-ONLY with respect to the fleet**.
 
+It also keeps completed runs **on the board**: a **recent-voyages lane** (a "harbour" of completed
+voyages) below the in-flight runs, so a run doesn't vanish the moment it merges/ships — you see both
+what's under way and what recently landed (issue #113). See **Recent voyages** below.
+
 Each run is drawn as a **voyage**: a vessel sailing ARMADA's genuine `armada:*` pipeline from harbour
 to port. The stages are the fleet's **real, observable states** — not the inspiration mock's invented
 list (issue #109's accuracy directive replaced the mock's Feasibility/Scoping/Planning/Testing/AI
 review/PR submitted/Watching PR/Feedback/Approved/Harvest with what ARMADA actually does).
 
 > **One run:** **snapshot** the same live GitHub state the chart reads (the §2a `gh issue list` /
-> `gh pr list` queries) → **correlate** each issue with the PR that closes it → **enrich** each run
+> `gh pr list` queries) — **plus** a bounded recent-window scan of recently **closed** issues and
+> **merged**/closed PRs, so terminal runs have data to render → **correlate** each issue with the PR that closes it → **enrich** each run
 > with local read-only detail (its git worktree path from `git worktree list` *and* the crows-nest
 > run→worktree map for in-flight builds with no PR yet, its `out/costs/<run>.json` cost post-mortem,
 > its logbook done-video release asset) → **map** the `armada:*` labels (+ PR draft/CI/review
@@ -234,15 +239,18 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-run-snapshot.mjs" --watch 15
 ```
 
 It takes the **same flags** as the chart driver (`--label`, `--out`, `--repo`, `--open`/`--no-open`,
-`--watch <seconds>`); the default output dir is `<os-tmp>/armada-spyglass-run/<repo-slug>/`.
+`--watch <seconds>`), plus the recent-voyages window (`--recent-hours <N>`, `--recent-cap <N>`); the
+default output dir is `<os-tmp>/armada-spyglass-run/<repo-slug>/`.
 
 ### Read-only — enforced and documented
 
 The dashboard makes **zero mutations**. Every source it touches is a read:
 
-- **GitHub:** `gh repo view`, `gh issue list`, `gh pr list`, and GET-only `gh api .../releases`.
+- **GitHub:** `gh repo view`, `gh issue list` (open **and** recently `--state closed`), `gh pr list`
+  (open **and** recently `--state merged` / `--state closed`), and GET-only `gh api .../releases`.
   There is **no** `gh` write anywhere — no label, comment, review, merge, or close. (The driver's
-  code contains only `... list` / `repo view` / `api ... releases` invocations.)
+  code contains only `... list` / `repo view` / `api ... releases` invocations.) The recent-window
+  scan (#113) adds only more **read** list queries — it stays inside the same read-verb allowlist.
 - **Local disk (reads only):** `git worktree list` (to resolve a run's on-disk worktree path);
   `out/costs/_runs.json` (the crows-nest-written run→(branch, worktree) map, so an **in-flight** run's
   branch/worktree/folder resolve **before** a PR exists); and `out/costs/<run>.json` (the per-model
@@ -282,8 +290,43 @@ The manifest **groups** are derived from the real voyage stages (see the mapping
 **queued** = Queued; **building** = Building; **reviewing** = PR opened + In review; **awaiting-merge**
 = Awaiting merge; **done** = Merged + Shipped; and **blocked** overrides all of them for any blocked
 run. The snapshot emits each run's `group` and a top-level `rollup` object (counts per group +
-`inFlight` + `totalCost` + `costKnown`), **additively — schema 2** (an older snapshot is regrouped
-client-side against the same rule).
+`inFlight` + `totalCost` + `costKnown` + `recent` + `shippedToday`), **additively — schema 3** (an
+older snapshot is regrouped client-side against the same rule; a schema-2 snapshot with no
+`recentRuns` simply shows no harbour lane).
+
+### Recent voyages — completed runs stay on the board (#113)
+
+A run used to **vanish the moment it merged/shipped** — the dashboard only showed in-flight runs. Now
+completed runs stay visible in a distinct **recent-voyages lane** below the in-flight runs: a "harbour"
+of completed voyages, visually set apart (a **brass seam** down the left, ships **at anchor** — no bob),
+matching the same ARMADA nautical theme.
+
+- **Bounded recent-window scan (read-only).** In addition to the open/in-flight set, the driver scans a
+  **bounded** window of recently **closed** issues (`gh issue list --state closed`) and **merged**/closed
+  PRs (`gh pr list --state merged` / `--state closed`), filters them to the fleet (trigger label or an
+  `armada:*` state label) and de-dupes against the in-flight set, so terminal runs have data to render.
+  Every added query is a **read** — the read-only guarantee holds.
+- **Bounded + configurable — nothing grows without limit.** A **cap** and a **time window**, resolved
+  with the repo's precedence **`--flag` > env > `.armada/config.json` > default**:
+  - `--recent-hours <N>` / `SPYGLASS_RECENT_HOURS` / `spyglass.recentWindowHours` — the time window
+    (default **24**; `<=0` disables the time filter, leaving the cap as the sole bound).
+  - `--recent-cap <N>` / `SPYGLASS_RECENT_CAP` / `spyglass.recentCap` — the max runs kept in the harbour
+    (default **12**; `<=0` turns the recent lane **off** entirely and skips the closed/merged queries).
+  Runs sort **newest-completed first**; the oldest **age out** past the cap or outside the window.
+- **Accurate terminal outcome.** Each completed run shows **Merged / Shipped / Blocked**, derived from
+  the **same state model** (`recentOutcome`, in lockstep with `stageForIssue` / `stageForPr`): a merged
+  PR whose issue closed as completed → **Shipped**; `armada:merged` / a merged PR → **Merged**;
+  `armada:blocked` or a PR **closed without merging** → **Blocked**. The expanded card adds an
+  **outcome** row, a **merge-commit** link (`https://github.com/<repo>/commit/<oid>`, copyable), *when
+  it landed* ("shipped 2h ago"), and the run's **final cost** from `out/costs/<run>.json` when present.
+- **The roll-up counts shipped-today.** The manifest bar shows a **shipped today** gauge and the lane
+  header reads *"N in the harbour · M shipped today · last Kh"*. `rollup.shippedToday` counts
+  non-blocked terminal runs completed since local midnight.
+- **Live in-flight → harbour on merge.** On the existing poll, a run that merges **animates out** of the
+  in-flight lane and into the harbour, earning the **"just shipped ⚓" glow** there (the transition is
+  detected across both lanes), then **ages out** on a later poll. Expanded state is preserved across the
+  hop. **Graceful empty states:** an idle fleet with recent arrivals shows the runs under a calm "no
+  voyages under way" note; a truly empty board (no in-flight, no recent) shows **"an empty harbour"**.
 
 ### Each run expands to a log card
 
