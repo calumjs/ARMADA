@@ -1380,6 +1380,31 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
     const mergeOid = recent && pr && pr.mergeCommit
       ? (pr.mergeCommit.oid || pr.mergeCommit.sha || null) : null;
 
+    // --- Ready to merge (#140) — the human merge queue -----------------------
+    // A PR that has PASSED review and is mergeable but is NOT yet merged: the
+    // `ready_awaiting_human` terminal (crows-nest §3e — "reviewed, addressed, green"
+    // with autoMerge off). On ARMADA's OWN fleet PRs this is the COMMON resting state,
+    // because the self-approval classifier blocks the lookout from self-merging, so a
+    // human must run the merge (the incident that chartered this — #132/#137/#138 sat
+    // reviewed-clean and mergeable, unseen). Derived from the SAME real state the stage
+    // model already uses — no new signal: reviewDecision APPROVED → the 'Awaiting merge'
+    // stage (IDX.AWAITING, stageForPr), AND GitHub reports the PR cleanly `mergeable`
+    // (MERGEABLE — not BEHIND/CONFLICTING/UNKNOWN), AND CI isn't red/pending. Strictly
+    // READ-ONLY: it only SURFACES the exact `gh pr merge` command; it never runs it.
+    const ci = pr ? ciOf(pr) : null;
+    const mergeableState = pr && pr.mergeable ? String(pr.mergeable).toUpperCase() : null;
+    const readyToMerge = !recent && !!pr && !stage.blocked && !stage.terminal
+      && stage.activeIndex === IDX.AWAITING
+      && mergeableState === 'MERGEABLE'
+      && ci !== 'red' && ci !== 'pending';
+    // The exact, copyable human-merge command — only when the PR is actually ready.
+    // Squash + delete-branch matches ARMADA's house merge (SKILL / merge-gate default).
+    const mergeCommand = (readyToMerge && prNumber != null)
+      ? `gh pr merge ${prNumber} --squash --delete-branch` : null;
+    // "How long it's been waiting" — since the PR last changed (crows-nest's
+    // 'awaiting human merge' hand-back is the last write to it), else the run start.
+    const waitingSince = readyToMerge ? ((pr && pr.updatedAt) || startedAt) : null;
+
     return {
       issueNumber,
       prNumber,
@@ -1390,7 +1415,13 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
       worktree,
       folder: worktree, // for a worktree run the folder IS the worktree path
       startedAt,
-      ci: pr ? ciOf(pr) : null,
+      ci,
+      // ready-to-merge (#140) — the human merge queue; null/false on runs that aren't
+      // a reviewed-clean, mergeable, unmerged PR. mergeCommand is only shown, never run.
+      mergeable: mergeableState,
+      readyToMerge,
+      mergeCommand,
+      waitingSince,
       stages: STAGES,
       stageCaptions: STAGE_CAPTIONS,
       activeIndex: stage.activeIndex,
@@ -1428,6 +1459,15 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
     ((a.issueNumber ?? a.prNumber ?? 0) - (b.issueNumber ?? b.prNumber ?? 0)));
 
   const blockedCount = runs.filter((r) => r.blocked).length;
+
+  // Ready-to-merge queue (#140) — reviewed-clean, mergeable, unmerged PRs waiting on a
+  // HUMAN merge, LONGEST-WAITING first (oldest waitingSince). This is a focused,
+  // actionable view of the same in-flight runs (each also stays in the voyage list);
+  // strictly read-only — every entry carries only the pre-built `gh pr merge` command.
+  const readyToMergeRuns = runs
+    .filter((r) => r.readyToMerge)
+    .sort((a, b) => (Date.parse(a.waitingSince || a.startedAt || 0) || 0)
+                  - (Date.parse(b.waitingSince || b.startedAt || 0) || 0));
 
   // -------------------------------------------------------------------------
   // Recent voyages (#113) — a BOUNDED window of recently-closed/merged runs, so a
@@ -1531,6 +1571,8 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
   // how many shipped today. The fleet cost above stays in-flight only.
   rollup.recent = recentRuns.length;
   rollup.shippedToday = shippedToday;
+  // Ready-to-merge count (#140) — reviewed-clean, mergeable, unmerged PRs awaiting a human.
+  rollup.readyToMerge = readyToMergeRuns.length;
 
   // Waiting-runs dependency graph (#111) — the crows-nest scheduler-state producer
   // when present, else a best-effort graph inferred from bodies + file overlap.
@@ -1543,7 +1585,7 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
   rollup.held = scheduler.nodes.filter((n) => n.waiting && n.held).length;
 
   return {
-    schema: 6,                         // schema 6 (#156): each in-flight run gains progress {pct, phase, estimate, terminal, source} — a coarse phase-derived % from the liveness beat (null when unavailable). schema 5 (#111): + scheduler {source, nodes, edges} — the waiting-runs dependency graph; rollup gains waiting/eligible/held. Additive — older tabs read tolerantly.
+    schema: 7,                         // schema 7 (#140): + readyToMerge[] — the human merge queue (reviewed-clean, mergeable, unmerged PRs, longest-waiting first); each in-flight PR run gains mergeable/readyToMerge/mergeCommand/waitingSince; rollup gains readyToMerge. schema 6 (#156): each in-flight run gains progress {pct, phase, estimate, terminal, source} — a coarse phase-derived % from the liveness beat (null when unavailable). schema 5 (#111): + scheduler {source, nodes, edges} — the waiting-runs dependency graph; rollup gains waiting/eligible/held. Additive — older tabs read tolerantly.
     appVersion: computeAppVersion(),   // content stamp of the shipped app, recomputed each snapshot (so a long-lived --watch producer re-stamps when the UI ships) → drives the tab's version self-reload (SKILL §6)
     estRatePerMin,                     // coarse USD/min burn rate the dashboard uses to live-tick an in-flight run's estimate off `costSince` (kept here so it's server-configurable and driver/dashboard agree)
     generatedAt: new Date().toISOString(),
@@ -1560,10 +1602,11 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
       : null,
     runs,
     recentRuns,
+    readyToMerge: readyToMergeRuns,    // #140 — the human merge queue (reviewed-clean, mergeable, unmerged PRs), longest-waiting first
     recentWindow,
     scheduler,
     rollup,
-    summary: `runs ${runs.length} · blocked ${blockedCount} · recent ${recentRuns.length} · waiting ${rollup.waiting}`,
+    summary: `runs ${runs.length} · blocked ${blockedCount} · ready ${rollup.readyToMerge} · recent ${recentRuns.length} · waiting ${rollup.waiting}`,
   };
 }
 
