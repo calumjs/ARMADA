@@ -196,8 +196,14 @@
   .leg.blocked::after { content: none; }
 
   .s-status { font-weight: 600; font-size: 12.5px; white-space: nowrap; text-align: right; letter-spacing: .01em; }
-  .s-cost { color: var(--ink-dim); font-family: var(--mono); text-align: right; font-size: 13px; }
+  .s-cost { color: var(--ink-dim); font-family: var(--mono); font-size: 13px;
+    display: inline-flex; align-items: baseline; gap: 4px; justify-content: flex-end; }
   .s-cost.est { color: var(--brass); }
+  .s-cost.accruing .cnum { animation: cost-pulse 2.6s ease-in-out infinite; }
+  .s-cost .tag { font-size: 8px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--ink-faint); align-self: center; }
+  .s-cost.est .tag { color: var(--brass); }
+  @keyframes cost-pulse { 0%,100% { opacity: 1; } 50% { opacity: .62; } }
   .s-elapsed { color: var(--ink-faint); font-family: var(--mono); font-size: 12px; text-align: right; }
   /* completed-voyage landing time ("shipped 1h 08m ago") — wider text than the
      compact elapsed clock, so it must NOT wrap inside the time column (recent
@@ -304,6 +310,17 @@
   table.cost td.na { color: var(--ink-faint); }
   .cost-foot { color: var(--ink-faint); font-size: 11.5px; padding: 9px 10px 2px; }
   .cost-foot .ptr { color: var(--ink-dim); }
+  /* in-flight vs final banner above the ledger table (#115) */
+  .cost-status { font-size: 11.5px; font-family: var(--mono); padding: 0 10px 8px;
+    color: var(--ink-faint); letter-spacing: .02em; }
+  .cost-status.est { color: var(--brass); }
+  .cost-status.final { color: var(--done); }
+  .cost-status .pip { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle; background: currentColor; }
+  .cost-status.est .pip { animation: cost-pulse 2.6s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) {
+    .s-cost.accruing .cnum, .cost-status.est .pip { animation: none; }
+  }
 
   /* empty / degraded */
   .empty { text-align: center; color: var(--ink-dim); padding: 70px 20px; }
@@ -387,6 +404,56 @@ function elapsedText(iso) {
   return `${s}s`;
 }
 
+// ---- in-flight cost estimate (#115) ---------------------------------------
+// The dashboard is strictly READ-ONLY and the harness surfaces a subagent's usage
+// only at completion — no mid-build stream. So for a run that is actively working
+// with no reconcile file yet, we show an HONEST estimate off the one live signal we
+// have: elapsed build time (cost.costSince) × the fleet burn rate, computed here so
+// it ticks every second alongside elapsed. It is a display derivation — never
+// written back — and clearly labelled, converging to the real figure at completion.
+let estRatePerMin = 0;                 // set from state.estRatePerMin on each render
+function estFromSince(since) {
+  if (!since || !(estRatePerMin > 0)) return null;
+  const ms = Date.now() - Date.parse(since);
+  if (!Number.isFinite(ms)) return null;
+  return Math.max(0, (ms / 60000) * estRatePerMin);
+}
+function estCostLive(run) { return estFromSince(run && run.cost && run.cost.costSince); }
+
+// What the compact row's cost cell should read — estimated / accruing / final.
+// { text, cls, tag, title, since } so the row and the 1s ticker stay in agreement.
+//   estimated (live)  → "~$X"  tag "est"     (elapsed estimate, ticks live)
+//   estimate, no rate → "accruing…"          (no number — but never a false $0.00)
+//   recorded+accruing → "$X"   tag "so far"  (real-so-far, still accruing)
+//   recorded+final    → "$X"                 (settled — no caveat)
+//   nothing yet       → "—"
+function costCell(run) {
+  const c = (run && run.cost) || {};
+  const rec = c.present && typeof c.totalCost === "number";
+  if (c.estimated) {
+    const live = estCostLive(run);
+    if (live == null) return { text: "accruing…", cls: "est accruing", tag: null, title: "cost is accruing — no usage recorded yet", since: null };
+    return { text: "~" + money(live), cls: "est accruing", tag: "est", title: "estimate from elapsed build time — accruing, not billing", since: c.costSince };
+  }
+  if (rec && c.accruing) return { text: money(c.totalCost), cls: "est accruing", tag: "so far", title: "recorded so far — accruing, not final", since: null };
+  if (rec) return { text: money(c.totalCost), cls: c.final ? "" : "est", tag: null, title: c.final ? "final cost — API-equivalent estimate, not billing" : "API-equivalent estimate, not billing", since: null };
+  return { text: "—", cls: "", tag: null, title: null, since: null };
+}
+
+// The banner above the ledger table stating the run's cost phase (#115).
+function ledgerStatus(run) {
+  const c = (run && run.cost) || {};
+  const rec = c.present && typeof c.totalCost === "number";
+  if (c.estimated) {
+    const live = estCostLive(run);
+    const amt = live == null ? "" : ` — ~${money(live)} and climbing`;
+    return { cls: "est", text: `estimating from elapsed build time${amt} · no real usage recorded yet, converges at completion` };
+  }
+  if (rec && c.accruing) return { cls: "est", text: "recorded so far — accruing, not final · more usage lands at review / ship" };
+  if (rec && c.final) return { cls: "final", text: "final — reconciled at ship" };
+  return null;
+}
+
 // state colour by coarse group (never colour alone — shape + printed name too)
 const GROUP_COLOR = {
   queued: "var(--queued)", building: "var(--building)", reviewing: "var(--review)",
@@ -462,9 +529,13 @@ function renderRow(run, isOpen) {
   st.style.color = color;
   row.appendChild(st);
 
-  const cost = money(run.cost && run.cost.totalCost);
-  const c = $("span", "s-cost" + (cost ? " est" : ""), cost || (run.cost && run.cost.present ? "n/a" : "—"));
-  if (cost) c.title = "API-equivalent estimate, not billing";
+  const cd = costCell(run);
+  const c = $("span", "s-cost" + (cd.cls ? " " + cd.cls : ""));
+  const cnum = $("span", "cnum", cd.text);
+  if (cd.since) { cnum.classList.add("js-estcost"); cnum.dataset.since = cd.since; }
+  c.appendChild(cnum);
+  if (cd.tag) c.appendChild($("span", "tag", cd.tag));
+  if (cd.title) c.title = cd.title;
   row.appendChild(c);
 
   if (run.recent) {
@@ -607,6 +678,14 @@ function renderLedger(run) {
   const block = $("div", "ledger");
   block.appendChild($("h3", null, "cost ledger"));
   const c = run.cost || {};
+  // in-flight vs final banner (#115): estimating / accruing / final.
+  const status = ledgerStatus(run);
+  if (status) {
+    const sb = $("div", "cost-status" + (status.cls ? " " + status.cls : ""));
+    sb.appendChild($("span", "pip"));
+    sb.appendChild(document.createTextNode(status.text));
+    block.appendChild(sb);
+  }
   const table = $("table", "cost");
   const thead = $("thead"); const htr = $("tr");
   ["MODEL", "IN", "OUT", "CACHE R", "CACHE W", "≈ COST"].forEach((h, i) => htr.appendChild($("th", i === 0 ? "" : "n", h)));
@@ -626,7 +705,9 @@ function renderLedger(run) {
     }
   } else {
     const tr = $("tr"); const td = $("td", "na"); td.colSpan = 6;
-    td.textContent = "no cost post-mortem for this run yet — crows-nest writes out/costs/<run>.json as usage accrues";
+    td.textContent = (c.estimated)
+      ? "no real usage recorded yet — the figure above is an elapsed-based estimate; crows-nest writes out/costs/<run>.json at the first reconcile"
+      : "no cost post-mortem for this run yet — crows-nest writes out/costs/<run>.json as usage accrues";
     tr.appendChild(td); tbody.appendChild(tr);
   }
   table.appendChild(tbody); block.appendChild(table);
@@ -709,10 +790,13 @@ function renderFleet(state, runs) {
     st.appendChild($("span", "lbl", "shipped today"));
     bar.appendChild(st);
   }
+  // fleet cost folds in-flight estimates (#115) — caveat + "~" when it does.
+  const estIncl = !!(r && r.estIncluded);
   const cost = $("div", "m-cost");
   cost.appendChild($("div", "label", "fleet cost"));
-  cost.appendChild($("div", "val", costKnown ? (money(total) || "$0.00") : "n/a"));
-  cost.appendChild($("div", "caveat", "API-equivalent estimate"));
+  const valText = costKnown ? ((estIncl ? "~" : "") + (money(total) || "$0.00")) : "n/a";
+  cost.appendChild($("div", "val" + (estIncl ? " est" : ""), valText));
+  cost.appendChild($("div", "caveat", estIncl ? "incl. live estimates" : "API-equivalent estimate"));
   bar.appendChild(cost);
   wrap.appendChild(bar);
 }
@@ -734,7 +818,9 @@ function setWeather(runs) {
 function sortRuns(runs) {
   const arr = runs.slice();
   if (sortMode === "cost") {
-    arr.sort((a, b) => ((b.cost && b.cost.totalCost) || 0) - ((a.cost && a.cost.totalCost) || 0) || (Number(b.blocked) - Number(a.blocked)));
+    // sort by the run's real figure, or its live estimate when that's all there is (#115)
+    const cv = (run) => { const c = run.cost || {}; return (typeof c.totalCost === "number" ? c.totalCost : (estCostLive(run) ?? c.estTotalCost)) || 0; };
+    arr.sort((a, b) => cv(b) - cv(a) || (Number(b.blocked) - Number(a.blocked)));
   } else if (sortMode === "age") {
     arr.sort((a, b) => (Date.parse(a.startedAt || 0) || 0) - (Date.parse(b.startedAt || 0) || 0));
   } // "stage" — keep the driver's blocked-first / furthest-along order
@@ -822,6 +908,7 @@ function renderHarbour(state, recentRuns) {
 let lastState = null;
 function render(state) {
   lastState = state;
+  estRatePerMin = (state && Number(state.estRatePerMin)) || 0;   // drives the live in-flight estimate (#115)
   const sub = document.getElementById("sub");
   const wrap = document.getElementById("runs");
   const harbourEl = document.getElementById("harbour");
@@ -887,6 +974,11 @@ setInterval(() => {
   for (const el of document.querySelectorAll(".js-elapsed")) {
     const t = elapsedText(el.dataset.since);
     if (t != null) el.textContent = t;
+  }
+  // live in-flight cost estimate — climbs each second alongside elapsed (#115)
+  for (const el of document.querySelectorAll(".js-estcost")) {
+    const v = estFromSince(el.dataset.since);
+    if (v != null) el.textContent = "~" + money(v);
   }
 }, 1000);
 
