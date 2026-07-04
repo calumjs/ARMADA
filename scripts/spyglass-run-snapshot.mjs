@@ -61,6 +61,7 @@
 // `SPYGLASS_RECENT_CAP` / `spyglass.recentCap` (default 12; <=0 = recent lane off).
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync } from 'fs';
+import http from 'http';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
@@ -1117,13 +1118,48 @@ function writeOutputs(outDir, state) {
   return { json: path.join(outDir, 'run-state.json'), html: appDst };
 }
 
-function openInBrowser(htmlPath) {
+// Serve outDir over a throwaway localhost http server and open THAT — not the raw
+// file:// path. The dashboard fetches `./run-state.json`; browsers block that fetch
+// under the file:// origin, so a file:// open leaves it stuck on "waiting for
+// run-state.json …". A minimal static server bound to 127.0.0.1 on an ephemeral
+// port fixes it while keeping the driver READ-ONLY (it serves only the scratch
+// outDir it just wrote — the snapshot + copied app — never the tracked repo, and
+// answers GETs only). Contained to root: a requested path must resolve to root or
+// under it, else 403. Returns a Promise of { url, close }.
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+};
+function serveDir(dir, indexFile) {
+  const root = path.resolve(dir);
+  return new Promise((resolve, reject) => {
+    const srv = http.createServer((req, res) => {
+      const rel = decodeURIComponent((req.url || '/').split('?')[0]);
+      const file = path.resolve(root, '.' + (rel === '/' ? '/' + indexFile : rel));
+      if (file !== root && !file.startsWith(root + path.sep)) { res.writeHead(403); res.end('forbidden'); return; }
+      try {
+        const body = readFileSync(file);
+        res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-store' });
+        res.end(body);
+      } catch { res.writeHead(404); res.end('not found'); }
+    });
+    srv.on('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      resolve({ url: `http://127.0.0.1:${srv.address().port}/${indexFile}`, close: () => { try { srv.close(); } catch {} } });
+    });
+  });
+}
+
+// Open a URL (or path) in the OS default browser. Best-effort — the URL is also printed.
+function openInBrowser(target) {
   const plat = process.platform;
   try {
-    if (plat === 'win32') spawn('cmd', ['/c', 'start', '', htmlPath], { detached: true, stdio: 'ignore' }).unref();
-    else if (plat === 'darwin') spawn('open', [htmlPath], { detached: true, stdio: 'ignore' }).unref();
-    else spawn('xdg-open', [htmlPath], { detached: true, stdio: 'ignore' }).unref();
-  } catch { /* non-fatal — the path is printed */ }
+    if (plat === 'win32') spawn('cmd', ['/c', 'start', '', target], { detached: true, stdio: 'ignore' }).unref();
+    else if (plat === 'darwin') spawn('open', [target], { detached: true, stdio: 'ignore' }).unref();
+    else spawn('xdg-open', [target], { detached: true, stdio: 'ignore' }).unref();
+  } catch { /* non-fatal — the URL is printed */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -1159,12 +1195,42 @@ function main() {
     if (firstRun) {
       console.log(`spyglass-run: snapshot → ${out.json}`);
       console.log(`spyglass-run: view     → ${out.html}`);
-      if (args.open !== false) openInBrowser(out.html);
     }
     return out;
   }
 
   const first = once(true);
+
+  // Serve the scratch outDir over localhost and open THAT — a file:// open blocks
+  // the app's fetch('./run-state.json'), leaving the dashboard stuck on "waiting
+  // for run-state.json …". Keep the process alive to serve (a one-shot --open now
+  // serves until Ctrl-C; --watch keeps re-snapshotting into the served dir).
+  if (args.open !== false) {
+    return serveDir(outDir, path.basename(first.html)).then((server) => {
+      console.log(`spyglass-run: serving → ${server.url}`);
+      openInBrowser(server.url);
+      if (args.watch > 0) {
+        console.log(`spyglass-run: watching — re-snapshotting every ${args.watch}s (Ctrl-C to stop)`);
+        setInterval(() => once(false), args.watch * 1000);
+      } else {
+        console.log('spyglass-run: serving the dashboard — press Ctrl-C to stop');
+      }
+      return first;
+    }).catch((e) => {
+      // Server couldn't bind — degrade to a file:// open (fetch may be blocked) so
+      // the run never hard-fails; the paths are already printed.
+      console.log(`spyglass-run: could not start local server (${e.message}); opening file:// (fetch may be blocked)`);
+      openInBrowser(first.html);
+      if (args.watch > 0) {
+        console.log(`spyglass-run: watching — re-snapshotting every ${args.watch}s (Ctrl-C to stop)`);
+        setInterval(() => once(false), args.watch * 1000);
+      }
+      return first;
+    });
+  }
+
+  // --no-open (e.g. the /loop pattern): just refresh the snapshot in place. A
+  // separate --open/--watch process (or /spyglass-run) holds the served window.
   if (args.watch > 0) {
     console.log(`spyglass-run: watching — re-snapshotting every ${args.watch}s (Ctrl-C to stop)`);
     setInterval(() => once(false), args.watch * 1000);

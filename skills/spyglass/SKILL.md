@@ -108,8 +108,9 @@ itself never requires it.)
 
 The snapshot, classification, write, and browser-open are all done by the bundled script. Reference
 it via `${CLAUDE_PLUGIN_ROOT}` — **never a relative path** — because installed plugins are copied
-into a cache where relative paths break (the bundled HTML app is copied next to the snapshot so it
-can fetch `./fleet-state.json` with no server):
+into a cache where relative paths break (the bundled HTML app is copied next to the snapshot, and on
+`--open` the script **serves that scratch dir over a throwaway `http://127.0.0.1` server** so the
+app's `fetch('./fleet-state.json')` resolves — see §1a):
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-snapshot.mjs" [--label <triggerLabel>] [--open]
@@ -131,8 +132,9 @@ The script:
 4. Writes `fleet-state.json` + copies the bundled `spyglass.html` into a scratch dir
    (`<os-tmp>/armada-spyglass/<repo-slug>/` by default, override with `--out <dir>`) — **never the
    tracked repo**.
-5. Opens the rendered HTML in the OS default browser (`--open`, the default for a one-shot run;
-   suppress with `--no-open`).
+5. On `--open` (the default for a one-shot run; suppress with `--no-open`), **serves the scratch dir
+   over a localhost http server** and opens **that URL** (`http://127.0.0.1:<port>/spyglass.html`) —
+   not a raw `file://` path. See §1a for why.
 
 It prints the snapshot summary, and the paths to the JSON and HTML, e.g.:
 
@@ -140,7 +142,25 @@ It prints the snapshot summary, and the paths to the JSON and HTML, e.g.:
 spyglass: horizon 3 · harbour 2 · dispatch 2 · hold 1 · blocked 0 · weather choppy · cartography off
 spyglass: snapshot → /tmp/armada-spyglass/calumjs-ARMADA/fleet-state.json
 spyglass: view    → /tmp/armada-spyglass/calumjs-ARMADA/spyglass.html
+spyglass: serving → http://127.0.0.1:53017/spyglass.html
 ```
+
+### 1a. Served over localhost — not `file://` (why the browser opens an http URL)
+
+The bundled app **fetches its snapshot** (`fetch('./run-state.json')` / `./fleet-state.json`) so it
+can auto-refresh. Under a `file://` origin browsers **block** that fetch (CORS / local-file policy),
+so a raw `file://` open leaves the view stuck on **"waiting for run-state.json …"** — the dashboard
+never renders. So on `--open` the driver starts a **minimal static http server bound to
+`127.0.0.1`** on an ephemeral port, serving **only the scratch output dir** it just wrote (the
+snapshot + the copied app — answering GETs only, contained to that dir, never the tracked repo), and
+opens **that** URL. The **read-only guarantee is unchanged** — the server exposes the same scratch
+files the driver already wrote and mutates nothing.
+
+Because the page needs the server alive to keep polling, **`--open` now keeps the process running**
+(a one-shot `--open` serves until `Ctrl-C`; `--watch` keeps re-snapshotting into the served dir). If
+the port can't bind, the driver **degrades** to a plain `file://` open with a note (the fetch may be
+blocked) rather than failing. `--no-open` starts **no** server — it just refreshes the JSON in place
+(the `/loop` pattern in §3, where a separate `--open`/`--watch` process holds the served window).
 
 ## 2. Manual invocation — `/spyglass`
 
@@ -570,6 +590,32 @@ stream restart**. It's a **version-change** trigger only — an ordinary data po
 **degrades safely**: if `appVersion` is absent (an older snapshot) the app data-polls exactly as before
 and never reloads, so there is no reload loop.
 
+## 7. Run by default with the fleet — the `spyglass` config key
+
+spyglass is **part of the default fleet experience**: running the fleet the normal way
+(**[`commission`](../commission/SKILL.md) → arm the [`crows-nest`](../crows-nest/SKILL.md) watch**)
+also brings the dashboard up, with no extra manual step. This is gated by a **`spyglass` key in
+`.armada/config.json`** that both skills honour:
+
+| `spyglass` value | What comes up alongside the watch                                  |
+| ---------------- | ------------------------------------------------------------------ |
+| `"run"` (default)| the **per-run operations dashboard** (§6) — the in-flight ops view  |
+| `"chart"`        | the **sea-chart** (§1) — the whole-fleet label state machine       |
+| `"both"`         | both views                                                         |
+| `"off"`          | nothing auto-launches — manual `/spyglass` still works any time     |
+
+- **[`commission`](../commission/SKILL.md)** writes `spyglass: "run"` on a fresh repo (spyglass is
+  on by default, unlike the opt-in autonomy keys) and reports it in the readiness summary.
+- **[`crows-nest`](../crows-nest/SKILL.md) §6**, when it hands you the `/loop` line to arm the watch,
+  **also hands a spyglass launch line** (a single `--watch` process that snapshots, serves over
+  localhost, and live-refreshes) whenever `spyglass` isn't `"off"`. Paste it alongside the watch and
+  the dashboard tracks the fleet as crows-nest works it.
+
+**Turn it off** by setting `"spyglass": "off"` in `.armada/config.json` — crows-nest then hands no
+launch line and nothing auto-opens. (Manual `/spyglass` is always available regardless.) The key sets
+*which view launches*, nothing about fleet behaviour: spyglass is read-only, so this never changes
+what the fleet builds, reviews, or merges.
+
 ## Bundled assets
 
 All rendering ships under the plugin and is referenced via `${CLAUDE_PLUGIN_ROOT}` (per the repo's
@@ -578,19 +624,20 @@ plugin-cache rule — relative paths break once a plugin is installed to its cac
 - **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-snapshot.mjs`** — the read-only snapshot + classify +
   write + open driver (Node built-ins + `gh` only, dependency-free to match
   `scripts/validate-skills.mjs`).
-- **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-app.html`** — the self-contained, no-server
+- **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-app.html`** — the self-contained
   HTML + `<canvas>`/JS visualisation (vanilla canvas/JS, **no external/CDN libraries, no build
-  step**). Copied next to the snapshot at run time so it can fetch `./fleet-state.json` locally with
-  no server.
+  step**). Copied next to the snapshot at run time; on `--open` the driver serves that dir over a
+  localhost http server so it can `fetch('./fleet-state.json')` (a `file://` open blocks that — §1a).
 
 Per-run operations dashboard (companion mode, §6):
 
 - **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-run-snapshot.mjs`** — the read-only per-run snapshot +
   correlate + enrich + write + open driver (Node built-ins + `gh`/`git` only, dependency-free). Reads
   the crows-nest run→worktree map + cost post-mortem; **produces neither**.
-- **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-run-app.html`** — the self-contained, no-server
+- **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-run-app.html`** — the self-contained
   ARMADA-nautical dashboard (vanilla HTML/CSS/JS, **no external/CDN libraries, no build step**). Copied
-  next to its snapshot at run time so it can fetch `./run-state.json` locally with no server.
+  next to its snapshot at run time; on `--open` the driver serves that dir over a localhost http
+  server so it can `fetch('./run-state.json')` (a `file://` open blocks that — §1a).
 - **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-cost-postmortem.mjs`** — the **crows-nest-side** cost
   post-mortem producer + run-map writer (crows-nest §8g). The one thing that WRITES the cost /
   in-flight-metadata the read-only driver consumes; it writes **only** under `out/costs/` (gitignored),
