@@ -1,0 +1,487 @@
+{
+  "schema": 3,
+  "appVersion": "fixture000000",
+  "generatedAt": "2026-07-04T12:00:00.000Z",
+  "repo": "calumjs/ARMADA",
+  "triggerLabel": "armada",
+  "commissioned": true,
+  "ghOk": true,
+  "stageNames": [
+    "Queued",
+    "Building",
+    "PR opened",
+    "In review",
+    "Awaiting merge",
+    "Merged",
+    "Shipped"
+  ],
+  "stageCaptions": [
+    "armed & waiting for the lookout",
+    "shipwright: research → plan → implement → validate",
+    "branch pushed, PR open",
+    "muster: 2-lens review → consolidate → address",
+    "green & approved — at the merge gate",
+    "gated merge landed",
+    "closed; logbook walkthrough + cartography"
+  ],
+  "groupNames": [
+    "queued",
+    "building",
+    "reviewing",
+    "awaiting-merge",
+    "done",
+    "blocked"
+  ],
+  "degraded": null,
+  "runs": [
+    {
+      "issueNumber": 130,
+      "prNumber": null,
+      "title": "commission: detect pnpm workspaces",
+      "issueUrl": "https://github.com/calumjs/ARMADA/issues/130",
+      "prUrl": null,
+      "branch": null,
+      "worktree": null,
+      "folder": null,
+      "startedAt": "2026-07-04T11:20:00.000Z",
+      "ci": null,
+      "stages": [
+        "Queued",
+        "Building",
+        "PR opened",
+        "In review",
+        "Awaiting merge",
+        "Merged",
+        "Shipped"
+      ],
+      "stageCaptions": [
+        "armed & waiting for the lookout",
+        "shipwright: research → plan → implement → validate",
+        "branch pushed, PR open",
+        "muster: 2-lens review → consolidate → address",
+        "green & approved — at the merge gate",
+        "gated merge landed",
+        "closed; logbook walkthrough + cartography"
+      ],
+      "activeIndex": 0,
+      "status": "Queued",
+      "blocked": false,
+      "terminal": false,
+      "group": "queued",
+      "doneVideo": null,
+      "cost": {
+        "present": false,
+        "pointer": null
+      },
+      "recent": false,
+      "outcome": null,
+      "completedAt": null,
+      "mergeCommitOid": null,
+      "mergeCommitUrl": null
+    },
+    {
+      "issueNumber": 128,
+      "prNumber": null,
+      "title": "logbook: system-browser capture backend",
+      "issueUrl": "https://github.com/calumjs/ARMADA/issues/128",
+      "prUrl": null,
+      "branch": "128-logbook-system-browser",
+      "worktree": "C:/DataCalumSimpson/128-logbook-system-browser",
+      "folder": "C:/DataCalumSimpson/128-logbook-system-browser",
+      "startedAt": "2026-07-04T09:00:00.000Z",
+      "ci": null,
+      "stages": [
+        "Queued",
+        "Building",
+        "PR opened",
+        "In review",
+        "Awaiting merge",
+        "Merged",
+        "Shipped"
+      ],
+      "stageCaptions": [
+        "armed & waiting for the lookout",
+        "shipwright: research → plan → implement → validate",
+        "branch pushed, PR open",
+        "muster: 2-lens review → consolidate → address",
+        "green & approved — at the merge gate",
+        "gated merge landed",
+        "closed; logbook walkthrough + cartography"
+      ],
+      "activeIndex": 1,
+      "status": "Building",
+      "blocked": false,
+      "terminal": false,
+      "group": "building",
+      "doneVideo": null,
+      "cost": {
+        "present": true,
+        "pointer": "out/costs/<branch>.json",
+        "models": [
+          {
+            "model": "claude-opus-4-8",
+            "in": 182000,
+            "out": 39000,
+            "cacheRead": 1240000,
+            "cacheWrite": 96000,
+            "cost": 4.12
+          }
+        ],
+        "sessions": 1,
+        "subagents": 2,
+        "codex": 0,
+        "matchMode": "branch",
+        "unpriced": [],
+        "totalCost": 4.12,
+        "updatedAt": "2026-07-04T11:40:00.000Z"
+      },
+      "recent": false,
+      "outcome": null,
+      "completedAt": null,
+      "mergeCommitOid": null,
+      "mergeCommitUrl": null
+    },
+    {
+      "issueNumber": 124,
+      "prNumber": 125,
+      "title": "muster: flag unscoped process kills",
+      "issueUrl": "https://github.com/calumjs/ARMADA/issues/124",
+      "prUrl": "https://github.com/calumjs/ARMADA/pull/125",
+      "branch": "124-muster-scoped-kills",
+      "worktree": "C:/DataCalumSimpson/124-muster-scoped-kills",
+      "folder": "C:/DataCalumSimpson/124-muster-scoped-kills",
+      "startedAt": "2026-07-04T06:00:00.000Z",
+      "ci": "green",
+      "stages": [
+        "Queued",
+        "Building",
+        "PR opened",
+        "In review",
+        "Awaiting merge",
+        "Merged",
+        "Shipped"
+      ],
+      "stageCaptions": [
+        "armed & waiting for the lookout",
+        "shipwright: research → plan → implement → validate",
+        "branch pushed, PR open",
+        "muster: 2-lens review → consolidate → address",
+        "green & approved — at the merge gate",
+        "gated merge landed",
+        "closed; logbook walkthrough + cartography"
+      ],
+      "activeIndex": 3,
+      "status": "In review",
+      "blocked": false,
+      "terminal": false,
+      "group": "reviewing",
+      "doneVideo": null,
+      "cost": {
+        "present": true,
+        "pointer": "out/costs/<branch>.json",
+        "models": [
+          {
+            "model": "claude-opus-4-8",
+            "in": 240000,
+            "out": 51000,
+            "cacheRead": 2100000,
+            "cacheWrite": 130000,
+            "cost": 5.91
+          },
+          {
+            "model": "claude-haiku-4-5",
+            "in": 88000,
+            "out": 12000,
+            "cacheRead": 410000,
+            "cacheWrite": 0,
+            "cost": 0.96
+          }
+        ],
+        "sessions": 2,
+        "subagents": 3,
+        "codex": 1,
+        "matchMode": "branch",
+        "unpriced": [],
+        "totalCost": 6.87,
+        "updatedAt": "2026-07-04T11:40:00.000Z"
+      },
+      "recent": false,
+      "outcome": null,
+      "completedAt": null,
+      "mergeCommitOid": null,
+      "mergeCommitUrl": null
+    },
+    {
+      "issueNumber": 121,
+      "prNumber": 122,
+      "title": "crows-nest: bound rebase rounds",
+      "issueUrl": "https://github.com/calumjs/ARMADA/issues/121",
+      "prUrl": "https://github.com/calumjs/ARMADA/pull/122",
+      "branch": "121-crows-nest-rebase-cap",
+      "worktree": "C:/DataCalumSimpson/121-crows-nest-rebase-cap",
+      "folder": "C:/DataCalumSimpson/121-crows-nest-rebase-cap",
+      "startedAt": "2026-07-04T03:00:00.000Z",
+      "ci": "green",
+      "stages": [
+        "Queued",
+        "Building",
+        "PR opened",
+        "In review",
+        "Awaiting merge",
+        "Merged",
+        "Shipped"
+      ],
+      "stageCaptions": [
+        "armed & waiting for the lookout",
+        "shipwright: research → plan → implement → validate",
+        "branch pushed, PR open",
+        "muster: 2-lens review → consolidate → address",
+        "green & approved — at the merge gate",
+        "gated merge landed",
+        "closed; logbook walkthrough + cartography"
+      ],
+      "activeIndex": 4,
+      "status": "Awaiting merge",
+      "blocked": false,
+      "terminal": false,
+      "group": "awaiting-merge",
+      "doneVideo": null,
+      "cost": {
+        "present": true,
+        "pointer": "out/costs/<branch>.json",
+        "models": [
+          {
+            "model": "claude-opus-4-8",
+            "in": 205000,
+            "out": 44000,
+            "cacheRead": 1680000,
+            "cacheWrite": 110000,
+            "cost": 5.03
+          }
+        ],
+        "sessions": 2,
+        "subagents": 2,
+        "codex": 0,
+        "matchMode": "branch",
+        "unpriced": [],
+        "totalCost": 5.03,
+        "updatedAt": "2026-07-04T11:40:00.000Z"
+      },
+      "recent": false,
+      "outcome": null,
+      "completedAt": null,
+      "mergeCommitOid": null,
+      "mergeCommitUrl": null
+    },
+    {
+      "issueNumber": 118,
+      "prNumber": 119,
+      "title": "foghorn: cache TTS by content hash",
+      "issueUrl": "https://github.com/calumjs/ARMADA/issues/118",
+      "prUrl": "https://github.com/calumjs/ARMADA/pull/119",
+      "branch": "118-foghorn-tts-cache",
+      "worktree": "C:/DataCalumSimpson/118-foghorn-tts-cache",
+      "folder": "C:/DataCalumSimpson/118-foghorn-tts-cache",
+      "startedAt": "2026-07-04T01:00:00.000Z",
+      "ci": "red",
+      "stages": [
+        "Queued",
+        "Building",
+        "PR opened",
+        "In review",
+        "Awaiting merge",
+        "Merged",
+        "Shipped"
+      ],
+      "stageCaptions": [
+        "armed & waiting for the lookout",
+        "shipwright: research → plan → implement → validate",
+        "branch pushed, PR open",
+        "muster: 2-lens review → consolidate → address",
+        "green & approved — at the merge gate",
+        "gated merge landed",
+        "closed; logbook walkthrough + cartography"
+      ],
+      "activeIndex": 1,
+      "status": "Blocked",
+      "blocked": true,
+      "terminal": false,
+      "group": "blocked",
+      "doneVideo": null,
+      "cost": {
+        "present": true,
+        "pointer": "out/costs/<branch>.json",
+        "models": [
+          {
+            "model": "claude-opus-4-8",
+            "in": 150000,
+            "out": 33000,
+            "cacheRead": 980000,
+            "cacheWrite": 72000,
+            "cost": 3.44
+          }
+        ],
+        "sessions": 1,
+        "subagents": 1,
+        "codex": 0,
+        "matchMode": "branch",
+        "unpriced": [],
+        "totalCost": 3.44,
+        "updatedAt": "2026-07-04T11:40:00.000Z"
+      },
+      "recent": false,
+      "outcome": null,
+      "completedAt": null,
+      "mergeCommitOid": null,
+      "mergeCommitUrl": null
+    }
+  ],
+  "recentRuns": [
+    {
+      "issueNumber": 114,
+      "prNumber": 117,
+      "title": "spyglass: auto-reload the run dashboard",
+      "issueUrl": "https://github.com/calumjs/ARMADA/issues/114",
+      "prUrl": "https://github.com/calumjs/ARMADA/pull/117",
+      "branch": "114-spyglass-autoreload",
+      "worktree": null,
+      "folder": null,
+      "startedAt": "2026-07-02T12:00:00.000Z",
+      "ci": "green",
+      "stages": [
+        "Queued",
+        "Building",
+        "PR opened",
+        "In review",
+        "Awaiting merge",
+        "Merged",
+        "Shipped"
+      ],
+      "stageCaptions": [
+        "armed & waiting for the lookout",
+        "shipwright: research → plan → implement → validate",
+        "branch pushed, PR open",
+        "muster: 2-lens review → consolidate → address",
+        "green & approved — at the merge gate",
+        "gated merge landed",
+        "closed; logbook walkthrough + cartography"
+      ],
+      "activeIndex": 6,
+      "status": "Shipped",
+      "blocked": false,
+      "terminal": true,
+      "group": "done",
+      "doneVideo": {
+        "name": "walkthrough-pr-117.mp4",
+        "url": "https://github.com/calumjs/ARMADA/releases/download/logbook-117/walkthrough-pr-117.mp4",
+        "updatedAt": "2026-07-03T17:00:00.000Z"
+      },
+      "cost": {
+        "present": true,
+        "pointer": "out/costs/<branch>.json",
+        "models": [
+          {
+            "model": "claude-opus-4-8",
+            "in": 260000,
+            "out": 58000,
+            "cacheRead": 2400000,
+            "cacheWrite": 140000,
+            "cost": 7.21
+          }
+        ],
+        "sessions": 3,
+        "subagents": 4,
+        "codex": 0,
+        "matchMode": "branch",
+        "unpriced": [],
+        "totalCost": 7.21,
+        "updatedAt": "2026-07-04T11:40:00.000Z"
+      },
+      "recent": true,
+      "outcome": "Shipped",
+      "completedAt": "2026-07-03T16:00:00.000Z",
+      "mergeCommitOid": "e78fcba1122334455",
+      "mergeCommitUrl": "https://github.com/calumjs/ARMADA/commit/e78fcba1122334455"
+    },
+    {
+      "issueNumber": 113,
+      "prNumber": 116,
+      "title": "spyglass: keep merged/shipped runs on the dashboard",
+      "issueUrl": "https://github.com/calumjs/ARMADA/issues/113",
+      "prUrl": "https://github.com/calumjs/ARMADA/pull/116",
+      "branch": "113-recent-voyages",
+      "worktree": null,
+      "folder": null,
+      "startedAt": "2026-07-01T12:00:00.000Z",
+      "ci": "green",
+      "stages": [
+        "Queued",
+        "Building",
+        "PR opened",
+        "In review",
+        "Awaiting merge",
+        "Merged",
+        "Shipped"
+      ],
+      "stageCaptions": [
+        "armed & waiting for the lookout",
+        "shipwright: research → plan → implement → validate",
+        "branch pushed, PR open",
+        "muster: 2-lens review → consolidate → address",
+        "green & approved — at the merge gate",
+        "gated merge landed",
+        "closed; logbook walkthrough + cartography"
+      ],
+      "activeIndex": 5,
+      "status": "Merged",
+      "blocked": false,
+      "terminal": true,
+      "group": "done",
+      "doneVideo": null,
+      "cost": {
+        "present": true,
+        "pointer": "out/costs/<branch>.json",
+        "models": [
+          {
+            "model": "claude-opus-4-8",
+            "in": 210000,
+            "out": 47000,
+            "cacheRead": 1900000,
+            "cacheWrite": 115000,
+            "cost": 5.66
+          }
+        ],
+        "sessions": 2,
+        "subagents": 3,
+        "codex": 0,
+        "matchMode": "branch",
+        "unpriced": [],
+        "totalCost": 5.66,
+        "updatedAt": "2026-07-04T11:40:00.000Z"
+      },
+      "recent": true,
+      "outcome": "Merged",
+      "completedAt": "2026-07-03T06:00:00.000Z",
+      "mergeCommitOid": "8bd3409aabbccddee",
+      "mergeCommitUrl": "https://github.com/calumjs/ARMADA/commit/8bd3409aabbccddee"
+    }
+  ],
+  "recentWindow": {
+    "hours": 24,
+    "cap": 12
+  },
+  "rollup": {
+    "inFlight": 5,
+    "totalCost": 19.46,
+    "costKnown": true,
+    "queued": 1,
+    "building": 1,
+    "reviewing": 1,
+    "awaiting-merge": 1,
+    "done": 0,
+    "blocked": 1,
+    "recent": 2,
+    "shippedToday": 2
+  },
+  "summary": "runs 5 · blocked 1 · recent 2"
+}
