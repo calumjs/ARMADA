@@ -60,7 +60,17 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/logbook-recorder.mjs" --setup --staging .arm
 The recording toolchain it checks:
 
 - A **capture backend** appropriate to the surface (see §1 *Launch/Reach*): a browser driver for
-  web, a terminal recorder for CLI/TUI, a request runner for APIs.
+  web, a terminal recorder for CLI/TUI, a request runner for APIs. For `web`, the driver is
+  Playwright/Puppeteer — and it does **not** require Playwright's own bundled Chromium: a host with a
+  **system browser** (Edge/Chrome) but no Playwright-Chromium still records live motion (issue #103).
+  The preflight resolves a Playwright installed **outside the repo** too — a global/scratch install or
+  one on `NODE_PATH` (or `LOGBOOK_NODE_PATH` / `LOGBOOK_PLAYWRIGHT_PATH`) — so a present-but-non-local
+  driver isn't falsely reported degraded, and it **reports the system-browser path** as a ready backend
+  when Chromium is absent but Edge/Chrome + Playwright are available. Point it at a specific browser
+  with **`LOGBOOK_BROWSER_EXECUTABLE`** (a full path — the reliable route; e.g. `msedge.exe`) or
+  **`LOGBOOK_BROWSER_CHANNEL`** (`msedge`/`chrome`); both are also recipe fields
+  (`browserExecutable` / `browserChannel`). Absent all of these it **auto-detects** a system Edge/Chrome
+  when the bundled Chromium launch fails.
 - **`ffmpeg`** — muxes audio + video, concatenates chapters, burns in titles/lower-thirds.
 - A **TTS provider** reachable via an **environment variable** (see §3). The preflight doesn't just
   check the key is *present* — it **verifies the key authenticates** and that `LOGBOOK_VOICE` resolves
