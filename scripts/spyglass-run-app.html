@@ -507,8 +507,8 @@
       <div class="substamp" id="sub">weighing anchor…</div>
     </div>
     <div id="fleet"></div>
-    <div id="horizon"></div>
     <div class="runs" id="runs"></div>
+    <div id="horizon"></div>
     <div id="harbour"></div>
   </div>
 <script>
@@ -1185,8 +1185,15 @@ function drawGraphEdges(graph, svg, edges, nodeEl) {
   }
   svg.appendChild(defs);
   const sr = svg.getBoundingClientRect();
-  const leftMid = (el) => { const r = el.getBoundingClientRect(); return { x: r.left - sr.left, y: r.top - sr.top + r.height / 2 }; };
-  const rightMid = (el) => { const r = el.getBoundingClientRect(); return { x: r.right - sr.left, y: r.top - sr.top + r.height / 2 }; };
+  // getBoundingClientRect returns *zoomed* pixels, but the SVG viewBox is sized in layout
+  // pixels (W/H from scrollWidth/Height). When an ancestor sets CSS zoom — the livestream
+  // applies document.body.style.zoom = 1.3 — every measured coordinate is scaled by the
+  // zoom while the viewBox is not, so edges land ~zoom× too far and clip off-canvas (the
+  // "broken arrow on the stream" that renders fine at zoom 1). Divide measured coords back
+  // into layout space by the factor the SVG itself is scaled by (rendered width ÷ viewBox W).
+  const zf = W && sr.width ? sr.width / W : 1;
+  const leftMid = (el) => { const r = el.getBoundingClientRect(); return { x: (r.left - sr.left) / zf, y: (r.top - sr.top + r.height / 2) / zf }; };
+  const rightMid = (el) => { const r = el.getBoundingClientRect(); return { x: (r.right - sr.left) / zf, y: (r.top - sr.top + r.height / 2) / zf }; };
   for (const e of edges) {
     const fromEl = nodeEl.get(e.from), toEl = nodeEl.get(e.to);
     if (!fromEl || !toEl) continue;
