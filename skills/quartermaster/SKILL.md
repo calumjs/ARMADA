@@ -81,12 +81,23 @@ Returns a single, clear **allow / pause** verdict against the configured budgets
 | Situation | Verdict |
 | --------- | ------- |
 | No budget set (both keys absent) | **ALLOW** — the fleet is deliberately ungoverned. |
-| Cost data unavailable (no `out/costs/`) | **ALLOW + warn** — never block the fleet on missing data. |
-| A single run has spent **>** `budget.perRunUSD` | **PAUSE** — a run overran its per-run budget. |
+| No usable cost data — `out/costs/` absent, empty, unreadable, or every doc malformed | **ALLOW + warn** — "cost data unavailable"; never block the fleet on missing data. |
+| A still **in-flight** (accruing) run has spent **>** `budget.perRunUSD` | **PAUSE** — a running build is overrunning its per-run budget. |
 | Today's projected spend (actual + in-flight reserve) **>** `budget.perDayUSD` | **PAUSE** — the day's budget would be exceeded. |
 | Otherwise | **ALLOW** — within budget. |
 
-The comparison is a **strict `>`**: spend exactly *at* the budget still allows; only spend that
+The per-run pause reflects **current risk only**: it gates on the largest run that is *still
+accruing*, so a run that already **finished** over its per-run budget is recorded (spyglass and the
+post-mortem `overBudget` flag surface it) but does **not** keep the fleet paused for the rest of the
+day once it is no longer in flight. The per-**day** budget, by contrast, is the cumulative guard — it
+uses actual + in-flight-projected spend for the whole day, finished runs included.
+
+"No usable cost data" is the **no-data** case even when `out/costs/` exists: an empty directory, an
+unreadable directory, or a directory whose cost docs are all malformed all yield *zero usable cost
+docs*, so `check` reports **"cost data unavailable"** and degrades open — never a false
+"within budget / $0 spent".
+
+The budget comparison is a **strict `>`**: spend exactly *at* the budget still allows; only spend that
 **would exceed** it pauses. `check` **always exits 0** (a governor must never crash the tick) — the
 decision is on stdout: a leading `ALLOW`/`PAUSE` token in text mode, or `decision` in `--json` mode.
 On a PAUSE it also prints a loud **BUDGET ALERT** line.

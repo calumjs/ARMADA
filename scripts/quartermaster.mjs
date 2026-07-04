@@ -60,12 +60,18 @@ const usd = (v) => (isNum(v) ? `$${v.toFixed(2)}` : 'n/a');
 //   todaySpend      actual recorded spend today (final + accruing-so-far), USD.
 //   inFlightReserve conservative estimate of the REMAINING spend the currently
 //                   in-flight runs will still accrue, USD (>= 0).
-//   maxRunUSD       the largest single run's spend today, USD (or null).
+//   maxRunUSD       the largest single run's spend today, USD (or null) —
+//                   informational (the largest run's cost, for the within-budget
+//                   yardstick).
+//   maxInFlightRunUSD the largest CURRENTLY-ACCRUING (non-terminal) run's spend,
+//                   USD (or null) — the per-run pause gates on THIS, so a finished
+//                   overrun does not stay sticky-paused for the rest of the day.
+//                   Falls back to maxRunUSD when not supplied (pure-rule tests).
 //   dataAvailable   whether any cost signal could be read at all.
 //
 // Returns { decision:'allow'|'pause', code, reason, warn?, breaches? }.
 // ---------------------------------------------------------------------------
-export function verdict({ budget, todaySpend, inFlightReserve, maxRunUSD, dataAvailable }) {
+export function verdict({ budget, todaySpend, inFlightReserve, maxRunUSD, maxInFlightRunUSD, dataAvailable }) {
   const perRun = numOrNull(budget && budget.perRunUSD);
   const perDay = numOrNull(budget && budget.perDayUSD);
   const hasBudget = perRun != null || perDay != null;
@@ -88,9 +94,14 @@ export function verdict({ budget, todaySpend, inFlightReserve, maxRunUSD, dataAv
   const projectedDay = spend + reserve;
   const breaches = [];
 
-  // A single run that has already blown its per-run budget → pause new dispatches.
-  if (perRun != null && isNum(maxRunUSD) && maxRunUSD > perRun) {
-    breaches.push(`a run has spent ${usd(maxRunUSD)} — over the per-run budget ${usd(perRun)}`);
+  // The per-run pause reflects CURRENT risk only: it gates on the largest run that
+  // is still IN-FLIGHT / actively accruing. A run that FINISHED over its per-run
+  // budget is recorded (spyglass/postmortem flags it) but no longer accrues, so it
+  // must not keep halting new dispatches for the rest of the day. Fall back to
+  // maxRunUSD when maxInFlightRunUSD isn't supplied (the pure-rule unit tests).
+  const perRunMax = maxInFlightRunUSD !== undefined ? maxInFlightRunUSD : maxRunUSD;
+  if (perRun != null && isNum(perRunMax) && perRunMax > perRun) {
+    breaches.push(`an in-flight run has spent ${usd(perRunMax)} — over the per-run budget ${usd(perRun)}`);
   }
   // Today's projected spend (actual + a conservative in-flight reserve) would
   // exceed the per-day budget → pause. Strict `>`: AT the budget still allows.
@@ -106,7 +117,7 @@ export function verdict({ budget, todaySpend, inFlightReserve, maxRunUSD, dataAv
   }
   const within = [];
   if (perDay != null) within.push(`day ${usd(projectedDay)}/${usd(perDay)}`);
-  if (perRun != null) within.push(`max run ${usd(maxRunUSD)}/${usd(perRun)}`);
+  if (perRun != null) within.push(`max in-flight run ${usd(perRunMax)}/${usd(perRun)}`);
   return { decision: 'allow', code: 'within-budget', reason: `within budget (${within.join(', ')})` };
 }
 
@@ -167,8 +178,7 @@ function totalOf(doc) {
 // and keep the ones active TODAY (local day). Strictly read-only.
 export function readCostSignals(root, { nowMs = Date.now() } = {}) {
   const costsDir = path.join(root, 'out', 'costs');
-  const dataAvailable = existsSync(costsDir);
-  if (!dataAvailable) {
+  if (!existsSync(costsDir)) {
     return { dataAvailable: false, costsDir, runs: [], todayRuns: [] };
   }
   const runMap = readRunMap(costsDir);
@@ -186,14 +196,16 @@ export function readCostSignals(root, { nowMs = Date.now() } = {}) {
   const startOfDayMs = start.getTime();
 
   const runs = [];
+  let usableDocs = 0; // count of per-run cost docs we could actually read + parse.
   let files = [];
-  try { files = readdirSync(costsDir); } catch { files = []; }
+  try { files = readdirSync(costsDir); } catch { files = []; } // unreadable dir → no usable data.
   for (const f of files) {
     if (!f.endsWith('.json')) continue;
     if (f === '_runs.json' || f === '_schedule.json') continue;
     let doc;
     try { doc = JSON.parse(readFileSync(path.join(costsDir, f), 'utf8')); } catch { continue; }
     if (!doc || typeof doc !== 'object') continue;
+    usableDocs++;
     const runKey = String(doc.run ?? f.replace(/\.json$/, ''));
     const updatedAt = doc.updatedAt || doc.generatedAt || null;
     const startedAt = startedByBranch[runKey] || startedByIssue[runKey] || updatedAt || null;
@@ -211,7 +223,12 @@ export function readCostSignals(root, { nowMs = Date.now() } = {}) {
 
   // "Today" = active since local midnight (by last activity; startedAt as fallback).
   const todayRuns = runs.filter((r) => r.activityMs != null && r.activityMs >= startOfDayMs);
-  return { dataAvailable: true, costsDir, runs, todayRuns, startOfDayMs };
+  // The directory exists, but if NO usable cost doc could be read (empty dir,
+  // unreadable readdir, or every doc malformed/unparseable) there is no usable
+  // cost signal — treat that as the no-data case (degrade OPEN: allow + warn),
+  // NOT a false "within budget / $0 spent".
+  const dataAvailable = usableDocs > 0;
+  return { dataAvailable, costsDir, runs, todayRuns, startOfDayMs };
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +251,9 @@ export function account({ signals, budget, nowMs = Date.now() }) {
     return a + remaining;
   }, 0);
   const maxRunUSD = today.length ? Math.max(...today.map((r) => (isNum(r.cost) ? r.cost : 0))) : null;
+  // The largest run STILL ACCRUING (non-terminal) — the per-run pause gates on this
+  // so a finished overrun stops halting the fleet once it is no longer in flight.
+  const maxInFlightRunUSD = inFlight.length ? Math.max(...inFlight.map((r) => (isNum(r.cost) ? r.cost : 0))) : null;
 
   // Burn window starts at the earliest activity today.
   const stamps = today.map((r) => r.startedAtMs || r.activityMs).filter((n) => isNum(n));
@@ -247,6 +267,7 @@ export function account({ signals, budget, nowMs = Date.now() }) {
     inFlightSoFar,
     inFlightReserve,
     maxRunUSD,
+    maxInFlightRunUSD,
     runCount: today.length,
     perRunSpends: today.map((r) => ({ run: r.run, cost: r.cost, final: r.final, priced: r.priced })),
     ...burn,
@@ -312,7 +333,7 @@ function runReport(root, args) {
   const L = [];
   L.push('⚓ quartermaster — fleet spend, today');
   if (!signals.dataAvailable) {
-    L.push('  cost data: UNAVAILABLE (no out/costs/ — cost tracking not wired; crows-nest `costs` off?)');
+    L.push('  cost data: UNAVAILABLE (no readable cost docs under out/costs/ — cost tracking not wired yet, or crows-nest `costs` off?)');
     L.push('  today\'s spend: n/a · in-flight: n/a · burn-rate: n/a · forecast: n/a');
   } else {
     L.push(`  today's spend:   ${usd(acct.todaySpend)}   (${acct.runCount} run${acct.runCount === 1 ? '' : 's'} active today)`);
@@ -344,6 +365,7 @@ function runCheck(root, args) {
     todaySpend: acct.todaySpend,
     inFlightReserve: acct.inFlightReserve,
     maxRunUSD: acct.maxRunUSD,
+    maxInFlightRunUSD: acct.maxInFlightRunUSD,
     dataAvailable: signals.dataAvailable,
   });
 
@@ -358,6 +380,7 @@ function runCheck(root, args) {
       todaySpend: round(acct.todaySpend),
       inFlightReserve: round(acct.inFlightReserve),
       maxRun: acct.maxRunUSD == null ? null : round(acct.maxRunUSD),
+      maxInFlightRun: acct.maxInFlightRunUSD == null ? null : round(acct.maxInFlightRunUSD),
       forecastEndOfDay: round(acct.forecastEndOfDay),
     }, null, 2));
     return 0;

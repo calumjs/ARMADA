@@ -8,7 +8,10 @@
 //
 // Run: node scripts/quartermaster.test.mjs
 
-import { verdict, burnAndForecast, account } from './quartermaster.mjs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import os from 'os';
+import path from 'path';
+import { verdict, burnAndForecast, account, readCostSignals } from './quartermaster.mjs';
 
 let pass = 0, fail = 0;
 function check(name, cond) {
@@ -82,6 +85,87 @@ console.log('quartermaster — account() over synthetic signals');
   // The full fold should then PAUSE: projected 6 + 3 = 9 > per-day 8.
   const v = verdict({ budget: { perRunUSD: 5, perDayUSD: 8 }, todaySpend: acct.todaySpend, inFlightReserve: acct.inFlightReserve, maxRunUSD: acct.maxRunUSD, dataAvailable: true });
   check('folded account → pause over per-day 8', v.decision === 'pause');
+}
+
+// ---------------------------------------------------------------------------
+// FIX 1 — the per-run pause reflects CURRENT risk only: it gates on IN-FLIGHT
+// runs, not finished ones. A completed overrun must NOT stay sticky-paused all
+// day; a run currently over its per-run budget SHOULD pause.
+// ---------------------------------------------------------------------------
+console.log('quartermaster — per-run pause is not sticky on finished runs (FIX 1)');
+
+// Direct on the pure rule: a null in-flight max (nothing accruing) never trips per-run.
+check('finished overrun, nothing in-flight (maxInFlightRunUSD null) → allow',
+  verdict({ budget: { perRunUSD: 5 }, todaySpend: 9, inFlightReserve: 0, maxRunUSD: 9, maxInFlightRunUSD: null, dataAvailable: true }).decision === 'allow');
+check('in-flight run over per-run (maxInFlightRunUSD 6) → pause',
+  verdict({ budget: { perRunUSD: 5 }, todaySpend: 6, inFlightReserve: 0, maxRunUSD: 6, maxInFlightRunUSD: 6, dataAvailable: true }).decision === 'pause');
+
+// End-to-end through account(): a FINISHED overrun with nothing in flight.
+{
+  const nowMs = new Date('2026-07-04T14:00:00').getTime();
+  const t = nowMs - 3_600_000;
+  const signals = {
+    dataAvailable: true,
+    todayRuns: [{ run: 'over', cost: 9, priced: true, final: true, startedAtMs: t, activityMs: nowMs - 1000 }],
+    runs: [],
+  };
+  const acct = account({ signals, budget: { perRunUSD: 5 }, nowMs });
+  check('finished overrun → maxInFlightRunUSD is null', acct.maxInFlightRunUSD === null);
+  check('finished overrun → maxRunUSD still records it ($9)', acct.maxRunUSD === 9);
+  const v = verdict({ budget: { perRunUSD: 5 }, todaySpend: acct.todaySpend, inFlightReserve: acct.inFlightReserve, maxRunUSD: acct.maxRunUSD, maxInFlightRunUSD: acct.maxInFlightRunUSD, dataAvailable: true });
+  check('folded: finished per-run overrun, nothing in-flight → ALLOW (not sticky-paused)', v.decision === 'allow');
+}
+// End-to-end through account(): a run currently IN-FLIGHT and over per-run.
+{
+  const nowMs = new Date('2026-07-04T14:00:00').getTime();
+  const t = nowMs - 3_600_000;
+  const signals = {
+    dataAvailable: true,
+    todayRuns: [{ run: 'live', cost: 6, priced: true, final: false, startedAtMs: t, activityMs: nowMs - 1000 }],
+    runs: [],
+  };
+  const acct = account({ signals, budget: { perRunUSD: 5 }, nowMs });
+  check('in-flight overrun → maxInFlightRunUSD is $6', acct.maxInFlightRunUSD === 6);
+  const v = verdict({ budget: { perRunUSD: 5, perDayUSD: 1000 }, todaySpend: acct.todaySpend, inFlightReserve: acct.inFlightReserve, maxRunUSD: acct.maxRunUSD, maxInFlightRunUSD: acct.maxInFlightRunUSD, dataAvailable: true });
+  check('folded: in-flight run currently over per-run → PAUSE', v.decision === 'pause' && v.code === 'over-budget');
+}
+
+// ---------------------------------------------------------------------------
+// FIX 2 — a present-but-empty or all-malformed out/costs/ is the NO-DATA case:
+// allow + warn ("cost data unavailable"), not a false "$0 within budget".
+// ---------------------------------------------------------------------------
+console.log('quartermaster — no USABLE cost data → degrade open + warn (FIX 2)');
+{
+  // out/costs/ exists but is empty → no usable cost signal.
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'qm-empty-'));
+  mkdirSync(path.join(tmp, 'out', 'costs'), { recursive: true });
+  const s = readCostSignals(tmp, { nowMs: Date.now() });
+  check('existing-but-empty out/costs/ → dataAvailable false', s.dataAvailable === false);
+  const v = verdict({ budget: { perDayUSD: 10 }, todaySpend: 0, inFlightReserve: 0, maxRunUSD: null, maxInFlightRunUSD: null, dataAvailable: s.dataAvailable });
+  check('empty cost dir → ALLOW + warn (no-data), not $0-within-budget', v.decision === 'allow' && v.warn === true && v.code === 'no-data');
+  check('empty cost dir → reason says cost data unavailable', /cost data unavailable/.test(v.reason));
+  rmSync(tmp, { recursive: true, force: true });
+}
+{
+  // Every cost doc present but malformed/unparseable → no usable cost signal.
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'qm-bad-'));
+  const cd = path.join(tmp, 'out', 'costs');
+  mkdirSync(cd, { recursive: true });
+  writeFileSync(path.join(cd, 'run-1.json'), '{ not valid json');
+  writeFileSync(path.join(cd, 'run-2.json'), 'also not json at all');
+  const s = readCostSignals(tmp, { nowMs: Date.now() });
+  check('all-malformed cost docs → dataAvailable false', s.dataAvailable === false);
+  rmSync(tmp, { recursive: true, force: true });
+}
+{
+  // Guard against over-triggering: one readable doc → data IS available.
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'qm-ok-'));
+  const cd = path.join(tmp, 'out', 'costs');
+  mkdirSync(cd, { recursive: true });
+  writeFileSync(path.join(cd, 'run-1.json'), JSON.stringify({ run: 'run-1', totalCost: 1.5, final: true, updatedAt: new Date().toISOString() }));
+  const s = readCostSignals(tmp, { nowMs: Date.now() });
+  check('one readable cost doc → dataAvailable true', s.dataAvailable === true);
+  rmSync(tmp, { recursive: true, force: true });
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
