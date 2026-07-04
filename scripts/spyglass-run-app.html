@@ -245,7 +245,11 @@
   .run { position: relative; }
   .voyage-row {
     display: grid; align-items: center; gap: 13px;
-    grid-template-columns: 30px 60px minmax(0,1fr) 150px 96px 92px 66px 14px;
+    /* One SHARED template for in-flight AND recent rows so status / cost / time line
+       up cleanly across both lanes (#121). The time column is fixed (not max-content)
+       and wide enough for the longest completed-voyage stamp ("shipped 45m 06s ago"),
+       so it never drifts row-to-row and the recent lane aligns with the in-flight rows. */
+    grid-template-columns: 30px 60px minmax(0,1fr) 150px 96px 92px 140px 14px;
     padding: 11px 15px;
     background: linear-gradient(180deg, var(--wood-2), var(--wood));
     border: 1px solid var(--wood-edge); border-radius: 12px;
@@ -293,9 +297,9 @@
   .s-cost.est .tag { color: var(--brass); }
   @keyframes cost-pulse { 0%,100% { opacity: 1; } 50% { opacity: .62; } }
   .s-elapsed { color: var(--ink-faint); font-family: var(--mono); font-size: 12px; text-align: right; }
-  /* completed-voyage landing time ("shipped 1h 08m ago") — wider text than the
-     compact elapsed clock, so it must NOT wrap inside the time column (recent
-     rows widen that column below). */
+  /* completed-voyage landing time ("shipped 1h 08m ago") — sits in the SAME fixed
+     time column as the in-flight elapsed clock (140px, shared template above), so it
+     never wraps and the recent rows stay aligned with the in-flight rows. */
   .s-when { color: var(--ink-faint); font-family: var(--mono); font-size: 12px; text-align: right; white-space: nowrap; }
   .chev { color: var(--ink-faint); font-size: 10px; text-align: center; transition: transform .14s ease; }
   .run.expanded > .voyage-row .chev { transform: rotate(90deg); color: var(--brass); }
@@ -317,13 +321,13 @@
   .lane-note { color: var(--ink-faint); font-style: italic; font-family: var(--serif);
     padding: 14px 6px; text-align: center; }
 
-  /* a completed voyage sits "at anchor": brass seam on the left, calmer wood, no bob */
+  /* a completed voyage sits "at anchor": brass seam on the left, calmer wood, no bob.
+     It INHERITS the shared .voyage-row grid template (fixed 140px time column) so the
+     status / cost / time columns line up cleanly within the lane AND against the
+     in-flight rows above — no per-row max-content drift (#121). */
   .run.recent > .voyage-row {
     background: linear-gradient(180deg, #12222f, #0e1c29);
     border-color: var(--wood-edge); border-left: 3px solid var(--brass-dim);
-    /* widen the time column (was 66px) so "shipped 1h 08m ago" fits on one line
-       instead of wrapping/overlapping; the title (1fr) absorbs the difference. */
-    grid-template-columns: 30px 60px minmax(0,1fr) 150px 96px 92px max-content 14px;
   }
   .run.recent.blocked > .voyage-row { border-left-color: var(--blocked); }
   .run.recent > .voyage-row:hover { border-color: var(--wood-edge-2); }
@@ -477,7 +481,14 @@ function compact(n) {
   if (Math.abs(n) >= 1000) return (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1).replace(/\.0$/, "") + "k";
   return String(n);
 }
-function money(n) { return (n == null || !Number.isFinite(n)) ? null : "$" + n.toFixed(2); }
+// A positive amount below a cent would render "$0.00" under toFixed(2) — a real but
+// mis-reading figure. Show "<$0.01" so a genuine sub-cent cost is never confused with
+// zero / no-data (#121). Exactly-zero and non-numbers are handled by the caller (→ —).
+function money(n) {
+  if (n == null || !Number.isFinite(n)) return null;
+  if (n > 0 && n < 0.005) return "<$0.01";
+  return "$" + n.toFixed(2);
+}
 // elapsed from an ISO start, in a compact ship's-log form; ticks live (see below).
 function elapsedText(iso) {
   if (!iso) return null;
@@ -515,10 +526,14 @@ function estCostLive(run) { return estFromSince(run && run.cost && run.cost.cost
 //   estimate, no rate → "accruing…"          (no number — but never a false $0.00)
 //   recorded+accruing → "$X"   tag "so far"  (real-so-far, still accruing)
 //   recorded+final    → "$X"                 (settled — no caveat)
-//   nothing yet       → "—"
+//   nothing yet / $0  → "—"                  (absent OR no PRICED usage — never $0.00)
 function costCell(run) {
   const c = (run && run.cost) || {};
-  const rec = c.present && typeof c.totalCost === "number";
+  // A recorded figure only counts as a real cost when it is a POSITIVE number.
+  // totalCost === 0 means the run reconciled with no priced usage (e.g. unpriced
+  // codex/gpt only, or an empty file) — a terminal run must degrade to "—", never
+  // render a misleading "$0.00" (#121). Sub-cent positives read "<$0.01" via money().
+  const rec = c.present && typeof c.totalCost === "number" && c.totalCost > 0;
   if (c.estimated) {
     const live = estCostLive(run);
     if (live == null) return { text: "accruing…", cls: "est accruing", tag: null, title: "cost is accruing — no usage recorded yet", since: null };
