@@ -144,6 +144,19 @@
   .gauge.done .n { color: var(--done); }
   .gauge.blocked .n { color: var(--blocked); }
   .gauge.blocked:not(.zero) { background: #1c0f0b; }
+  /* the "N shipped today" ticker (#127): a celebratory flourish when the count rises —
+     the gauge pops + gains a green glow for a moment, then settles back. */
+  .gauge.shipped-today { transition: box-shadow .5s ease, background .5s ease; }
+  .gauge.shipped-today.flourish {
+    animation: ticker-pop 1.6s ease-out 1;
+    background: #0d1f17;
+    box-shadow: inset 0 0 0 1px rgba(55,181,140,.4), 0 0 18px rgba(55,181,140,.28);
+  }
+  @keyframes ticker-pop {
+    0% { transform: scale(1); }
+    22% { transform: scale(1.16); }
+    100% { transform: scale(1); }
+  }
   .m-cost {
     display: flex; flex-direction: column; justify-content: center; gap: 1px;
     padding: 10px 18px; margin-left: auto; text-align: right; border-left: 1px solid var(--line);
@@ -265,12 +278,38 @@
     0% { box-shadow: 0 0 0 0 rgba(55,181,140,.55); border-color: var(--done); }
     100% { box-shadow: 0 0 0 14px rgba(55,181,140,0); }
   }
+  /* celebratory flourish (#127): a brief "just shipped" pennant that rises off the row
+     when a run lands (Merged/Shipped), building on the just-shipped glow above. It is
+     appended once on the transition and self-removes; reduced-motion shows it static. */
+  .landed-pennant {
+    position: absolute; top: -9px; right: 14px; z-index: 3; pointer-events: none;
+    font-size: 10px; letter-spacing: .06em; font-weight: 700; white-space: nowrap;
+    color: #06231a; background: linear-gradient(180deg, var(--brass-bright), var(--done));
+    border-radius: 999px; padding: 2px 10px;
+    box-shadow: 0 3px 11px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.25);
+    animation: pennant-rise 3.2s ease-out 1 forwards;
+  }
+  @keyframes pennant-rise {
+    0% { opacity: 0; transform: translateY(7px) scale(.9); }
+    12% { opacity: 1; transform: translateY(0) scale(1); }
+    78% { opacity: 1; transform: translateY(0) scale(1); }
+    100% { opacity: 0; transform: translateY(-5px); }
+  }
   .ship { width: 30px; height: 22px; display: flex; align-items: center; justify-content: center; }
   .ship svg { width: 28px; height: 21px; }
   .run:not(.blocked) .ship.sailing svg { animation: bob 3.6s ease-in-out infinite; }
   @keyframes bob { 0%,100% { transform: translateY(0) rotate(-1.2deg); } 50% { transform: translateY(-1.6px) rotate(1.2deg); } }
   .s-num { color: var(--brass); font-family: var(--mono); font-weight: 650; font-size: 13px; }
   .s-title { color: var(--parch); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* click-through link affordance (#127): the number → its GitHub issue/PR, the title
+     → the PR when one exists (else the issue). Read-only deep links, target=_blank
+     rel=noopener, opened in a new tab; the rest of the row still toggles the log card. */
+  a.s-num, a.s-title { text-decoration: none; cursor: pointer; }
+  a.s-num:hover { color: var(--brass-bright); text-decoration: underline; }
+  a.s-title:hover { color: var(--parch); text-decoration: underline; }
+  a.s-num:focus-visible, a.s-title:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; border-radius: 3px; }
+  .s-num .ext { font-size: 8.5px; opacity: .5; margin-left: 2px; vertical-align: super; }
+  a.s-num:hover .ext, a.s-num:focus-visible .ext { opacity: 1; }
 
   /* voyage progress bar (the signature) */
   .voyage { display: inline-grid; grid-auto-flow: column; gap: 3px; align-items: center; }
@@ -434,6 +473,8 @@
     .stage.active .dot { box-shadow: none; }
     .chev { transition: none; }
     .run.just-shipped > .voyage-row { animation: none; }
+    .landed-pennant { animation: none; opacity: 1; }
+    .gauge.shipped-today.flourish { animation: none; }
   }
 </style>
 </head>
@@ -583,6 +624,7 @@ function shipSVG(color) {
 const runKey = (run) => "r:" + (run.issueNumber != null ? "i" + run.issueNumber : "p" + run.prNumber);
 const expanded = new Set();        // run keys the operator has opened — preserved across polls
 let prevState = new Map();         // runKey -> { group, activeIndex, blocked } from the last render
+let prevShippedToday = null;       // last-rendered shipped-today count — drives the manifest ticker flourish (#127)
 let sortMode = "stage";
 
 function groupOf(run) {
@@ -611,6 +653,24 @@ function buildVoyage(run) {
   return bar;
 }
 
+// A row deep-link affordance (#127): the number → the run's own GitHub page (its
+// issue, or its PR when there is no issue); the title → the PR when one exists (else
+// the issue). READ-ONLY — just links, opened in a NEW tab (target=_blank, rel=noopener),
+// no mutation. Falls back to a plain span when no URL is known (degraded / repo not
+// resolved) so the row still renders. Click + Enter/Space stopPropagation so following
+// the deep link never also toggles the log card.
+function deepLink(cls, text, url, titleText, withExt) {
+  if (!url) return $("span", cls, text);
+  const a = $("a", cls);
+  a.href = url; a.target = "_blank"; a.rel = "noopener";
+  if (titleText) a.title = titleText;
+  a.appendChild(document.createTextNode(text));
+  if (withExt) { const g = $("span", "ext", "↗"); g.setAttribute("aria-hidden", "true"); a.appendChild(g); }
+  a.addEventListener("click", (e) => e.stopPropagation());
+  a.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") e.stopPropagation(); });
+  return a;
+}
+
 // ---- compact voyage row (default overview) --------------------------------
 function renderRow(run, isOpen) {
   const num = "#" + (run.issueNumber ?? run.prNumber ?? "?");
@@ -625,8 +685,14 @@ function renderRow(run, isOpen) {
   const ship = $("span", "ship" + (run.blocked || run.terminal ? "" : " sailing"));
   ship.innerHTML = shipSVG(color);
   row.appendChild(ship);
-  row.appendChild($("span", "s-num", num));
-  row.appendChild($("span", "s-title", esc(run.title)));
+  // number → its own GitHub unit (issue, or PR when there's no issue); title → the PR
+  // if one exists, else the issue. Both open in a new tab; read-only deep links (#127).
+  const numUnitIsPr = run.issueNumber == null && run.prNumber != null;
+  const numUrl = numUnitIsPr ? run.prUrl : run.issueUrl;
+  row.appendChild(deepLink("s-num", num, numUrl, numUrl ? `open ${num} on GitHub` : null, true));
+  const titleUrl = run.prUrl || run.issueUrl;
+  const titleTip = titleUrl ? (run.prUrl ? `open PR #${run.prNumber} on GitHub` : `open ${num} on GitHub`) : null;
+  row.appendChild(deepLink("s-title", esc(run.title), titleUrl, titleTip, false));
   row.appendChild(buildVoyage(run));
 
   const st = $("span", "s-status", run.blocked ? "Blocked" : esc(run.status));
@@ -853,8 +919,14 @@ function renderRun(run) {
     block.replaceWith(next);
     if (expanded.has(key)) { const s = next.querySelector(".voyage-row"); if (s) s.focus(); }
   };
-  row.addEventListener("click", toggle);
-  row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); toggle(); } });
+  // A click / key on an inner deep link (or copy/open button) acts on that control —
+  // it must not also toggle the card (#127). Inner links already stopPropagation; this
+  // target guard is the belt-and-braces so the row toggle only fires on the row body.
+  row.addEventListener("click", (e) => { if (e.target.closest("a, button")) return; toggle(); });
+  row.addEventListener("keydown", (e) => {
+    if (e.target.closest("a, button")) return;
+    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); toggle(); }
+  });
   block.appendChild(row);
   if (isOpen) block.appendChild(renderCard(run));
   return block;
@@ -886,13 +958,19 @@ function renderFleet(state, runs) {
     gauges.appendChild(g);
   }
   bar.appendChild(gauges);
+  // "N shipped today" ticker (#127) — a celebratory flourish the moment the count rises
+  // (a fresh landing this poll), so a merge lands with a little fanfare on the board. The
+  // flourish is suppressed on first paint (no prior count to compare) so a page load is calm.
   const shippedToday = r && typeof r.shippedToday === "number" ? r.shippedToday : null;
   if (shippedToday != null) {
-    const st = $("div", "gauge done" + (shippedToday === 0 ? " zero" : ""));
+    const rising = prevShippedToday != null && shippedToday > prevShippedToday;
+    const st = $("div", "gauge done shipped-today" + (shippedToday === 0 ? " zero" : "") + (rising ? " flourish" : ""));
+    st.id = "gauge-shipped-today";
     st.title = "Completed voyages that landed today (see the recent-voyages lane)";
     st.appendChild($("span", "n", String(shippedToday)));
     st.appendChild($("span", "lbl", "shipped today"));
     bar.appendChild(st);
+    prevShippedToday = shippedToday;
   }
   // fleet cost folds in-flight estimates (#115) — caveat + "~" when it does.
   const estIncl = !!(r && r.estIncluded);
@@ -1256,7 +1334,14 @@ function render(state) {
   // flourish + optional chime for ship/block transitions (either lane)
   for (const ev of events) {
     const block = document.querySelector(`.run[data-key="${CSS.escape(ev.key)}"]`);
-    if (ev.kind === "shipped" && block) block.classList.add("just-shipped");
+    if (ev.kind === "shipped" && block) {
+      block.classList.add("just-shipped");
+      // celebratory flourish (#127): a brief "just shipped" pennant rising off the row,
+      // on top of the existing glow. Appended once; self-removes after the animation.
+      const pennant = $("span", "landed-pennant", "⚓ just shipped");
+      block.appendChild(pennant);
+      setTimeout(() => pennant.remove(), 3400);
+    }
     foghorn(ev.kind);
   }
 }
