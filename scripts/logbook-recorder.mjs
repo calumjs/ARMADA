@@ -924,6 +924,10 @@ async function runRecord(args) {
   // into the run summary so a blank-frames capture is REPORTED per §0 rather than
   // silently swallowed into the final video (issue #68).
   const captureDegraded = [];
+  // Informational capture notes (NOT degrades) — e.g. which system browser drove a clean
+  // web capture (#103). Kept off `captureDegraded` so a healthy walkthrough is never
+  // reported as degraded.
+  const captureNotes = [];
 
   // Plan each chapter: resolve its narration clip (cache/voice/caption) and the
   // reach steps the capture step will replay.
@@ -995,7 +999,7 @@ async function runRecord(args) {
   for (const ch of chapterPlan) {
     let clipFile;
     if (surface === 'web' && capture.status === 'ready' && ffmpegExe) {
-      clipFile = await captureWeb(recipe, ch, ffmpegExe, captureDegraded);
+      clipFile = await captureWeb(recipe, ch, ffmpegExe, captureDegraded, captureNotes);
     } else {
       // No live capture backend for a web surface ⇒ a storyboard-card deck. Per
       // AC2 this deck is only ever an explicitly-NAMED fallback, never a silent
@@ -1017,6 +1021,9 @@ async function runRecord(args) {
     summary.degraded = [...degraded, ...captureDegraded];
     summary.captureDegraded = captureDegraded;
   }
+  // Informational capture notes (e.g. system-browser used) ride separately — they do NOT
+  // mark the run degraded (#103).
+  if (captureNotes.length) summary.captureVia = captureNotes;
 
   // --- Assemble: divider cards + lower-thirds, concat, aligned audio, self-check
   if (ffmpegExe) {
@@ -1337,7 +1344,7 @@ async function launchBrowser(pw, recipe) {
 // drifts a synthetic cursor to it, and HOLDS for the beat's narration-clip duration so
 // the highlight stays synced to the voice-over. With no live video this same spotlight
 // is drawn onto an annotated still (see captureWebStill) and the degrade is named.
-async function captureWeb(recipe, chapter, ffmpegExe, captureDegraded = []) {
+async function captureWeb(recipe, chapter, ffmpegExe, captureDegraded = [], captureNotes = []) {
   // Prefer a URL that actually renders (preview/live) over the worktree dev server,
   // with the dev server as the fallback (issue #91). `entry` is mutable: if the
   // preferred URL warms up blank we switch to the fallback before recording.
@@ -1380,10 +1387,14 @@ async function captureWeb(recipe, chapter, ffmpegExe, captureDegraded = []) {
       if (!captureDegraded.includes(launched.warning)) captureDegraded.push(launched.warning);
     }
     if (via && via.system) {
-      // Not a degrade — capture proceeds normally — but surface WHICH browser drove
-      // it so a run on a Chromium-less host reads clearly in the summary (issue #103).
+      // NOT a degrade — capture proceeds normally — but surface WHICH browser drove it so
+      // a run on a Chromium-less host reads clearly in the summary (issue #103). This rides
+      // the informational `captureNotes` channel, NOT `captureDegraded`: folding a clean
+      // system-browser capture into the degrade array would falsely mark a healthy
+      // live-motion walkthrough as degraded for any consumer keying off `summary.degraded`
+      // (the logbook skill's PR messaging does exactly that).
       const msg = `chapter ${chapter.index} ("${chapter.title}") web capture via system browser (${via.detail})`;
-      if (!captureDegraded.includes(msg)) captureDegraded.push(msg);
+      if (!captureNotes.includes(msg)) captureNotes.push(msg);
     }
 
     // (a) WARM-UP — prime each route in a throwaway, NON-recording context so the
