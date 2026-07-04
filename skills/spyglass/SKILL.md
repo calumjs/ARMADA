@@ -350,7 +350,8 @@ The manifest **groups** are derived from the real voyage stages (see the mapping
 = Awaiting merge; **done** = Merged + Shipped; and **blocked** overrides all of them for any blocked
 run. The snapshot emits each run's `group` and a top-level `rollup` object (counts per group +
 `inFlight` + `totalCost` + `costKnown` + `estIncluded` + `recent` + `shippedToday` + `waiting` +
-`eligible` + `held`), **additively — schema 6** (an older snapshot is regrouped client-side against the
+`eligible` + `held` + `readyToMerge`), **additively — schema 7** (a pre-7 snapshot without the
+`readyToMerge[]` array simply shows no ready-to-merge lane — #140; an older snapshot is regrouped client-side against the
 same rule; a schema-2 snapshot with no `recentRuns` simply shows no harbour lane; a pre-4 snapshot
 without the cost estimate fields just shows recorded cost or `n/a`, never a wrong figure; a pre-5
 snapshot without the `scheduler` block simply shows no horizon graph — the waiting runs stay in the
@@ -397,6 +398,30 @@ matching the same ARMADA nautical theme.
   **ages out** on a later poll. Expanded state is preserved across the
   hop. **Graceful empty states:** an idle fleet with recent arrivals shows the runs under a calm "no
   voyages under way" note; a truly empty board (no in-flight, no recent) shows **"an empty harbour"**.
+
+### Ready to merge — the human merge queue (#140)
+
+A distinct **ready-to-merge lane** surfaces PRs that have **passed review and are mergeable but are
+NOT yet merged** — the `ready_awaiting_human` terminal (crows-nest §3e: "reviewed, addressed, green",
+`autoMerge` off). On ARMADA's **own** fleet PRs this is the **common resting state**, because the
+self-approval classifier blocks the lookout from self-merging, so a human must run the merge — and
+without an at-a-glance view they pile up unseen (the incident that chartered this: #132/#137/#138 sat
+reviewed-clean and mergeable, easily lost track of). The lane sits **prominently below the manifest
+bar** with a green **"clear to merge"** seam.
+
+- **Derived from the same real state — no new signal.** A run is ready-to-merge when it is an
+  **in-flight PR**, not blocked/terminal, at the **`Awaiting merge` stage** (`IDX.AWAITING` — i.e.
+  `reviewDecision APPROVED`, the same signal the stage mapping uses), **and** GitHub reports the PR
+  cleanly **`mergeable` (MERGEABLE** — not `BEHIND`/`CONFLICTING`/`UNKNOWN`), **and** CI isn't
+  red/pending. Computed in `buildRun` (`readyToMerge` / `mergeable` / `mergeCommand` / `waitingSince`),
+  collected into the snapshot's **`readyToMerge[]`** (longest-waiting first) with `rollup.readyToMerge`.
+- **Each row shows** the PR **#/title** (read-only deep link), a **live-ticking wait timer** ("waiting
+  12m 30s" — since the PR last changed, i.e. crows-nest's *awaiting human merge* hand-back), and the
+  exact **copyable** command **`gh pr merge <n> --squash --delete-branch`** (the house squash+delete
+  merge), reusing the shared copy affordance.
+- **Read-only invariant preserved.** The lane only **shows** the command (copyable) — it **never** runs
+  a merge or writes anything. The same PRs also remain in the in-flight voyage list; this is a focused,
+  actionable *view*, not a separate state. Empty → the lane renders nothing.
 
 ### Each run expands to a log card
 

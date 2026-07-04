@@ -1,5 +1,5 @@
 {
-  "schema": 4,
+  "schema": 7,
   "appVersion": "fixture000000",
   "estRatePerMin": 0.03,
   "generatedAt": "2026-07-04T12:00:00.000Z",
@@ -46,6 +46,10 @@
       "folder": null,
       "startedAt": "2026-07-04T11:20:00.000Z",
       "ci": null,
+      "mergeable": null,
+      "readyToMerge": false,
+      "mergeCommand": null,
+      "waitingSince": null,
       "stages": [
         "Queued",
         "Building",
@@ -91,6 +95,10 @@
       "folder": "C:/DataCalumSimpson/128-logbook-system-browser",
       "startedAt": "2026-07-04T09:00:00.000Z",
       "ci": null,
+      "mergeable": null,
+      "readyToMerge": false,
+      "mergeCommand": null,
+      "waitingSince": null,
       "stages": [
         "Queued",
         "Building",
@@ -140,16 +148,7 @@
         "costSince": "2026-07-04T09:00:00.000Z",
         "estRatePerMin": 0.03,
         "estTotalCost": null,
-        "updatedAt": "2026-07-04T11:40:00.000Z",
-        "modelUsage": [
-          {
-            "model": "claude-opus-4-8",
-            "tokens": 1557000,
-            "cost": 4.12,
-            "tokenShare": 1,
-            "costShare": 1
-          }
-        ]
+        "updatedAt": "2026-07-04T11:40:00.000Z"
       },
       "recent": false,
       "outcome": null,
@@ -168,6 +167,10 @@
       "folder": "C:/DataCalumSimpson/124-muster-scoped-kills",
       "startedAt": "2026-07-04T06:00:00.000Z",
       "ci": "green",
+      "mergeable": null,
+      "readyToMerge": false,
+      "mergeCommand": null,
+      "waitingSince": null,
       "stages": [
         "Queued",
         "Building",
@@ -225,23 +228,7 @@
         "costSince": "2026-07-04T06:00:00.000Z",
         "estRatePerMin": 0.03,
         "estTotalCost": null,
-        "updatedAt": "2026-07-04T11:40:00.000Z",
-        "modelUsage": [
-          {
-            "model": "claude-opus-4-8",
-            "tokens": 2521000,
-            "cost": 5.91,
-            "tokenShare": 0.8317387000989772,
-            "costShare": 0.8602620087336245
-          },
-          {
-            "model": "claude-haiku-4-5",
-            "tokens": 510000,
-            "cost": 0.96,
-            "tokenShare": 0.16826129990102276,
-            "costShare": 0.13973799126637554
-          }
-        ]
+        "updatedAt": "2026-07-04T11:40:00.000Z"
       },
       "recent": false,
       "outcome": null,
@@ -260,6 +247,10 @@
       "folder": "C:/DataCalumSimpson/121-crows-nest-rebase-cap",
       "startedAt": "2026-07-04T03:00:00.000Z",
       "ci": "green",
+      "mergeable": "MERGEABLE",
+      "readyToMerge": true,
+      "mergeCommand": "gh pr merge 122 --squash --delete-branch",
+      "waitingSince": "2026-07-04T11:08:00.000Z",
       "stages": [
         "Queued",
         "Building",
@@ -309,16 +300,79 @@
         "costSince": null,
         "estRatePerMin": 0.03,
         "estTotalCost": null,
-        "updatedAt": "2026-07-04T11:40:00.000Z",
-        "modelUsage": [
+        "updatedAt": "2026-07-04T11:40:00.000Z"
+      },
+      "recent": false,
+      "outcome": null,
+      "completedAt": null,
+      "mergeCommitOid": null,
+      "mergeCommitUrl": null
+    },
+    {
+      "issueNumber": 126,
+      "prNumber": 127,
+      "title": "spyglass: dependency-graph edge synthesis",
+      "issueUrl": "https://github.com/calumjs/ARMADA/issues/126",
+      "prUrl": "https://github.com/calumjs/ARMADA/pull/127",
+      "branch": "126-spyglass-edge-synth",
+      "worktree": "C:/DataCalumSimpson/126-spyglass-edge-synth",
+      "folder": "C:/DataCalumSimpson/126-spyglass-edge-synth",
+      "startedAt": "2026-07-03T23:00:00.000Z",
+      "ci": "green",
+      "mergeable": "MERGEABLE",
+      "readyToMerge": true,
+      "mergeCommand": "gh pr merge 127 --squash --delete-branch",
+      "waitingSince": "2026-07-04T09:20:00.000Z",
+      "stages": [
+        "Queued",
+        "Building",
+        "PR opened",
+        "In review",
+        "Awaiting merge",
+        "Merged",
+        "Shipped"
+      ],
+      "stageCaptions": [
+        "armed & waiting for the lookout",
+        "shipwright: research → plan → implement → validate",
+        "branch pushed, PR open",
+        "muster: 2-lens review → consolidate → address",
+        "green & approved — at the merge gate",
+        "gated merge landed",
+        "closed; logbook walkthrough + cartography"
+      ],
+      "activeIndex": 4,
+      "status": "Awaiting merge",
+      "blocked": false,
+      "terminal": false,
+      "group": "awaiting-merge",
+      "doneVideo": null,
+      "cost": {
+        "present": true,
+        "pointer": "out/costs/<branch>.json",
+        "models": [
           {
             "model": "claude-opus-4-8",
-            "tokens": 2039000,
-            "cost": 5.03,
-            "tokenShare": 1,
-            "costShare": 1
+            "in": 178000,
+            "out": 37000,
+            "cacheRead": 1410000,
+            "cacheWrite": 88000,
+            "cost": 4.28
           }
-        ]
+        ],
+        "sessions": 2,
+        "subagents": 2,
+        "codex": 0,
+        "matchMode": "branch",
+        "unpriced": [],
+        "totalCost": 4.28,
+        "final": false,
+        "accruing": false,
+        "estimated": false,
+        "costSince": null,
+        "estRatePerMin": 0.03,
+        "estTotalCost": null,
+        "updatedAt": "2026-07-04T11:40:00.000Z"
       },
       "recent": false,
       "outcome": null,
@@ -337,6 +391,10 @@
       "folder": "C:/DataCalumSimpson/118-foghorn-tts-cache",
       "startedAt": "2026-07-04T01:00:00.000Z",
       "ci": "red",
+      "mergeable": null,
+      "readyToMerge": false,
+      "mergeCommand": null,
+      "waitingSince": null,
       "stages": [
         "Queued",
         "Building",
@@ -386,16 +444,7 @@
         "costSince": null,
         "estRatePerMin": 0.03,
         "estTotalCost": null,
-        "updatedAt": "2026-07-04T11:40:00.000Z",
-        "modelUsage": [
-          {
-            "model": "claude-opus-4-8",
-            "tokens": 1235000,
-            "cost": 3.44,
-            "tokenShare": 1,
-            "costShare": 1
-          }
-        ]
+        "updatedAt": "2026-07-04T11:40:00.000Z"
       },
       "recent": false,
       "outcome": null,
@@ -416,6 +465,10 @@
       "folder": null,
       "startedAt": "2026-07-02T12:00:00.000Z",
       "ci": "green",
+      "mergeable": null,
+      "readyToMerge": false,
+      "mergeCommand": null,
+      "waitingSince": null,
       "stages": [
         "Queued",
         "Building",
@@ -488,6 +541,10 @@
       "folder": null,
       "startedAt": "2026-07-01T12:00:00.000Z",
       "ci": "green",
+      "mergeable": null,
+      "readyToMerge": false,
+      "mergeCommand": null,
+      "waitingSince": null,
       "stages": [
         "Queued",
         "Building",
@@ -546,23 +603,170 @@
       "mergeCommitUrl": "https://github.com/calumjs/ARMADA/commit/8bd3409aabbccddee"
     }
   ],
+  "readyToMerge": [
+    {
+      "issueNumber": 126,
+      "prNumber": 127,
+      "title": "spyglass: dependency-graph edge synthesis",
+      "issueUrl": "https://github.com/calumjs/ARMADA/issues/126",
+      "prUrl": "https://github.com/calumjs/ARMADA/pull/127",
+      "branch": "126-spyglass-edge-synth",
+      "worktree": "C:/DataCalumSimpson/126-spyglass-edge-synth",
+      "folder": "C:/DataCalumSimpson/126-spyglass-edge-synth",
+      "startedAt": "2026-07-03T23:00:00.000Z",
+      "ci": "green",
+      "mergeable": "MERGEABLE",
+      "readyToMerge": true,
+      "mergeCommand": "gh pr merge 127 --squash --delete-branch",
+      "waitingSince": "2026-07-04T09:20:00.000Z",
+      "stages": [
+        "Queued",
+        "Building",
+        "PR opened",
+        "In review",
+        "Awaiting merge",
+        "Merged",
+        "Shipped"
+      ],
+      "stageCaptions": [
+        "armed & waiting for the lookout",
+        "shipwright: research → plan → implement → validate",
+        "branch pushed, PR open",
+        "muster: 2-lens review → consolidate → address",
+        "green & approved — at the merge gate",
+        "gated merge landed",
+        "closed; logbook walkthrough + cartography"
+      ],
+      "activeIndex": 4,
+      "status": "Awaiting merge",
+      "blocked": false,
+      "terminal": false,
+      "group": "awaiting-merge",
+      "doneVideo": null,
+      "cost": {
+        "present": true,
+        "pointer": "out/costs/<branch>.json",
+        "models": [
+          {
+            "model": "claude-opus-4-8",
+            "in": 178000,
+            "out": 37000,
+            "cacheRead": 1410000,
+            "cacheWrite": 88000,
+            "cost": 4.28
+          }
+        ],
+        "sessions": 2,
+        "subagents": 2,
+        "codex": 0,
+        "matchMode": "branch",
+        "unpriced": [],
+        "totalCost": 4.28,
+        "final": false,
+        "accruing": false,
+        "estimated": false,
+        "costSince": null,
+        "estRatePerMin": 0.03,
+        "estTotalCost": null,
+        "updatedAt": "2026-07-04T11:40:00.000Z"
+      },
+      "recent": false,
+      "outcome": null,
+      "completedAt": null,
+      "mergeCommitOid": null,
+      "mergeCommitUrl": null
+    },
+    {
+      "issueNumber": 121,
+      "prNumber": 122,
+      "title": "crows-nest: bound rebase rounds",
+      "issueUrl": "https://github.com/calumjs/ARMADA/issues/121",
+      "prUrl": "https://github.com/calumjs/ARMADA/pull/122",
+      "branch": "121-crows-nest-rebase-cap",
+      "worktree": "C:/DataCalumSimpson/121-crows-nest-rebase-cap",
+      "folder": "C:/DataCalumSimpson/121-crows-nest-rebase-cap",
+      "startedAt": "2026-07-04T03:00:00.000Z",
+      "ci": "green",
+      "mergeable": "MERGEABLE",
+      "readyToMerge": true,
+      "mergeCommand": "gh pr merge 122 --squash --delete-branch",
+      "waitingSince": "2026-07-04T11:08:00.000Z",
+      "stages": [
+        "Queued",
+        "Building",
+        "PR opened",
+        "In review",
+        "Awaiting merge",
+        "Merged",
+        "Shipped"
+      ],
+      "stageCaptions": [
+        "armed & waiting for the lookout",
+        "shipwright: research → plan → implement → validate",
+        "branch pushed, PR open",
+        "muster: 2-lens review → consolidate → address",
+        "green & approved — at the merge gate",
+        "gated merge landed",
+        "closed; logbook walkthrough + cartography"
+      ],
+      "activeIndex": 4,
+      "status": "Awaiting merge",
+      "blocked": false,
+      "terminal": false,
+      "group": "awaiting-merge",
+      "doneVideo": null,
+      "cost": {
+        "present": true,
+        "pointer": "out/costs/<branch>.json",
+        "models": [
+          {
+            "model": "claude-opus-4-8",
+            "in": 205000,
+            "out": 44000,
+            "cacheRead": 1680000,
+            "cacheWrite": 110000,
+            "cost": 5.03
+          }
+        ],
+        "sessions": 2,
+        "subagents": 2,
+        "codex": 0,
+        "matchMode": "branch",
+        "unpriced": [],
+        "totalCost": 5.03,
+        "final": false,
+        "accruing": false,
+        "estimated": false,
+        "costSince": null,
+        "estRatePerMin": 0.03,
+        "estTotalCost": null,
+        "updatedAt": "2026-07-04T11:40:00.000Z"
+      },
+      "recent": false,
+      "outcome": null,
+      "completedAt": null,
+      "mergeCommitOid": null,
+      "mergeCommitUrl": null
+    }
+  ],
   "recentWindow": {
     "hours": 24,
     "cap": 12
   },
   "rollup": {
-    "inFlight": 5,
-    "totalCost": 19.46,
+    "inFlight": 6,
+    "totalCost": 23.740000000000002,
     "costKnown": true,
     "estIncluded": true,
     "queued": 1,
     "building": 1,
     "reviewing": 1,
-    "awaiting-merge": 1,
+    "awaiting-merge": 2,
     "done": 0,
     "blocked": 1,
     "recent": 2,
-    "shippedToday": 2
+    "shippedToday": 2,
+    "readyToMerge": 2
   },
-  "summary": "runs 5 · blocked 1 · recent 2"
+  "summary": "runs 6 · blocked 1 · ready 2 · recent 2"
 }

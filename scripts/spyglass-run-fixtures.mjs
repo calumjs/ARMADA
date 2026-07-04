@@ -4,12 +4,14 @@
 // The sea-chart fixtures in spyglass-fixtures.mjs are `fleet-state.json` (schema 2)
 // snapshots for the coastline view. The per-run dashboard (spyglass-run-app.html)
 // instead consumes a `run-state.json` snapshot written by spyglass-run-snapshot.mjs
-// (schema 4 — #115 added the per-run final/accruing/estimated cost lifecycle,
-// rollup.estIncluded and top-level estRatePerMin). The live fleet only exhibits a
-// couple of run states at any moment, so to demo/test the run dashboard across its
-// FULL range — every pipeline stage, a blocked run, a recent-voyages lane, live cost
-// breakdowns (final vs. accruing) and a done-video — we synthesise ONE deterministic
-// schema-4 snapshot that matches the exact shape the snapshot script writes (issue #103).
+// (schema 7 — #115 added the per-run final/accruing/estimated cost lifecycle,
+// rollup.estIncluded and top-level estRatePerMin; #140 added the ready-to-merge lane —
+// readyToMerge[] plus per-run mergeable/readyToMerge/mergeCommand/waitingSince and
+// rollup.readyToMerge). The live fleet only exhibits a couple of run states at any
+// moment, so to demo/test the run dashboard across its FULL range — every pipeline
+// stage, a blocked run, the ready-to-merge (human merge queue) lane, a recent-voyages
+// lane, live cost breakdowns (final vs. accruing) and a done-video — we synthesise ONE
+// deterministic snapshot that matches the exact shape the snapshot script writes (#103).
 //
 // READ-ONLY w.r.t. the fleet: this never touches GitHub or the repo — it only emits
 // JSON. It is a dev/test aid, not shipped into the rendered view. A materialised copy
@@ -91,6 +93,7 @@ function mk(o) {
     blocked = false, terminal = false, group, ci = null, worktree = null,
     cost: c = null, doneVideo = null, recent = false, outcome = null,
     startedAt, completedAt = null, mergeOid = null,
+    mergeable = null, readyToMerge = false, waitingSince = null,
   } = o;
   return {
     issueNumber,
@@ -103,6 +106,13 @@ function mk(o) {
     folder: worktree,
     startedAt,
     ci,
+    // ready-to-merge (schema 7, #140) — the human merge queue; only set on a
+    // reviewed-clean, mergeable, unmerged PR run.
+    mergeable,
+    readyToMerge,
+    mergeCommand: readyToMerge && prNumber != null
+      ? `gh pr merge ${prNumber} --squash --delete-branch` : null,
+    waitingSince,
     stages: STAGES,
     stageCaptions: STAGE_CAPTIONS,
     activeIndex,
@@ -159,9 +169,24 @@ function inFlightRuns() {
       branch: '121-crows-nest-rebase-cap', ci: 'green',
       worktree: 'C:/DataCalumSimpson/121-crows-nest-rebase-cap',
       activeIndex: 4, status: 'Awaiting merge', group: 'awaiting-merge', startedAt: ago(9 * H),
+      // reviewed-clean + GitHub mergeable=clean, unmerged → the human merge queue (#140)
+      mergeable: 'MERGEABLE', readyToMerge: true, waitingSince: ago(52 * 60e3),
       cost: cost({
         totalCost: 5.03,
         models: [{ model: 'claude-opus-4-8', in: 205000, out: 44000, cacheRead: 1680000, cacheWrite: 110000, cost: 5.03 }],
+        sessions: 2, subagents: 2,
+      }),
+    }),
+    mk({
+      issueNumber: 126, prNumber: 127, title: 'spyglass: dependency-graph edge synthesis',
+      branch: '126-spyglass-edge-synth', ci: 'green',
+      worktree: 'C:/DataCalumSimpson/126-spyglass-edge-synth',
+      activeIndex: 4, status: 'Awaiting merge', group: 'awaiting-merge', startedAt: ago(13 * H),
+      // a second reviewed-clean, mergeable PR waiting on a human — has waited longer
+      mergeable: 'MERGEABLE', readyToMerge: true, waitingSince: ago(2 * H + 40 * 60e3),
+      cost: cost({
+        totalCost: 4.28,
+        models: [{ model: 'claude-opus-4-8', in: 178000, out: 37000, cacheRead: 1410000, cacheWrite: 88000, cost: 4.28 }],
         sessions: 2, subagents: 2,
       }),
     }),
@@ -235,8 +260,16 @@ function runStateFixture() {
   rollup.recent = recentRuns.length;
   rollup.shippedToday = recentRuns.filter((r) => !r.blocked).length;
 
+  // Ready-to-merge queue (schema 7, #140) — reviewed-clean, mergeable, unmerged PRs,
+  // longest-waiting first (oldest waitingSince), mirroring the driver's ordering.
+  const readyToMergeRuns = runs
+    .filter((r) => r.readyToMerge)
+    .sort((a, b) => (Date.parse(a.waitingSince || a.startedAt || 0) || 0)
+                  - (Date.parse(b.waitingSince || b.startedAt || 0) || 0));
+  rollup.readyToMerge = readyToMergeRuns.length;
+
   return {
-    schema: 4,
+    schema: 7,
     appVersion: 'fixture000000',
     estRatePerMin: EST_RATE_PER_MIN,
     generatedAt: new Date(NOW).toISOString(),
@@ -250,9 +283,10 @@ function runStateFixture() {
     degraded: null,
     runs,
     recentRuns,
+    readyToMerge: readyToMergeRuns,    // #140 — the human merge queue
     recentWindow: { hours: 24, cap: 12 },
     rollup,
-    summary: `runs ${runs.length} · blocked ${blockedCount} · recent ${recentRuns.length}`,
+    summary: `runs ${runs.length} · blocked ${blockedCount} · ready ${rollup.readyToMerge} · recent ${recentRuns.length}`,
   };
 }
 
