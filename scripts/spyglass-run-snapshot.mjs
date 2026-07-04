@@ -642,6 +642,35 @@ function buildScheduler({ runs, recentRuns, issues, prs, cap, schedState, repo }
       file: e.file || null, reason: e.reason || null,
       satisfied: e.satisfied != null ? !!e.satisfied : false,
     }));
+    // Synthesize a node for any edge ENDPOINT the producer didn't list as a waiting
+    // node — most importantly a `depends on #N` / `blocked by #N` prerequisite that is
+    // still IN FLIGHT (building/reviewing), so it never sat on the held-runs frontier.
+    // Without an endpoint node the app silently DROPS the edge (drawGraphEdges skips any
+    // edge whose from/to element is missing), degrading a real "waiting on #N" edge to a
+    // bare reason chip. Mirror the inferred path's ensureRunNode/ensureStubNode: use the
+    // in-flight run's already-fetched real status when we can see it, a satisfied
+    // Shipped marker when it has landed, else a lightweight external stub. The endpoint
+    // is a referenced prerequisite, not part of the waiting set → waiting:false. Strictly
+    // read-only (no new fetch). #126.
+    const present = new Set(nodes.map((n) => n.number));
+    const synthEndpoint = (num) => {
+      if (!Number.isFinite(num) || present.has(num)) return;
+      present.add(num);
+      const r = runByNum.get(num);
+      if (r) {
+        nodes.push(nodeFromRun(r, false, false, false, [], []));
+        return;
+      }
+      const done = landed.has(num);
+      nodes.push({
+        key: 'i' + num, unit: 'issue', number: num, issueNumber: num, prNumber: null,
+        title: `#${num}`, url: unitUrl('issue', num),
+        group: done ? 'done' : 'queued', activeIndex: done ? IDX_DONE : IDX.QUEUED,
+        status: done ? 'Shipped' : 'pending',
+        waiting: false, eligible: false, held: false, reasons: [], files: [],
+      });
+    };
+    for (const e of edges) { synthEndpoint(e.from); synthEndpoint(e.to); }
     return {
       present: true, source: 'producer', note: null,
       maxConcurrentBuilds: schedState.maxConcurrentBuilds ?? cap,
