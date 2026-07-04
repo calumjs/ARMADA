@@ -293,6 +293,21 @@ Project everything the graph (§2b) and the eligibility gates need in these two 
 PR `files` (for same-file conflict detection) and `body` (for explicit dependency signals) — so the
 graph is built **once** from this single scan, with no redundant round-trips per item.
 
+**Also pull recently-**merged** fleet PRs — the on-merge reconcile input (§5.1).** A PR that has
+**merged** is no longer `--state open`, so the two calls above never see it — yet a fleet PR that
+merged **out-of-band** (a human ran `gh pr merge` because the self-approval classifier blocks the
+lookout from self-merging ARMADA's own fleet PRs, even with `autoMerge: true`) is left stuck on a
+non-terminal `armada:*` state and needs reconciling to shipped. Pull those in **one** extra bounded
+round-trip so the on-merge reconcile (§5.1) has its input from the same scan:
+
+```bash
+gh pr list --label "<triggerLabel>" --state merged \
+  --json number,title,labels,mergedAt,closingIssuesReferences,headRefName --limit 30
+```
+
+This list **shrinks as it reconciles**: a reconciled PR gains the terminal `armada:merged` (§5.1) and
+is filtered out below, so it's cheap and self-limiting — not a growing historical scan.
+
 **Issue eligibility.** Filter **out** any issue that is already:
 - labelled `armada:underway`, `armada:done`, or `armada:blocked`, **or**
 - has an open PR that references it (detectable from the PR `body` set already pulled above —
@@ -302,6 +317,12 @@ graph is built **once** from this single scan, with no redundant round-trips per
 **PR eligibility** is the ready-PR gate from §3a — open, not draft, carries `<triggerLabel>`, CI not
 failing, and not already `armada:reviewing` / `armada:merged` / `armada:blocked`. Evaluate it here
 against the same scan rather than re-listing.
+
+**Merged-PR (on-merge reconcile) eligibility** applies to the merged list only (§5.1): a merged fleet
+PR needs reconciling **iff** it is MERGED **and** does **not** already carry the PR-track terminal
+`armada:merged` (nor `armada:blocked`). A merged PR already on `armada:merged` was reconciled — by the
+§3e pipeline or a prior on-merge tick — and is filtered out here; that terminal label is the
+idempotency guard that makes the reconcile fire (and ring) **exactly once** (§5.1).
 
 Those dedup checks keep the loop idempotent — a tick that fires while a previous build or review is
 still running must not double-pick. An already-claimed unit (`armada:underway` / `armada:reviewing`)
@@ -808,7 +829,19 @@ reconciliation (§3e), and reporting (§3f) — lives in
 pipeline (§3e):
 
 - `armada:merged` → a *shipped* event: `⚓ Shipped: PR #<pr> merged` — fired when `notify` is
-  `"terminal"` or `"all"`.
+  `"terminal"` or `"all"`. **Ring only if §3e is the path that first sets `armada:merged`** — i.e.
+  **only when `armada:merged` was NOT already on the PR** at the moment this reconcile runs. The
+  pipeline's `gh pr merge` and this on-completion reconcile are **not atomic**: between them the PR is
+  already MERGED but still on `armada:reviewing`, and a tick firing in that gap lets the out-of-band
+  reconcile (§5.1) win the race — it adds `armada:merged`, closes the issue, and rings the shipped
+  bell first. So **check the PR's current labels before ringing**: if `armada:merged` is already
+  present, §5.1 (or a prior §3e) has already reconciled and rung — **ensure the end-state labels are
+  correct idempotently** (add `armada:merged`, clear `armada:reviewing`, both no-ops if already so)
+  **and SKIP the shipped ring**. Only when §3e itself transitions the PR *into* `armada:merged` does
+  it ring. This makes the shipped bell **exactly-once across {§5.1, §3e}**: whoever first reaches
+  `armada:merged` rings; the other, observing the terminal already set, stays silent. (The
+  `armada:blocked` and `ready_awaiting_human` outcomes below are unaffected — a merged PR never lands
+  on those, so there's no symmetric race for them.)
 - `armada:blocked` → a *blocked* event, **with the reason**: `⛔ PR #<pr> blocked: <reason>` — fired
   when `notify` is `"blocked"`, `"terminal"`, or `"all"`.
 - `ready_awaiting_human` is **not** a terminal failure and **not** a routine clear — it's a
@@ -892,6 +925,84 @@ Opening a PR is not finishing an issue. An issue left on `armada:done` after its
 lookout's blind spot: the work shipped but the backlog still shows it open. So each tick — after the
 dispatch pass (§2), or whenever a merge pipeline reports a PR merged — the lookout also walks the
 **in-flight** issues and closes the ones that are genuinely done.
+
+### 5.1 On-merge auto-reconcile — a fleet PR merged out-of-band
+
+§3e reconciles a PR the **pipeline itself** merged (`autoMerge: true`, every gate green) → `armada:merged`
+and rings the shipped bell. But a fleet PR often merges **out-of-band** — a human runs `gh pr merge`
+because the auto-mode **self-approval classifier blocks the lookout from self-merging ARMADA's own
+fleet PRs** even with `autoMerge: true` (a bot that authored *and* reviewed a change to its own skills
+must not merge it unattended). When that happens the pipeline **never** set `armada:merged`, so the PR
+is left stranded on a non-terminal `armada:*` state (`armada:reviewing`, or the bare `armada` arm
+label), the issue may still read open, and the shipped bell never rang. Reconciling that by hand —
+relabel the PR, confirm the issue closed, ring the foghorn — is per-PR toil that's mechanical and easy
+to forget. **This step automates it.**
+
+Each tick, over the merged fleet PRs pulled in §2a (`--state merged`, carrying `<triggerLabel>`), the
+lookout reconciles every one **not yet terminal** — MERGED and **not already** `armada:merged` (nor
+`armada:blocked`). For each such PR, in order:
+
+1. **Terminal-label the PR** → `armada:merged`, clearing the transient in-flight state (the "prior
+   `armada:*` state"), exactly as the §3e pipeline path does. (Eligibility already excludes
+   `armada:blocked` PRs — §2a — so there's no blocked label to strip here; only the transient
+   `armada:reviewing` needs clearing.)
+   ```bash
+   gh pr edit <pr> --add-label "armada:merged" --remove-label "armada:reviewing"
+   gh pr comment <pr> --body "🔭 crows-nest: reconciled — merged out-of-band; marked armada:merged."
+   ```
+2. **Ensure the linked issue is closed and `armada:shipped`** — hand the merged PR straight into the
+   close-the-loop procedure (§5a–§5d / [close-the-loop.md](references/close-the-loop.md)): resolve its
+   `closingIssuesReferences` / `Closes #<n>`, confirm the acceptance criteria (§5c — merge alone is not
+   enough), then close-and-reconcile the issue to the single terminal **`armada:shipped`** (§5d). A
+   merged `Closes #<n>` PR usually **auto-closed** the issue already, so this is normally a label
+   reconcile, not a fresh close (§5d "reconcile, don't error"). *This is the `armada:shipped` the work
+   ends on: the **issue** carries the fleet's shipped terminal; the **PR** carries its own terminal
+   `armada:merged` — same split the §3e pipeline path produces, so out-of-band and pipeline merges land
+   in the identical end-state.*
+3. **Ring the foghorn once** — the *shipped* event (§8), fired when `notify` is `"terminal"` or `"all"`,
+   on **both** channels (the `PushNotification` *and*, when `bellCommand` is set, the `foghorn-say`
+   hook, §8e) with `ARMADA_BELL_EVENT=shipped`. **Word the line to the issue step 2 actually resolved:**
+   when a closing issue was resolved and shipped, ring `⚓ Shipped #<issue> → PR #<pr> merged`; when step
+   2 found **no** resolvable closing issue (an unlinked PR, or acceptance criteria not met so no issue
+   was closed), ring about the **PR only** — `⚓ Shipped: PR #<pr> merged` — and **never** name a
+   `#<issue>` that doesn't exist. Fire it **only after** the label swap and the close-the-loop reconcile
+   above have landed (§8c after-the-fact discipline).
+
+**Idempotency — never double-ring, never thrash labels.** The guard is the **terminal label itself**,
+the same restart-surviving state machine the rest of the lookout runs on — **no ephemeral flag file**:
+
+- The reconcile fires **only** for a merged PR **without** `armada:merged`. Step 1 adds `armada:merged`,
+  so from that instant the PR is filtered out of the merged-eligibility check (§2a) on **every** later
+  tick — the relabel and the ring happen **exactly once**, on the first tick that observes the merge.
+- The ring lives **inside** the same branch that performs the `→ armada:merged` swap (step 3 after
+  step 1), so a PR already on `armada:merged` never reaches the bell — no second ring, ever, and it
+  survives a `/loop` restart because the label persists in GitHub, not in memory.
+- Labels **never oscillate**: the step only ever *adds* the terminal and *removes* transient in-flight
+  labels — it never removes a terminal or re-adds a transient — so re-running can't flip a label back
+  and forth. The issue side inherits §5's own idempotency (`gh issue close` on an already-closed issue
+  is a no-op; the `armada:shipped` label swap is idempotent).
+- **Exactly-once across {§5.1, §3e} — the invariant, stated symmetrically.** The shipped bell rings
+  **exactly once** for a merged PR no matter which path reconciles it, because **both** paths gate the
+  ring on the terminal label and the guard is symmetric: *whoever first transitions the PR to
+  `armada:merged` is the one that rings; the other, observing `armada:merged` already present, sets/keeps
+  the end-state labels idempotently and SKIPS the ring.*
+  - **§3e wins the race** (the pipeline's on-completion reconcile runs before any tick fires in the gap):
+    §3e adds `armada:merged` and rings; a later §5.1 scan filters the PR out by the merged-eligibility
+    check (§2a — "not already `armada:merged`") and never reaches the bell.
+  - **§5.1 wins the race** (a tick fires in the non-atomic gap between the pipeline's `gh pr merge` and
+    its Workflow return, while the PR is MERGED but still on `armada:reviewing`): §5.1 adds `armada:merged`,
+    closes the issue, and rings; when §3e's reconcile then returns, it observes `armada:merged` already
+    present, applies its label swap idempotently, and **skips its ring** (§3 "Ring only if §3e is the path
+    that first sets `armada:merged`"). This is the gap that would otherwise double-ring — §3e's
+    conditional ring closes it.
+
+  Either way the terminal `armada:merged` is set once and the shipped bell rings once; the two merge
+  paths never double-ring the same PR, and the guard survives a `/loop` restart because it lives in the
+  GitHub label, not in memory.
+
+Best-effort and bounded like every reconcile: a `gh` hiccup on one PR is logged and retried next tick
+(the un-terminal PR simply reappears in the next merged scan); it never blocks the tick or the rest of
+the batch.
 
 The full close-the-loop procedure — listing in-flight issues (§5a), finding and confirming the merged
 PR (§5b), confirming the acceptance criteria (§5c), closing with a trail (§5d), and reporting (§5e) —

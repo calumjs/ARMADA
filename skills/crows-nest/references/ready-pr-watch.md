@@ -66,12 +66,27 @@ keeps it out of every intervening tick. On completion, map the Workflow's termin
 PR-track label and a comment — a PR must **never** be left on `armada:reviewing`:
 
 - `merged` → `gh pr edit <n> --remove-label "armada:reviewing" --add-label "armada:merged"`; comment
-  the merge commit. (Only reachable with `autoMerge: true` and all gates green.)
+  the merge commit. (Only reachable with `autoMerge: true` and all gates green.) **Ring the shipped
+  bell only if this reconcile is the one that first sets `armada:merged`** — check the PR's current
+  labels first and ring **only when `armada:merged` was not already present**. The pipeline's actual
+  `gh pr merge` and this on-completion reconcile aren't atomic, so a tick can fire in the gap and let
+  the out-of-band reconcile ([SKILL.md §5.1](../SKILL.md#51-on-merge-auto-reconcile--a-fleet-pr-merged-out-of-band))
+  reach `armada:merged` + ring first; if it already has, apply the label swap **idempotently** (both a
+  no-op) and **skip the ring**. This is the exactly-once-across-{§5.1, §3e} rule stated in SKILL.md §3.
 - `ready_awaiting_human` → `gh pr edit <n> --remove-label "armada:reviewing"` (leave `armada` on so a
   human sees it); comment "✅ reviewed, addressed, green — **awaiting human merge** (auto-merge off)".
   This is the default terminal state when `autoMerge` is off.
 - `blocked` → `gh pr edit <n> --remove-label "armada:reviewing" --add-label "armada:blocked"`; comment
   the reason (blocking finding, red CI, no convergence, non-mergeable, branch protection unmet).
+
+**Out-of-band merges are reconciled elsewhere.** §3e only reaches `armada:merged` when the pipeline
+**itself** merged the PR. A fleet PR merged **by a human** (`gh pr merge`, the usual case since the
+self-approval classifier blocks the lookout from self-merging ARMADA's own fleet PRs) never runs this
+pipeline, so it's reconciled by the on-merge auto-reconcile —
+[SKILL.md §5.1](../SKILL.md#51-on-merge-auto-reconcile--a-fleet-pr-merged-out-of-band) /
+[close-the-loop.md §5f](close-the-loop.md#5f-on-merge-auto-reconcile--a-fleet-pr-merged-out-of-band) —
+which takes the PR to the same `armada:merged` terminal, closes its issue to `armada:shipped`, and
+rings the shipped bell exactly once.
 
 ## 3f. Report
 
