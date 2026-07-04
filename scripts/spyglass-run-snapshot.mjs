@@ -76,12 +76,12 @@
 // (default 24; <=0 = no time filter, cap only) and `--recent-cap` /
 // `SPYGLASS_RECENT_CAP` / `spyglass.recentCap` (default 12; <=0 = recent lane off).
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync, unlinkSync, realpathSync, statSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync, renameSync, rmSync, realpathSync, statSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { execFileSync, spawn } from 'child_process';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -184,7 +184,15 @@ function resolveNum(flagVal, envName, cfgVal, def) {
 // spyglass read-only invariant holds. One-shot (non-watch) snapshots never take
 // or consult the lock — they write once and exit, so they can't wedge the board.
 // ---------------------------------------------------------------------------
-const LOCK_NAME = '.spyglass-run.lock';
+// The lock is a DIRECTORY (`mkdirSync` is an atomic exclusive arbiter — see
+// acquireWatchLock); the holder's metadata (pid / startedAt / nonce) is a plain file
+// written INSIDE it. A directory lock is used — not an O_EXCL file lock — because a
+// FILE lock's stale-takeover cannot be made race-free with fs primitives (unlink then
+// create leaves a gap where two takers of the same dead lock both win); a directory
+// can be CLAIMED atomically by a single rename, closing that gap. (Issue #147, folded
+// into #144.)
+const LOCK_NAME = '.spyglass-run.lock';   // the lock DIRECTORY
+const LOCK_INFO = 'owner.json';           // holder metadata file, written INSIDE it
 
 // Is `pid` a live process? `kill(pid, 0)` sends no signal but validates existence:
 // ESRCH → gone (stale); EPERM → alive but owned by another user (still live). Any
@@ -196,46 +204,62 @@ function pidAlive(pid) {
   catch (e) { return e && e.code === 'EPERM'; }
 }
 
-// Acquire the watch lock in `outDir`. Returns { ok:true, lockPath, tookOver } on
-// success (fresh lock or stale-takeover), or { ok:false, holder, lockPath } when a
-// LIVE holder already owns it. Never throws for the caller's decision path.
+// Acquire the watch lock in `outDir`. Returns { ok:true, lockPath, nonce, tookOver }
+// on success (fresh acquire or stale-takeover), or { ok:false, holder, lockPath } when
+// a LIVE holder already owns it. Never throws for the caller's decision path.
 //
-// The acquire is ATOMIC: the lockfile is created with the exclusive `wx` flag, so
-// of two watchers racing for a FRESH lock exactly one create succeeds — the other
-// gets EEXIST and, seeing the live winner, refuses. (A plain existsSync-then-write
-// would let both through: a TOCTOU race.) A STALE lock (dead/corrupt holder) is
-// taken over by unlinking it and re-creating with `wx` ONCE; if a competing taker
-// wins that create first, our retry gets EEXIST and — seeing the live winner —
-// refuses, so the takeover race also resolves to exactly one winner.
+// PROTOCOL — a DIRECTORY lock, so FRESH acquire AND STALE takeover are BOTH genuinely
+// race-free (no window in which two drivers both proceed):
+//
+//   * FRESH acquire: `mkdirSync(lockDir)` is atomically exclusive — of N racers
+//     creating the lock exactly one succeeds; the rest get EEXIST. (`writeFileSync`
+//     with `wx` gives the same fresh guarantee, but see below for why a file lock is
+//     insufficient.)
+//   * STALE takeover: the dead dir is CLAIMED with a single
+//     `renameSync(lockDir → lockDir.stale.<pid>.<nonce>)`. A directory rename atomically
+//     moves the ONE existing source: of N takers racing to rename the SAME stale dir,
+//     exactly one succeeds; the losers get ENOENT (the source already moved) and retry
+//     from the top. The winner deletes the renamed-away dir and `mkdirSync`s a fresh
+//     lock. The arbiter is the single successful rename, then the single successful
+//     mkdir — there is no unlink-then-create gap. (A file lock CAN'T do this: `wx` only
+//     arbitrates concurrent CREATES, so two takers of the same DEAD file lock both pass
+//     the liveness guard, both unlink, and an interleaving lets BOTH create+win.)
+//   * The `nonce` is our OWNER TOKEN. Release removes the lock only when BOTH pid and
+//     nonce match, so a later taker never deletes a lock we no longer own.
 function acquireWatchLock(outDir) {
   mkdirSync(outDir, { recursive: true });
   const lockPath = path.join(outDir, LOCK_NAME);
+  const infoPath = path.join(lockPath, LOCK_INFO);
+  const nonce = randomBytes(12).toString('hex');
 
-  const payload = () => JSON.stringify({
+  const writeInfo = () => writeFileSync(infoPath, JSON.stringify({
     pid: process.pid,
     startedAt: new Date().toISOString(),
     out: path.resolve(outDir),
-  }, null, 2);
+    nonce,
+  }, null, 2));
 
-  // Atomic exclusive create. true → we now own it; false → it already existed
-  // (EEXIST). Any other error is a real fault and propagates.
-  const tryCreate = () => {
-    try { writeFileSync(lockPath, payload(), { flag: 'wx' }); return true; }
+  // Atomic exclusive create of the lock DIR. true → we now own it; false → it already
+  // existed (EEXIST). Any other error is a real fault and propagates.
+  const tryMkdir = () => {
+    try { mkdirSync(lockPath); return true; }
     catch (e) { if (e && e.code === 'EEXIST') return false; throw e; }
   };
-  // Bounded synchronous sleep (no busy-spin) used only for the mid-write grace below.
+  // Bounded synchronous sleep (no busy-spin): the mid-write grace + a short backoff
+  // between takeover attempts.
   const sleepMs = (ms) => {
     try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* SAB off → skip */ }
   };
-  // Read the current holder. `wx` creates the file THEN writes its payload, so a
-  // racer that reads in that gap would see a 0-byte/parse-fail lock and wrongly
-  // judge a LIVE mid-write winner as stale. Give a brief grace: if the file is
-  // present but not yet parseable, re-read a few times before concluding it's stale.
-  // A genuinely corrupt/empty lock just costs this small grace, then reads as null.
+  // Read the current holder's metadata. mkdir creates the dir THEN writeInfo writes
+  // owner.json, so a racer reading in that gap would see the dir but no (or a
+  // half-written) info file and wrongly judge a LIVE mid-write winner as stale. Give a
+  // brief grace: if the dir is present but owner.json isn't parseable yet, re-read a
+  // few times before concluding it's stale. A genuinely empty/corrupt lock costs only
+  // this small grace, then reads as null (→ takeable).
   const readHolder = () => {
     for (let i = 0; i < 6; i++) {
-      try { return JSON.parse(readFileSync(lockPath, 'utf8')); } catch { /* absent/mid-write/corrupt */ }
-      if (!existsSync(lockPath)) return null;  // vanished → truly gone
+      try { return JSON.parse(readFileSync(infoPath, 'utf8')); } catch { /* absent/mid-write/corrupt */ }
+      if (!existsSync(lockPath)) return null;  // dir vanished → truly gone
       sleepMs(5);
     }
     return null;
@@ -246,46 +270,61 @@ function acquireWatchLock(outDir) {
     return Number.isInteger(p) && p !== process.pid && pidAlive(p);
   };
 
-  // 1) Try to win a fresh lock outright.
-  if (tryCreate()) return { ok: true, lockPath, tookOver: null };
+  // Bounded acquire loop: fresh-create → refuse-if-live → atomically claim the stale
+  // dir and recreate. A losing takeover retries from the top; the bound stops any
+  // pathological livelock (it then refuses conservatively rather than spin forever).
+  for (let attempt = 0; attempt < 100; attempt++) {
+    // 1) Try to win a FRESH lock outright.
+    if (tryMkdir()) { writeInfo(); return { ok: true, lockPath, nonce, tookOver: null }; }
 
-  // 2) It already existed. If a LIVE holder owns it, refuse (name the pid).
-  let holder = readHolder();
-  if (liveForeign(holder)) return { ok: false, holder, lockPath };
+    // 2) It already existed. If a LIVE holder owns it, refuse (name the pid).
+    const holder = readHolder();
+    if (liveForeign(holder)) return { ok: false, holder, lockPath };
 
-  // 3) Stale (dead / corrupt / our own leftover). Take it over atomically: re-check
-  //    it hasn't just turned live (shrinks the window in which a fresh takeover could
-  //    be clobbered), unlink, then re-create with `wx` ONCE. `wx` is the arbiter — if
-  //    a competing taker created first, our create loses with EEXIST below.
-  const hpid = holder ? Number(holder.pid) : NaN;
-  const tookOver = (holder && Number.isInteger(hpid) && hpid !== process.pid) ? holder : null;
-  const before = readHolder();  // re-read immediately before unlink
-  if (liveForeign(before)) return { ok: false, holder: before, lockPath };
-  try { unlinkSync(lockPath); } catch { /* already removed by a competing taker — fine */ }
-  if (tryCreate()) return { ok: true, lockPath, tookOver };
+    // 3) Stale (dead / corrupt / our own leftover). CLAIM it atomically by renaming the
+    //    dead dir away — exactly one taker's rename of the single source succeeds; the
+    //    losers get ENOENT and retry. No unlink-then-create gap.
+    const hpid = holder ? Number(holder.pid) : NaN;
+    const tookOver = (holder && Number.isInteger(hpid) && hpid !== process.pid) ? holder : null;
+    const staleName = `${lockPath}.stale.${process.pid}.${nonce}.${attempt}`;
+    try {
+      renameSync(lockPath, staleName);
+    } catch {
+      // Lost the claim (ENOENT: another taker already moved it; or a transient Windows
+      // EPERM). Back off briefly and retry from the top to re-evaluate the holder.
+      sleepMs(5);
+      continue;
+    }
+    // We won the claim. Drop the renamed-away dead dir, then create a fresh lock.
+    try { rmSync(staleName, { recursive: true, force: true }); } catch { /* best-effort */ }
+    if (tryMkdir()) { writeInfo(); return { ok: true, lockPath, nonce, tookOver }; }
+    // A brand-new acquirer slipped in and mkdir'd the fresh dir between our rename and
+    // ours. Loop: re-read the new holder and refuse-if-live / re-contend for takeover.
+    sleepMs(5);
+  }
 
-  // 4) Lost the takeover race — someone else created between our unlink and create.
-  //    Re-inspect the winner: refuse if live (the common case), else refuse
-  //    conservatively rather than risk two concurrent drivers.
-  holder = readHolder();
+  // Exhausted the bound — refuse conservatively rather than risk two concurrent drivers.
+  const holder = readHolder();
   return { ok: false, holder, lockPath };
 }
 
-// Release the lock — but ONLY if it's still ours (guards against deleting a lock a
-// newer takeover already claimed). Best-effort; swallows all errors.
-function releaseWatchLock(lockPath) {
+// Release the lock — but ONLY if it's still ours (pid AND owner nonce match), guarding
+// against deleting a lock a newer takeover already claimed. Best-effort; swallows all
+// errors. Removes the whole lock dir.
+function releaseWatchLock(lockPath, nonce) {
   try {
     if (!lockPath || !existsSync(lockPath)) return;
-    const held = JSON.parse(readFileSync(lockPath, 'utf8'));
-    if (held && Number(held.pid) === process.pid) unlinkSync(lockPath);
+    const held = JSON.parse(readFileSync(path.join(lockPath, LOCK_INFO), 'utf8'));
+    const ours = held && Number(held.pid) === process.pid && (nonce == null || held.nonce === nonce);
+    if (ours) rmSync(lockPath, { recursive: true, force: true });
   } catch { /* best-effort */ }
 }
 
 // Register clean-exit release across normal exit and the signals a Ctrl-C / kill
 // sends, so the lock doesn't outlive the process and wedge the next watcher.
-function installLockRelease(lockPath) {
+function installLockRelease(lockPath, nonce) {
   let released = false;
-  const release = () => { if (!released) { released = true; releaseWatchLock(lockPath); } };
+  const release = () => { if (!released) { released = true; releaseWatchLock(lockPath, nonce); } };
   process.on('exit', release);
   process.on('SIGINT', () => { release(); process.exit(130); });
   process.on('SIGTERM', () => { release(); process.exit(143); });
@@ -1443,7 +1482,7 @@ function main() {
       const h = lock.holder || {};
       console.error(
         `spyglass-run: refusing to start — a live --watch driver already owns ${path.resolve(outDir)}\n` +
-        `  held by pid ${h.pid}${h.startedAt ? ` (started ${h.startedAt})` : ''}${h.host ? ` on ${h.host}` : ''}.\n` +
+        `  held by pid ${h.pid}${h.startedAt ? ` (started ${h.startedAt})` : ''}.\n` +
         `  Stop that driver first (e.g. kill ${h.pid}), or point --out at a different dir.`,
       );
       process.exit(1);
@@ -1454,7 +1493,7 @@ function main() {
         `${lock.tookOver.startedAt ? ` (started ${lock.tookOver.startedAt})` : ''}.`,
       );
     }
-    installLockRelease(lock.lockPath);
+    installLockRelease(lock.lockPath, lock.nonce);
   }
 
   function once(firstRun) {
@@ -1487,6 +1526,6 @@ if (isEntry) main();
 // Exported for unit tests (spyglass-run-snapshot.test.mjs) — the guardrail
 // primitives. Importing this module never triggers main() (see isEntry above).
 export {
-  LOCK_NAME, pidAlive, acquireWatchLock, releaseWatchLock,
+  LOCK_NAME, LOCK_INFO, pidAlive, acquireWatchLock, releaseWatchLock,
   samePath, servedRootFromCommand, resolveServedRoot, checkServedRoot, parseArgs,
 };

@@ -15,17 +15,28 @@
 
 import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
-import { mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import path from 'path';
 import os from 'os';
 
 import {
-  LOCK_NAME, pidAlive, acquireWatchLock, releaseWatchLock,
+  LOCK_NAME, LOCK_INFO, pidAlive, acquireWatchLock, releaseWatchLock,
   samePath, servedRootFromCommand, checkServedRoot,
 } from './spyglass-run-snapshot.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(HERE, 'spyglass-run-snapshot.mjs');
+
+// The lock is a DIRECTORY (<dir>/LOCK_NAME/) whose holder metadata lives in an
+// owner.json file inside it. Seed a fake lock the way a real holder would.
+function seedLock(dir, info, { raw } = {}) {
+  const lockDir = path.join(dir, LOCK_NAME);
+  mkdirSync(lockDir, { recursive: true });
+  writeFileSync(path.join(lockDir, LOCK_INFO), raw != null ? raw : JSON.stringify(info));
+}
+function readLockInfo(dir) {
+  return JSON.parse(readFileSync(path.join(dir, LOCK_NAME, LOCK_INFO), 'utf8'));
+}
 
 let passed = 0;
 const failures = [];
@@ -63,9 +74,11 @@ test('acquireWatchLock: fresh dir → acquires and writes pid + startedAt', () =
   try {
     const r = acquireWatchLock(dir);
     assert(r.ok === true, 'fresh acquire should succeed');
-    const lock = JSON.parse(readFileSync(path.join(dir, LOCK_NAME), 'utf8'));
+    assert(typeof r.nonce === 'string' && r.nonce, 'acquire returns an owner nonce');
+    const lock = readLockInfo(dir);
     assert(lock.pid === process.pid, 'lock records our pid');
     assert(typeof lock.startedAt === 'string' && lock.startedAt, 'lock records startedAt');
+    assert(lock.nonce === r.nonce, 'lock records the owner nonce');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -81,9 +94,7 @@ test('acquireWatchLock: LIVE holder → refuses and returns the holder', () => {
     const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 60000)'], { stdio: 'ignore' });
     try {
       // Wait for the child to actually be alive.
-      writeFileSync(path.join(dir, LOCK_NAME), JSON.stringify({
-        pid: child.pid, startedAt: new Date().toISOString(), out: dir, host: os.hostname(),
-      }));
+      seedLock(dir, { pid: child.pid, startedAt: new Date().toISOString(), out: dir });
       const r = acquireWatchLock(dir);
       assert(r.ok === false, 'should refuse against a live holder');
       assert(r.holder && r.holder.pid === child.pid, 'refusal names the live holder pid');
@@ -95,13 +106,11 @@ test('acquireWatchLock: STALE holder (dead pid) → transparently taken over', (
   const dir = tmpDir();
   try {
     const deadPid = 2 ** 31 - 1;
-    writeFileSync(path.join(dir, LOCK_NAME), JSON.stringify({
-      pid: deadPid, startedAt: new Date().toISOString(), out: dir, host: os.hostname(),
-    }));
+    seedLock(dir, { pid: deadPid, startedAt: new Date().toISOString(), out: dir });
     const r = acquireWatchLock(dir);
     assert(r.ok === true, 'stale lock should be taken over');
     assert(r.tookOver && r.tookOver.pid === deadPid, 'takeover reports the previous dead holder');
-    const lock = JSON.parse(readFileSync(path.join(dir, LOCK_NAME), 'utf8'));
+    const lock = readLockInfo(dir);
     assert(lock.pid === process.pid, 'lock now records our pid');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -109,7 +118,7 @@ test('acquireWatchLock: STALE holder (dead pid) → transparently taken over', (
 test('acquireWatchLock: corrupt lock → taken over', () => {
   const dir = tmpDir();
   try {
-    writeFileSync(path.join(dir, LOCK_NAME), 'not json {{{');
+    seedLock(dir, null, { raw: 'not json {{{' });
     const r = acquireWatchLock(dir);
     assert(r.ok === true, 'corrupt lock should be taken over');
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -119,13 +128,18 @@ test('releaseWatchLock: removes our lock; leaves a foreign one', () => {
   const dir = tmpDir();
   try {
     const lockPath = path.join(dir, LOCK_NAME);
-    acquireWatchLock(dir);
-    releaseWatchLock(lockPath);
+    const acq = acquireWatchLock(dir);
+    releaseWatchLock(lockPath, acq.nonce);
     assert(!existsSync(lockPath), 'our lock is removed on release');
     // Foreign lock (different pid) must NOT be deleted.
-    writeFileSync(lockPath, JSON.stringify({ pid: 2 ** 31 - 1, startedAt: 'x' }));
-    releaseWatchLock(lockPath);
+    seedLock(dir, { pid: 2 ** 31 - 1, startedAt: 'x', nonce: 'foreign' });
+    releaseWatchLock(lockPath, acq.nonce);
     assert(existsSync(lockPath), 'a foreign lock is left intact');
+    // Our own pid but a DIFFERENT nonce (a lock a later takeover reclaimed) is left too.
+    rmSync(lockPath, { recursive: true, force: true });
+    seedLock(dir, { pid: process.pid, startedAt: 'x', nonce: 'not-ours' });
+    releaseWatchLock(lockPath, acq.nonce);
+    assert(existsSync(lockPath), 'a lock with our pid but a foreign nonce is left intact');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -170,10 +184,8 @@ await testAsync('acquireWatchLock: two racers taking over the SAME stale lock �
   const dir = tmpDir();
   try {
     // Seed a stale lock (dead pid) — both racers see it as takeable, but only one
-    // may win the atomic unlink+wx-create; the other refuses on the live winner.
-    writeFileSync(path.join(dir, LOCK_NAME), JSON.stringify({
-      pid: 2 ** 31 - 1, startedAt: new Date().toISOString(), out: dir,
-    }));
+    // may win the atomic rename-claim; the other refuses on the live winner.
+    seedLock(dir, { pid: 2 ** 31 - 1, startedAt: new Date().toISOString(), out: dir });
     const results = await raceAcquire(dir, 2);
     const oks = results.filter((r) => r === 'OK').length;
     assert(oks === 1, `exactly one racer must take over a stale lock, got ${oks} of [${results.join(',')}]`);
@@ -224,11 +236,11 @@ test('checkServedRoot: match → no warning; mismatch → warns (non-strict)', (
 
 // --- end-to-end: real --watch driver refuses a second, one-shot unaffected -
 async function waitForLock(dir, ms = 8000) {
-  const lockPath = path.join(dir, LOCK_NAME);
+  const infoPath = path.join(dir, LOCK_NAME, LOCK_INFO);
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
-    if (existsSync(lockPath)) {
-      try { return JSON.parse(readFileSync(lockPath, 'utf8')); } catch { /* mid-write */ }
+    if (existsSync(infoPath)) {
+      try { return JSON.parse(readFileSync(infoPath, 'utf8')); } catch { /* mid-write */ }
     }
     await sleep(100);
   }
