@@ -334,6 +334,9 @@
   .s-cost .tag { font-size: 8px; letter-spacing: .08em; text-transform: uppercase;
     color: var(--ink-faint); align-self: center; }
   .s-cost.est .tag { color: var(--brass); }
+  /* per-run token usage, sat next to cost ("$2.68 · 1.2M tok") — #149 */
+  .s-tok { color: var(--ink-faint); font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+  .s-tok::before { content: "·"; margin-right: 4px; color: var(--ink-faint); }
   @keyframes cost-pulse { 0%,100% { opacity: 1; } 50% { opacity: .62; } }
   .s-elapsed { color: var(--ink-faint); font-family: var(--mono); font-size: 12px; text-align: right; }
   /* completed-voyage landing time ("shipped 1h 08m ago") — sits in the SAME fixed
@@ -565,6 +568,34 @@ function money(n) {
   if (n > 0 && n < 0.005) return "<$0.01";
   return "$" + n.toFixed(2);
 }
+// Compact a token COUNT to a short human figure — 1234 → "1.2k", 1_200_000 → "1.2M".
+// Distinct from compact() (which only does k) so a run's millions of tokens read
+// cleanly on the run card. Null / non-finite / negative → null (→ omitted). (#149.)
+function compactTok(n) {
+  if (n == null || !Number.isFinite(n) || n < 0) return null;
+  if (n >= 1e6) return (n / 1e6).toFixed(n % 1e6 === 0 ? 0 : 1).replace(/\.0$/, "") + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(n % 1e3 === 0 ? 0 : 1).replace(/\.0$/, "") + "k";
+  return String(Math.round(n));
+}
+// Per-run TOKEN USAGE for the card (#149). Reads run.cost.tokens (threaded from the
+// same cost signals) → { text:"1.2M tok", title } or null when unavailable, so the
+// caller shows tokens next to cost when present and omits them gracefully when not.
+// A run with only a total (no in/out split) still renders the total. Cache tokens
+// fold into the total server-side; the tooltip breaks out in/out for the operator.
+function tokenInfo(run) {
+  const t = run && run.cost && run.cost.tokens;
+  if (!t) return null;
+  const total = typeof t.total === "number" && Number.isFinite(t.total) && t.total > 0 ? t.total : null;
+  if (total == null) return null;
+  const text = compactTok(total) + " tok";
+  const parts = [];
+  if (typeof t.input === "number") parts.push("in " + compactTok(t.input));
+  if (typeof t.output === "number") parts.push("out " + compactTok(t.output));
+  if (typeof t.cacheRead === "number" && t.cacheRead > 0) parts.push("cache r " + compactTok(t.cacheRead));
+  if (typeof t.cacheWrite === "number" && t.cacheWrite > 0) parts.push("cache w " + compactTok(t.cacheWrite));
+  const title = "tokens — total " + total.toLocaleString() + (parts.length ? " (" + parts.join(" · ") + ")" : "");
+  return { text, title, total, input: t.input, output: t.output };
+}
 // elapsed from an ISO start, in a compact ship's-log form; ticks live (see below).
 function elapsedText(iso) {
   if (!iso) return null;
@@ -755,6 +786,9 @@ function renderRow(run, isOpen) {
   const cnum = $("span", "cnum", cd.text);
   if (cd.since) { cnum.classList.add("js-estcost"); cnum.dataset.since = cd.since; }
   c.appendChild(cnum);
+  // per-run token usage next to cost ("$2.68 · 1.2M tok"); omitted when unavailable (#149)
+  const tk = tokenInfo(run);
+  if (tk) { const ts = $("span", "s-tok", tk.text); ts.title = tk.title; c.appendChild(ts); }
   if (cd.tag) c.appendChild($("span", "tag", cd.tag));
   if (cd.title) c.title = cd.title;
   row.appendChild(c);
@@ -932,6 +966,18 @@ function renderLedger(run) {
     tr.appendChild(td); tbody.appendChild(tr);
   }
   table.appendChild(tbody); block.appendChild(table);
+  // Per-run token total + in/out breakdown (#149) — the counts the cost is derived
+  // from. Omitted entirely when a run has no token data (older/unpriced file).
+  const tk = tokenInfo(run);
+  if (tk) {
+    const tparts = [`total ${tk.total.toLocaleString()}`];
+    if (typeof tk.input === "number") tparts.push(`in ${tk.input.toLocaleString()}`);
+    if (typeof tk.output === "number") tparts.push(`out ${tk.output.toLocaleString()}`);
+    const tfoot = $("div", "cost-foot");
+    tfoot.appendChild(document.createTextNode("tokens: "));
+    tfoot.appendChild($("span", "ptr", tparts.join(" · ")));
+    block.appendChild(tfoot);
+  }
   const parts = [];
   if (c.present) {
     if (c.sessions != null || c.subagents != null) parts.push(`${c.sessions ?? 0} claude session(s) + ${c.subagents ?? 0} subagents`);
@@ -985,6 +1031,9 @@ function renderSummaryCard(run) {
   const cnum = $("span", "cnum", cd.text);
   if (cd.since) { cnum.classList.add("js-estcost"); cnum.dataset.since = cd.since; }
   costV.appendChild(cnum);
+  // token usage next to cost on the compact card too ("$2.68 · 1.2M tok") (#149)
+  const tk = tokenInfo(run);
+  if (tk) { const ts = $("span", "s-tok", tk.text); ts.title = tk.title; costV.appendChild(ts); }
   if (cd.tag) costV.appendChild($("span", "tag", cd.tag));
   if (cd.title) costV.title = cd.title;
   costFact.appendChild(costV);

@@ -845,10 +845,37 @@ function normalizeCost(cost) {
   const anyPriced = models.some((m) => typeof m.cost === 'number');
   const totalCost = num(d.totalCost ?? d.total_cost) ??
     (anyPriced ? models.reduce((a, m) => a + (typeof m.cost === 'number' ? m.cost : 0), 0) : null);
+  // Per-run TOKEN USAGE (#149) — the SAME signals the cost is computed from (tokens ×
+  // per-model rate). Surface the underlying counts so an operator sees input/output
+  // (and total) tokens, not just dollars. A top-level total on the post-mortem wins
+  // when the producer wrote one; otherwise sum across the per-model rows. Each field
+  // is null when NO model reported that dimension, so an older/unpriced file with no
+  // token data degrades to `tokens:null` and the dashboard shows cost only. Cache
+  // reads/writes ARE tokens the run processed, so they fold into the total.
+  const sumTok = (key) => {
+    let any = false; let sum = 0;
+    for (const m of models) { if (typeof m[key] === 'number') { any = true; sum += m[key]; } }
+    return any ? sum : null;
+  };
+  const tInput = num(d.inputTokens ?? d.tokensIn ?? d.totalInput) ?? sumTok('in');
+  const tOutput = num(d.outputTokens ?? d.tokensOut ?? d.totalOutput) ?? sumTok('out');
+  const tCacheR = sumTok('cacheRead');
+  const tCacheW = sumTok('cacheWrite');
+  const anyTok = [tInput, tOutput, tCacheR, tCacheW].some((v) => typeof v === 'number');
+  const tokenTotal = num(d.totalTokens ?? d.total_tokens ?? d.tokens) ??
+    (anyTok ? (tInput ?? 0) + (tOutput ?? 0) + (tCacheR ?? 0) + (tCacheW ?? 0) : null);
+  const tokens = (anyTok || typeof tokenTotal === 'number') ? {
+    input: tInput,
+    output: tOutput,
+    cacheRead: tCacheR,
+    cacheWrite: tCacheW,
+    total: tokenTotal,
+  } : null;
   return {
     present: true,
     pointer: cost.pointer,
     models,
+    tokens,
     sessions: num(d.sessions) ?? null,
     subagents: num(d.subagents) ?? null,
     codex: num(d.codex) ?? null,
