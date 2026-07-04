@@ -156,6 +156,17 @@ of the bug as reported:
    make a speculative change, label it as speculative and `Relates to #<n>` (not `Closes`), since you
    have no evidence it removes the symptom.
 
+**Scope any browser teardown to the instance you launched — never a process-wide kill.** When you
+spawn a browser to reproduce or verify a UI (here and in §6a), close **only that instance** on the way
+out: hold the child process/PID or the Playwright `browser`/`context` handle and close *that*, or
+launch it against a dedicated `--user-data-dir` / isolated automation profile / headless instance and
+close that session. **Never** issue a process-wide browser kill — `taskkill /IM msedge.exe`,
+`pkill chrome`, `killall chrome`, `Stop-Process -Name msedge` — it closes **every** browser window the
+operator has open on a live desktop (their own work, a live stream, other agents' browsers), not just
+the one you spawned. If you **can't** scope teardown to your instance, prefer a fire-and-forget
+`file://` open with **no** teardown (the [`spyglass`](../spyglass/SKILL.md) driver's model — nothing to
+kill) over a blanket kill.
+
 Carry the reproduction method forward — you will re-run **the exact same method** in §6a to prove the
 fix removed the symptom. (For non-bug / feature issues, skip this step and proceed to §3.)
 
@@ -314,7 +325,8 @@ must now prove the fix **removes that symptom** — re-run the **exact same repr
 - **Runtime / UI bug:** run the app and drive it with the headless browser through the **same steps**;
   confirm the warning/error/broken behaviour is **gone** (clean console, correct render, working
   interaction). Capture the after-state (screenshot / clean log) as the "after" half of the
-  before/after evidence.
+  before/after evidence. Scope the browser teardown to the instance you launched (per §2a) — **never**
+  a process-wide kill.
 - **Logic / data / API bug:** the regression test (or scripted call) that **failed before** must now
   **pass**. Keep that test in the suite so the bug stays fixed.
 - **Build / tooling bug:** the command that failed before now succeeds.

@@ -189,6 +189,13 @@ never allowed to error the run.
 > errors) → collect UX/functional findings → tear the app down. Cap the whole pass at
 > `maxPlaywrightSec`; if it's hit, keep what was surfaced and move on.
 
+**Tear down only the browser this survey launched — never a process-wide kill.** When the exploration
+ends (or `maxPlaywrightSec` is hit), close the exact Playwright instance you spawned — its
+`browser`/`context` handle or child PID, or a dedicated `--user-data-dir` / isolated automation profile
+/ headless session. **Never** `taskkill /IM msedge.exe`, `pkill chrome`, `killall chrome`, or
+`Stop-Process -Name msedge`: a process-wide kill closes every browser window the operator has open on a
+live desktop (their work, a live stream, other agents), not just the survey's.
+
 **Degrade to static-only — never error — when any of these holds**, and **note it in the report**:
 
 - `commands.run` is **absent** (no runnable app) → skip §3 entirely; the run is static-only.
