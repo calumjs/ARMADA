@@ -83,6 +83,9 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { execFileSync, spawn } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
+// The phase→progress map lives with the liveness producer (single source of truth,
+// #156). Importing is side-effect-free — liveness-beat guards its main() on isEntry.
+import { progressFor } from './liveness-beat.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -588,6 +591,53 @@ function readCost(branch, issueNumber, worktree) {
     ? `out/costs/${safe(branch)}.json`
     : (issueNumber != null ? `out/costs/${safe(issueNumber)}.json` : 'out/costs/<run>.json');
   return { data: null, pointer };
+}
+
+// Consume the agent LIVENESS beat for a run (READ-ONLY) and derive a coarse, honest
+// PROGRESS estimate (#156). shipwright/muster emit a phase + monotonic step to
+// out/liveness/<run>.json as they advance (SKILL §0a/§0b); this driver only READS it
+// and maps the phase → % via the producer's own phase→progress table (single source
+// of truth, imported above). It NEVER writes the beat file. Degrades to null (→ the
+// dashboard shows no bar) when the file is absent/corrupt or the phase is unrecognised.
+//
+// Path resolution mirrors readCost: an in-flight run beats into whatever cwd the
+// dispatched subagent runs in — often its build WORKTREE, sometimes the main repo —
+// so we look under BOTH <cwd>/out/liveness and <worktree>/out/liveness. The run's
+// beat-file basename is <branch> or <issue|pr> with path separators flattened, to
+// match the producer's `String(run).replace(/[\\/]/g, '-')` on write. A terminal
+// marker reads 100%; otherwise the phase maps to its coarse %.
+function readLiveness(branch, issueNumber, prNumber, worktree) {
+  const safe = (s) => String(s).replace(/[\\/]/g, '-');
+  const roots = [path.join(process.cwd(), 'out', 'liveness')];
+  if (worktree) roots.push(path.join(worktree, 'out', 'liveness'));
+  const keys = [branch, issueNumber, prNumber].filter((k) => k != null);
+  let doc = null;
+  for (const root of roots) {
+    for (const k of keys) {
+      const f = path.join(root, `${safe(k)}.json`);
+      if (existsSync(f)) {
+        try { doc = JSON.parse(readFileSync(f, 'utf8')); break; }
+        catch { /* malformed — skip, try next */ }
+      }
+    }
+    if (doc) break;
+  }
+  if (!doc || typeof doc !== 'object') return null;
+  const phase = doc.phase || null;
+  const terminal = !!doc.terminal;
+  // Terminal → 100; else the phase's coarse %, or null when unrecognised (no bar).
+  const pct = terminal ? 100 : progressFor(phase);
+  if (pct == null) return null;
+  const beatTs = (typeof doc.beatTs === 'number' && Number.isFinite(doc.beatTs)) ? doc.beatTs : null;
+  return {
+    pct,                 // 0..100 coarse estimate
+    phase,               // the liveness phase it was derived from
+    terminal,            // terminal marker present → 100
+    estimate: true,      // ALWAYS honestly an estimate (phase-derived, not true sub-step)
+    source: 'liveness',
+    beatAt: doc.beatAt || null,
+    beatTs,
+  };
 }
 
 // Discover the logbook "done video" for a run from GitHub release assets
@@ -1315,6 +1365,10 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
     cost.estRatePerMin = estRatePerMin;
     cost.estTotalCost = cost.estimated ? estFromElapsed(costSince, estRatePerMin) : null;
     const doneVideo = matchDoneVideo(assets, { issueNumber, prNumber, branch });
+    // Coarse, honest PROGRESS estimate (#156) from the agent liveness beat. Read-only;
+    // null when no beat / unknown phase (→ the dashboard shows no bar). A recent
+    // (terminal) run drops it — its outcome, not a live %, is what the harbour shows.
+    const progress = recent ? null : readLiveness(branch, issueNumber, prNumber, worktree);
     // Elapsed since the run started: the issue/PR open time, or the crows-nest
     // dispatch time from the run map (whichever is earliest & known).
     const startedAt = (issue && issue.createdAt) || (pr && pr.createdAt)
@@ -1345,6 +1399,7 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
       terminal: stage.terminal,
       group: recent ? stage.group : groupForStage(stage),
       doneVideo,
+      progress, // #156 — coarse phase-derived % from liveness (null → no bar)
       cost,
       // recent-lane fields (#113); absent/null on in-flight runs.
       recent: !!recent,
@@ -1488,7 +1543,7 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
   rollup.held = scheduler.nodes.filter((n) => n.waiting && n.held).length;
 
   return {
-    schema: 5,                         // schema 5 (#111): + scheduler {source, nodes, edges} — the waiting-runs dependency graph (producer or inferred); rollup gains waiting/eligible/held. Additive — older tabs read tolerantly.
+    schema: 6,                         // schema 6 (#156): each in-flight run gains progress {pct, phase, estimate, terminal, source} — a coarse phase-derived % from the liveness beat (null when unavailable). schema 5 (#111): + scheduler {source, nodes, edges} — the waiting-runs dependency graph; rollup gains waiting/eligible/held. Additive — older tabs read tolerantly.
     appVersion: computeAppVersion(),   // content stamp of the shipped app, recomputed each snapshot (so a long-lived --watch producer re-stamps when the UI ships) → drives the tab's version self-reload (SKILL §6)
     estRatePerMin,                     // coarse USD/min burn rate the dashboard uses to live-tick an in-flight run's estimate off `costSince` (kept here so it's server-configurable and driver/dashboard agree)
     generatedAt: new Date().toISOString(),

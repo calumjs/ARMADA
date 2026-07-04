@@ -295,9 +295,11 @@ The dashboard makes **zero mutations**. Every source it touches is a read:
 - **Local disk (reads only):** `git worktree list` (to resolve a run's on-disk worktree path);
   `out/costs/_runs.json` (the crows-nest-written run→(branch, worktree) map, so an **in-flight** run's
   branch/worktree/folder resolve **before** a PR exists); `out/costs/<run>.json` (the per-model
-  cost post-mortem, **consumed** when present); and `out/costs/_schedule.json` (the crows-nest
-  scheduler-state — the waiting-runs dependency graph, **consumed** when present; see **The horizon**
-  below). The **driver never PRODUCES** any of these — it only reads them. The producer is **crows-nest-side** (`spyglass-cost-postmortem.mjs`, crows-nest §8g),
+  cost post-mortem, **consumed** when present); `out/liveness/<run>.json` (the agent **liveness beat** —
+  the run's coarse **phase**, from which a phase-derived **progress %** is read; #156, **consumed** when
+  present); and `out/costs/_schedule.json` (the crows-nest scheduler-state — the waiting-runs dependency
+  graph, **consumed** when present; see **The horizon** below). The **driver never PRODUCES** any of
+  these — it only reads them. The producer is **crows-nest-side** (`spyglass-cost-postmortem.mjs`, crows-nest §8g),
   writing **only** under `out/costs/` (gitignored). Keeping the writer out of the read-only driver is
   what preserves the driver's zero-mutation guarantee.
 
@@ -321,6 +323,13 @@ When the fleet is busy the dashboard opens on the **overview**, not a stack of f
   not a misleading `$0.00`) or **`accruing…`** when no rate is set; a recorded-but-partial figure reads
   **`$X`** tagged *so far*; only a reconciled run reads a plain **`$X`** (final). Legible with many
   concurrent runs (6+); a blocked run reads red. **Sort** by furthest-along / cost / age.
+- **Coarse progress % (#156)** — an **in-flight building/reviewing** row also shows a **slim progress
+  bar + %** under its status word (and, on an auto-expanded building card, as a `progress` fact),
+  derived from the run's **liveness phase** (`out/liveness/<run>.json`) via the producer's phase→% map
+  (shipwright `research` 10 → `implementing` 40 → `validating` 75 → `opening-pr` 95; muster `reviewing`
+  40 → `visual-inspection` 70 → `posting` 90; terminal = 100). It is honestly an **estimate** (labels
+  don't expose true sub-step progress) and **degrades to no bar** when the beat is missing/unknown; a
+  terminal/recent/blocked run drops the bar. Read-only — the dashboard only *reads* the emitted signal.
 - **Click through to GitHub (#127).** Each row's **number** links to its GitHub **issue** (or its **PR**
   when there's no issue) and its **title** links to the **PR** when one exists (else the issue) — opened
   in a **new tab** (`target=_blank`, `rel=noopener`). It's **read-only** (just deep links, no mutation),
@@ -341,11 +350,13 @@ The manifest **groups** are derived from the real voyage stages (see the mapping
 = Awaiting merge; **done** = Merged + Shipped; and **blocked** overrides all of them for any blocked
 run. The snapshot emits each run's `group` and a top-level `rollup` object (counts per group +
 `inFlight` + `totalCost` + `costKnown` + `estIncluded` + `recent` + `shippedToday` + `waiting` +
-`eligible` + `held`), **additively — schema 5** (an older snapshot is regrouped client-side against the
+`eligible` + `held`), **additively — schema 6** (an older snapshot is regrouped client-side against the
 same rule; a schema-2 snapshot with no `recentRuns` simply shows no harbour lane; a pre-4 snapshot
 without the cost estimate fields just shows recorded cost or `n/a`, never a wrong figure; a pre-5
 snapshot without the `scheduler` block simply shows no horizon graph — the waiting runs stay in the
-voyage list as before). The waiting-runs **`scheduler`** block (schema 5, #111) is documented under
+voyage list as before; a pre-6 snapshot without each run's `progress` block simply shows no progress
+bar — #156). Each in-flight run's **`progress`** block (schema 6, #156: `{pct, phase, estimate,
+terminal, source}`, or absent when no liveness beat) drives the progress bar above. The waiting-runs **`scheduler`** block (schema 5, #111) is documented under
 **The horizon** below. **`estIncluded`** flags that `totalCost` folds in
 non-final (estimated / accruing) figures, so the manifest caveats it (**`~$X · incl. live estimates`**)
 rather than presenting a moving number as settled.
