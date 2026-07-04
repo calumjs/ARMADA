@@ -102,6 +102,17 @@ Environment:
                           the live site) — preferred over the worktree dev server,
                           which may never paint. Falls back to the dev server if
                           this URL warms up blank. Also settable as recipe.recordUrl.
+  LOGBOOK_BROWSER_EXECUTABLE  Path to a SYSTEM browser (e.g. msedge.exe / chrome)
+                          to drive web capture with when Playwright-Chromium isn't
+                          installed. Launched via executablePath — the reliable path.
+                          Also settable as recipe.browserExecutable.
+  LOGBOOK_BROWSER_CHANNEL Playwright browser channel to launch instead of bundled
+                          Chromium (e.g. "msedge", "chrome"). Also recipe.browserChannel.
+                          (executablePath is preferred where a path is known.)
+  LOGBOOK_NODE_PATH / LOGBOOK_PLAYWRIGHT_PATH  Extra node_modules root(s) to resolve
+                          an out-of-repo (global/scratch) Playwright from, on top of
+                          the cwd and NODE_PATH — so a non-local driver isn't reported
+                          degraded.
   Any demo credentials the recipe references by name (e.g. LOGBOOK_DEMO_USER).
 
 Motion walkthrough (web): a chapter may carry "target"/"spotlight" selector(s) to
@@ -292,27 +303,144 @@ async function provisionFfmpeg(host, { dryRun } = {}) {
 // Capture backend detection (per surface)
 // --------------------------------------------------------------------------
 
+// Directories the module resolver should search for an OPTIONAL backend (issue
+// #103). A Playwright installed OUTSIDE the repo — a global/scratch install, or
+// one on NODE_PATH — must still be found, so a present-but-non-local driver isn't
+// falsely reported degraded. We search, in order: the cwd, an explicit override
+// (LOGBOOK_NODE_PATH / LOGBOOK_PLAYWRIGHT_PATH), and every NODE_PATH entry. For a
+// path that already points AT a node_modules dir we also add its parent, since
+// require.resolve's `paths` treats each entry as a base it appends node_modules to
+// — so a caller can point at either the project root or its node_modules.
+function moduleResolvePaths() {
+  const out = [process.cwd()];
+  const add = (raw) => {
+    if (!raw) return;
+    for (const p of String(raw).split(path.delimiter)) {
+      const t = p.trim();
+      if (!t) continue;
+      out.push(t);
+      if (/[\\/]node_modules[\\/]?$/.test(t)) out.push(path.dirname(t.replace(/[\\/]$/, '')));
+    }
+  };
+  add(process.env.LOGBOOK_NODE_PATH);
+  add(process.env.LOGBOOK_PLAYWRIGHT_PATH);
+  add(process.env.NODE_PATH);
+  // De-dupe while preserving order.
+  return [...new Set(out)];
+}
+
 function canResolve(mod) {
   try {
-    require.resolve(mod, { paths: [process.cwd()] });
+    require.resolve(mod, { paths: moduleResolvePaths() });
     return true;
   } catch {
     return false;
   }
 }
 
-function detectCaptureBackend(surface) {
+// Common system-browser executable locations per platform. When Playwright's own
+// Chromium isn't installed we can still drive `web` capture by pointing the driver
+// at a system Edge/Chrome via `executablePath` (issue #103). Order matters: on
+// Windows Edge is always present, so it's tried first; the issue's win-arm64
+// evidence is that `executablePath -> msedge.exe` launches cleanly where
+// `channel:'msedge'` did not.
+function systemBrowserCandidates() {
+  const plat = os.platform();
+  if (plat === 'win32') {
+    const PF = process.env['ProgramFiles'] || 'C:\\Program Files';
+    const PFx86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    const LOCAL = process.env['LOCALAPPDATA'] || '';
+    return [
+      { name: 'msedge', channel: 'msedge', path: `${PFx86}\\Microsoft\\Edge\\Application\\msedge.exe` },
+      { name: 'msedge', channel: 'msedge', path: `${PF}\\Microsoft\\Edge\\Application\\msedge.exe` },
+      { name: 'chrome', channel: 'chrome', path: `${PF}\\Google\\Chrome\\Application\\chrome.exe` },
+      { name: 'chrome', channel: 'chrome', path: `${PFx86}\\Google\\Chrome\\Application\\chrome.exe` },
+      ...(LOCAL ? [{ name: 'chrome', channel: 'chrome', path: `${LOCAL}\\Google\\Chrome\\Application\\chrome.exe` }] : []),
+    ];
+  }
+  if (plat === 'darwin') {
+    return [
+      { name: 'msedge', channel: 'msedge', path: '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge' },
+      { name: 'chrome', channel: 'chrome', path: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' },
+      { name: 'chromium', channel: 'chromium', path: '/Applications/Chromium.app/Contents/MacOS/Chromium' },
+    ];
+  }
+  // Linux / other: resolve names on PATH.
+  const byName = [
+    { name: 'msedge', channel: 'msedge', bins: ['microsoft-edge', 'microsoft-edge-stable'] },
+    { name: 'chrome', channel: 'chrome', bins: ['google-chrome', 'google-chrome-stable'] },
+    { name: 'chromium', channel: 'chromium', bins: ['chromium', 'chromium-browser'] },
+  ];
+  const found = [];
+  for (const b of byName) {
+    for (const bin of b.bins) {
+      const exe = resolveExe(bin);
+      if (exe) { found.push({ name: b.name, channel: b.channel, path: exe }); break; }
+    }
+  }
+  return found;
+}
+
+// Find the first system browser that actually exists on this host, or null.
+function detectSystemBrowser() {
+  for (const c of systemBrowserCandidates()) {
+    if (c.path && existsSync(c.path)) return { name: c.name, channel: c.channel, path: c.path };
+  }
+  return null;
+}
+
+// Resolve which system browser to launch, honouring explicit config first (issue
+// #103). Precedence: LOGBOOK_BROWSER_EXECUTABLE / recipe.browserExecutable (a full
+// path) > an auto-detected install > LOGBOOK_BROWSER_CHANNEL / recipe.browserChannel
+// (a Playwright channel with no known path). Returns { name, path, channel, source }
+// or null when there's nothing to point the driver at (bundled Chromium is then used).
+function resolveSystemBrowser(recipe) {
+  const explicit = process.env.LOGBOOK_BROWSER_EXECUTABLE || (recipe && recipe.browserExecutable) || null;
+  const channel = process.env.LOGBOOK_BROWSER_CHANNEL || (recipe && recipe.browserChannel) || null;
+  if (explicit) {
+    const exists = existsSync(explicit);
+    return {
+      name: path.basename(explicit),
+      path: explicit,
+      channel: channel || null,
+      exists,
+      source: process.env.LOGBOOK_BROWSER_EXECUTABLE ? 'LOGBOOK_BROWSER_EXECUTABLE' : 'recipe.browserExecutable',
+    };
+  }
+  const found = detectSystemBrowser();
+  if (found) return { ...found, exists: true, source: 'auto-detected' };
+  if (channel) {
+    return {
+      name: channel,
+      path: null,
+      channel,
+      exists: null,
+      source: process.env.LOGBOOK_BROWSER_CHANNEL ? 'LOGBOOK_BROWSER_CHANNEL' : 'recipe.browserChannel',
+    };
+  }
+  return null;
+}
+
+function detectCaptureBackend(surface, recipe) {
   // We never hard-import a backend. We probe whether one is importable so the
   // recorder can choose live capture vs. degrade to stills/storyboard.
   if (surface === 'web') {
     const playwright =
       canResolve('playwright') || canResolve('playwright-core') || canResolve('puppeteer');
+    // A system browser we can point the driver at when Playwright's own Chromium
+    // isn't installed (issue #103): a present Edge/Chrome keeps `web` capture ready
+    // rather than degrading to a storyboard.
+    const sys = resolveSystemBrowser(recipe);
     // The browser driver is OPTIONAL: when absent the run degrades to captioned
     // stills / a storyboard, so its absence is 'degraded', never a hard 'missing'.
     return {
       surface,
       backend: playwright ? 'playwright/puppeteer' : null,
       status: playwright ? 'ready' : 'degraded',
+      ...(sys ? { systemBrowser: sys.path || sys.channel, systemBrowserName: sys.name, systemBrowserSource: sys.source } : {}),
+      ...(playwright && sys
+        ? { note: `system browser available (${sys.name}${sys.path ? ` → ${sys.path}` : ''}) — used for web capture when Playwright-Chromium isn't installed` }
+        : {}),
       install: 'npm i -D playwright && npx playwright install chromium',
       degradesTo: 'captioned stills / storyboard',
     };
@@ -553,19 +681,25 @@ function loadJson(file, label) {
   }
 }
 
-function readSurfaceFromRecipe(stagingArg) {
+// Best-effort load of the staging recipe for --setup (returns {} on any problem so
+// the preflight never fails just because the recipe is missing/malformed). Used to
+// read `surface` AND the system-browser overrides (recipe.browserExecutable /
+// recipe.browserChannel) so --setup reports the same backend the record path will use.
+function readRecipeBestEffort(stagingArg) {
   try {
     const candidate = stagingArg
       ? path.resolve(process.cwd(), stagingArg)
       : path.join(logbookDir(), 'staging.json');
-    if (existsSync(candidate)) {
-      const recipe = JSON.parse(readFileSync(candidate, 'utf8'));
-      if (recipe.surface) return recipe.surface;
-    }
+    if (existsSync(candidate)) return JSON.parse(readFileSync(candidate, 'utf8'));
   } catch {
-    /* fall through to default */
+    /* fall through to empty recipe */
   }
-  return 'web';
+  return {};
+}
+
+function readSurfaceFromRecipe(stagingArg) {
+  const recipe = readRecipeBestEffort(stagingArg);
+  return recipe && recipe.surface ? recipe.surface : 'web';
 }
 
 // Resolve which URL to record against, and a fallback (issue #91). A worktree dev
@@ -643,8 +777,11 @@ async function runSetup(args) {
   report.tools.ffmpeg = ffmpeg;
 
   // 2) capture backend ------------------------------------------------------
-  const surface = readSurfaceFromRecipe(args.staging);
-  report.tools.capture = detectCaptureBackend(surface);
+  // Load the recipe once so surface AND system-browser overrides both come from it
+  // — the preflight then reports the SAME backend the record path will launch (#103).
+  const recipe = readRecipeBestEffort(args.staging);
+  const surface = recipe && recipe.surface ? recipe.surface : 'web';
+  report.tools.capture = detectCaptureBackend(surface, recipe);
 
   // 3) TTS ------------------------------------------------------------------
   // Don't just check the key is PRESENT — verify it AUTHENTICATES and that the
@@ -704,6 +841,8 @@ function printSetupHuman(r) {
     if (t.provider) line.push(`[${t.provider}]`);
     if (t.backend) line.push(`[${t.backend}]`);
     console.log(line.join(' '));
+    if (t.systemBrowser) console.log(`      system browser: ${t.systemBrowser}${t.systemBrowserName ? ` (${t.systemBrowserName}${t.systemBrowserSource ? `, ${t.systemBrowserSource}` : ''})` : ''}`);
+    if (t.note) console.log(`      note: ${t.note}`);
     if (t.reason) console.log(`      reason: ${t.reason}`);
     if (t.install) console.log(`      install: ${t.install}`);
     if (t.source) console.log(`      source: ${t.source}`);
@@ -735,7 +874,7 @@ async function runRecord(args) {
 
   // Resolve the toolchain (reuses the same detection as --setup).
   const ffmpegExe = resolveExe(ffmpegSource(host).binName);
-  const capture = detectCaptureBackend(surface);
+  const capture = detectCaptureBackend(surface, recipe);
   const ttsCfg = ttsProviderConfig();
 
   const degraded = [];
@@ -1101,6 +1240,53 @@ async function moveCursorTo(page, selector, { tap = false } = {}) {
     .catch(() => {});
 }
 
+// Launch a Chromium-family browser for capture, honouring a SYSTEM browser so a
+// host with Edge/Chrome but no Playwright-Chromium still records live motion
+// instead of degrading to a storyboard (issue #103). Resolution order:
+//   1. An explicit executable — LOGBOOK_BROWSER_EXECUTABLE / recipe.browserExecutable
+//      (issue #103 evidence: `executablePath -> msedge.exe` is the most reliable path
+//      on win-arm64, where `channel:'msedge'` failed).
+//   2. An explicit channel — LOGBOOK_BROWSER_CHANNEL / recipe.browserChannel.
+//   3. Playwright's own bundled Chromium (the default when it's installed).
+//   4. Auto-fallback: if the default launch fails because no Chromium is installed,
+//      auto-detect a system Edge/Chrome and relaunch via its executablePath.
+// Returns { browser, via } where `via.system` marks a system-browser launch so the
+// caller can name it in the run summary.
+async function launchBrowser(pw, recipe) {
+  const explicit = process.env.LOGBOOK_BROWSER_EXECUTABLE || (recipe && recipe.browserExecutable) || null;
+  const channel = process.env.LOGBOOK_BROWSER_CHANNEL || (recipe && recipe.browserChannel) || null;
+
+  // 1) Explicit executablePath wins — the reliable path per the issue's evidence.
+  if (explicit && existsSync(explicit)) {
+    const browser = await pw.chromium.launch({ executablePath: explicit });
+    return { browser, via: { system: true, detail: `executablePath ${explicit}` } };
+  }
+  // 2) Explicit channel (e.g. msedge/chrome). Best-effort — fall through on failure.
+  if (channel) {
+    try {
+      const browser = await pw.chromium.launch({ channel });
+      return { browser, via: { system: true, detail: `channel ${channel}` } };
+    } catch {
+      /* fall through to bundled Chromium / auto-detect */
+    }
+  }
+  // 3) Bundled Chromium — the default when Playwright installed its browser.
+  try {
+    const browser = await pw.chromium.launch();
+    return { browser, via: { system: false } };
+  } catch (e) {
+    // 4) No Chromium installed — auto-detect a system browser and relaunch via its
+    //    executablePath (the reliable channel-free path). If none is found, rethrow
+    //    so the caller degrades to a storyboard card as before.
+    const sys = detectSystemBrowser();
+    if (sys && sys.path) {
+      const browser = await pw.chromium.launch({ executablePath: sys.path });
+      return { browser, via: { system: true, detail: `auto-detected ${sys.name} → ${sys.path}` } };
+    }
+    throw e;
+  }
+}
+
 // Lazy web capture. Tries playwright, then puppeteer; degrades to a card on any
 // import/launch failure so a missing/half-installed backend never hard-fails.
 //
@@ -1148,7 +1334,13 @@ async function captureWeb(recipe, chapter, ffmpegExe, captureDegraded = []) {
 
   try {
     const pw = await import('playwright').catch(() => import('playwright-core'));
-    const browser = await pw.chromium.launch();
+    const { browser, via } = await launchBrowser(pw, recipe);
+    if (via && via.system) {
+      // Not a degrade — capture proceeds normally — but surface WHICH browser drove
+      // it so a run on a Chromium-less host reads clearly in the summary (issue #103).
+      const msg = `chapter ${chapter.index} ("${chapter.title}") web capture via system browser (${via.detail})`;
+      if (!captureDegraded.includes(msg)) captureDegraded.push(msg);
+    }
 
     // (a) WARM-UP — prime each route in a throwaway, NON-recording context so the
     // dev server's first-compile (which can take seconds and renders blank) happens
