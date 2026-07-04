@@ -157,6 +157,16 @@ Read `.armada/config.json` from the target repo:
   (gitignored); under the **same best-effort side-channel discipline** as the bell (§8c), cartographer
   (§8d), and logbook (§8f) — it never blocks, fails, or delays the tick. The full convention is §8g.
   Default `"off"` = never produce (the dashboard just shows `n/a` cost + no in-flight worktree).
+- `spyglass` — makes the [`spyglass`](../spyglass/SKILL.md) dashboard **part of the default fleet
+  experience**: launch it alongside the watch. One of `"off" | "run" | "chart" | "both"`, **default
+  `"run"`** (written by [`commission`](../commission/SKILL.md) — ON, since spyglass is a **read-only
+  view** and changes nothing the fleet does). When it isn't `"off"`, at **arm-the-loop (§6)** the
+  lookout hands the operator a **spyglass launch line** next to the `/loop` line — a single `--watch`
+  process that snapshots the same read-only GitHub state, **serves the view over a localhost http
+  server** (so the app's `fetch` resolves instead of a blocked `file://`; spyglass §1a), and
+  live-refreshes as the fleet moves. `"run"` = the per-run ops dashboard, `"chart"` = the sea-chart,
+  `"both"` = both, `"off"` = hand no line (manual `/spyglass` still works). Read-only and
+  side-channel — it never dispatches, blocks, or gates a tick.
 - `lighthouse` — gates [`lighthouse`](../lighthouse/SKILL.md), the fleet's autonomous **reconnaissance**:
   it surveys the repo for *future* work and charters it (unarmed). A block with `enabled` (**default
   `false`** = opt-in), `autoArm` (default `false`), the trigger thresholds (`intervalHours`,
@@ -911,6 +921,27 @@ Note that `/loop` with no interval lets the model self-pace, and that they can s
 Remind them that **auto-merge is off by default**, so the PR track stops at "awaiting human merge"
 until they set `autoMerge: true`. If `/loop` is unavailable, offer to run manual ticks (§2) on
 demand.
+
+### Also hand the spyglass launch line — the dashboard by default (`spyglass` key)
+
+The [`spyglass`](../spyglass/SKILL.md) dashboard is **part of the default fleet experience** (§1's
+`spyglass` key, default `"run"`). So **whenever `spyglass` isn't `"off"`, hand a second line next to
+the `/loop` line** — a single `--watch` process that snapshots the same read-only GitHub state,
+**serves the view over a localhost http server**, opens it once, and live-refreshes as the fleet
+moves (it opens no browser on later ticks and never touches the fleet). Pick the driver from the key:
+`"run"` → the per-run ops dashboard, `"chart"` → the sea-chart, `"both"` → both drivers.
+
+```bash
+# spyglass — per-run operations dashboard ("run", the default). Run beside the /loop watch above.
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-run-snapshot.mjs" --label "armada" --watch 15
+# spyglass — whole-fleet sea-chart ("chart"):
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-snapshot.mjs" --label "armada" --watch 15
+```
+
+Tell the user: *"…and this line brings up the live spyglass dashboard alongside the watch — it serves
+over `http://127.0.0.1:<port>` and refreshes itself; Ctrl-C to close it."* When `spyglass` is
+`"off"`, hand **no** spyglass line (manual `/spyglass` still works any time). This is a read-only
+convenience — arming the loop above is what actually runs the fleet; spyglass just lets you watch it.
 
 ## 7. Stopping and safety
 

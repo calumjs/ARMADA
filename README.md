@@ -52,6 +52,11 @@ it auto-detects your build/test/lint/run commands and base branch, writes `.arma
 creates the ARMADA labels, and tells you how to arm the watch. You don't hand-configure
 anything — that knowledge lives in the skill, so any install self-sets-up.
 
+> **What you need installed.** Only `gh` (authenticated), Node.js, and git are **required**; every
+> other tool is **optional with a documented fallback**. See **[REQUIREMENTS.md](REQUIREMENTS.md)** for
+> the full reference — what each external tool (ElevenLabs, Codex, `ffmpeg`, Playwright, `gh`) is for,
+> required vs optional, how to provide it, its alternatives, and exactly what happens without it.
+
 > **Prefer not to use the plugin system?** Drop **both** the `skills/` **and** `scripts/` folders into
 > your project's `.claude/` (i.e. `.claude/skills/` and `.claude/scripts/`) and run `/commission` —
 > project-scoped, and it works **out of the box**. Two things to know:
@@ -159,6 +164,13 @@ A couple of related distribution conventions:
     "minIdleToDispatch": true, // BOOLEAN guard (default true): only auto-dispatch when the runnable frontier is fully idle. Never overrides existing-work-always-wins.
     "budget": { "maxRuntimeSec": 300, "maxPlaywrightSec": 120, "maxIssuesPerRun": 3, "maxFindings": 20 }
   },
+  // Launch the spyglass dashboard alongside the crows-nest watch — ON by default (a read-only view).
+  //   "off"   → nothing auto-launches; manual /spyglass still works
+  //   "run"   → the per-run operations dashboard (default)
+  //   "chart" → the whole-fleet sea-chart
+  //   "both"  → both views
+  // crows-nest hands the launch line when you arm the watch; the view serves over http://127.0.0.1.
+  "spyglass": "run",
   // Your project's commands. Any can be omitted; skills will infer or ask.
   "commands": {
     "build":  "npm run build",
