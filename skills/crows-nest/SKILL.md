@@ -562,8 +562,8 @@ normally. **Never** decide "stalled" from mtime, output-file freshness, or elaps
 **never** `TaskStop` / kill an in-flight build on that basis.
 
 Instead, consult the **liveness beat** the dispatched subagent emits. Every fleet subagent
-(shipwright §4a, muster §1a) writes a coarse **phase** + a monotonic **step** counter to
-`out/liveness/<run>.json` via `scripts/liveness-beat.mjs` as it advances, and a latched **terminal
+(shipwright §0a, muster §0b) writes a coarse **phase** + a monotonic **step** counter to
+`out/liveness/<run>.json` via `scripts/liveness-beat.mjs` as it advances, and a **terminal
 marker** when it finishes. Classify a run with the **reader** subcommand — it centralises the
 **phase-aware grace** so you never re-implement the timeout math (resolve the script by the standard
 scripts-dir rule, **prefer `${CLAUDE_PLUGIN_ROOT}`, else `pluginRoot`**, §1/§4):
@@ -583,7 +583,11 @@ Act **only** on the classified `state`, not on wall-clock intuition:
   completion* describes.
 - **`done`** — a terminal marker is present. The agent finished; its structured result is arriving (or
   has) and the completion reconcile above owns the label swap. Quiet-after-done is **never** wedged —
-  **do not intervene**.
+  **do not intervene**. The terminal marker is **per-dispatch, not per-branch**: a branch flows through
+  several back-to-back dispatches over its lifecycle (build → review → address-review → rebase), and the
+  **first beat of the next dispatch re-arms** the run (clears the marker, bumps `lifecycle`), so a later
+  dispatch on a branch an earlier one marked `done` is classified live again — `done` never blinds
+  wedged-detection for lifecycles 2..N.
 - **`unknown`** — no beat file yet (the subagent may not have started emitting) or an unreadable one.
   Treat **conservatively**: give it a generous grace and re-check next tick; **never** kill on
   `unknown`.

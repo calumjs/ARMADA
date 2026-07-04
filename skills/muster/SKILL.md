@@ -70,7 +70,11 @@ node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/liveness-beat.mjs" \
 
 Beat `reviewing` when the two lenses fan out (§1), `visual-inspection` just before the §1b render,
 `posting` when you post the review (§3), then the terminal `done` marker after §4. Key `--run` by the
-PR's **branch** (else its number). Beats are **best-effort and side-channel** (they write only under
+PR's **branch** (else its number). Because you key by branch, the branch's **build** dispatch has
+usually already written a terminal marker; your **first beat re-arms** the run automatically (clears
+that marker, bumps the lifecycle), so your review — and especially the `visual-inspection` render —
+is classifiable as *working* / *wedged* again rather than short-circuiting to the build's `done`. You
+do nothing special; just beat your phase. Beats are **best-effort and side-channel** (they write only under
 `out/liveness/`, gitignored) — if the producer is missing or a beat fails, swallow it and carry on; a
 liveness write must **never** block, fail, or delay the review. The reader (crows-nest §2d *"Is an
 in-flight build actually stalled?"*) consumes these beats + the phase-aware grace to classify the run.

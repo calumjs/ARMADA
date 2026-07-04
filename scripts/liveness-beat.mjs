@@ -21,6 +21,18 @@
 //   unknown — no beat file yet (agent may not have started emitting) — treated
 //             CONSERVATIVELY by the reader, never as wedged.
 //
+// RE-ARM ACROSS DISPATCHES. A branch is NOT one dispatch — it flows through several
+// back-to-back ones over its lifecycle: build -> review -> address-review -> rebase.
+// Each is a fresh subagent that emits its own beats, and shipwright's build ends by
+// latching a TERMINAL marker. If that latch stuck forever it would short-circuit
+// EVERY later dispatch on the same branch to 'done', blinding wedged-detection for
+// muster's visual-inspection and the addressing/rebasing rounds. So the FIRST beat
+// of a new dispatch RE-ARMS the run: a `beat` on an already-terminal doc clears the
+// terminal marker and bumps a monotonic `lifecycle` counter, making that dispatch
+// classifiable as working/wedged again. `done` is only ever written last in a
+// dispatch, so a beat arriving after it always belongs to the NEXT dispatch —
+// re-arming can never revive a genuinely-finished agent (it has already returned).
+//
 // This is the AGENT-side producer half (shipwright/muster subagents call `beat`
 // and `done`) plus a reader-side `classify` that centralises the phase-aware
 // timeout math so crows-nest never re-implements it. It writes ONLY under
@@ -36,10 +48,11 @@
 //       never throws.
 //
 //   done  --run <branch|issue> [--status <s>] [--reason <t>] [--out <dir>]
-//       Write the TERMINAL marker (latched): terminal:true, status, endedAt. After
-//       this the run classifies 'done' forever — a finished agent going quiet is
-//       never mistaken for wedged. Status is free-text (opened|blocked|shipped|
-//       reviewed|merged|…); default 'done'.
+//       Write the TERMINAL marker: terminal:true, status, endedAt. The run then
+//       classifies 'done' until the NEXT dispatch's first `beat` re-arms it (see
+//       RE-ARM above) — a finished agent going quiet is never mistaken for wedged,
+//       yet a later dispatch on the same branch is not blinded. Status is free-text
+//       (opened|blocked|shipped|reviewed|merged|…); default 'done'.
 //
 //   classify [--run <branch|issue>] [--now <epoch-ms>] [--out <dir>]
 //       Reader side. With --run, classify that one run; without, classify every
@@ -70,10 +83,10 @@ const PHASE_GRACE = {
   implementing:        20 * MIN, // §5 implement — long edit/tool sequences
   validating:          15 * MIN, // §6 validate — a test suite can run long
   'visual-inspection':  8 * MIN, // muster §1b — ONE long headless render call
-  'screenshot-verify':  8 * MIN, // alias for the render phase (issue's wording)
   addressing:          20 * MIN, // shipwright §11 address-review round
   rebasing:            15 * MIN, // shipwright §12 rebase
   reviewing:           15 * MIN, // muster §1 two-lens review fan-out
+  posting:              6 * MIN, // muster §3 post the review (inline gh api comments)
   'opening-pr':         6 * MIN, // §7 open the PR (the near-miss step in #134)
 };
 const DEFAULT_GRACE = 12 * MIN;
@@ -91,12 +104,17 @@ function parseArgs(argv) {
   const args = { _: [] };
   const valued = new Set(['--run', '--phase', '--step', '--pid', '--note',
     '--status', '--reason', '--now', '--out']);
+  // A valued flag consumes the next token as its value UNLESS that token is itself a
+  // KNOWN flag — so it never swallows a following real flag, yet a free-text value
+  // that merely starts with '--' (e.g. --note "--x broke") is kept, not mis-parsed
+  // as a spurious boolean. (Nit: informational --note/--reason are the case here.)
+  const known = new Set([...valued, '--check']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--check') { args.check = true; continue; }
     if (valued.has(a)) {
       const next = argv[i + 1];
-      const v = (next && !next.startsWith('--')) ? argv[++i] : undefined;
+      const v = (next !== undefined && !known.has(next)) ? argv[++i] : undefined;
       const key = a.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
       args[key] = v;
     } else if (a.startsWith('--')) {
@@ -119,9 +137,9 @@ function loadDoc(file, run) {
   if (existsSync(file)) {
     try { return JSON.parse(readFileSync(file, 'utf8')); } catch { /* corrupt — restart */ }
   }
-  return { schema: 1, run: String(run), phase: null, step: 0, pid: null, note: null,
-    startedAt: null, beatAt: null, beatTs: null, terminal: false, status: null,
-    reason: null, endedAt: null };
+  return { schema: 1, run: String(run), phase: null, step: 0, lifecycle: 1, pid: null,
+    note: null, startedAt: null, beatAt: null, beatTs: null, terminal: false,
+    status: null, reason: null, endedAt: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -144,11 +162,26 @@ function beat(args) {
   if (args.pid != null) doc.pid = num(args.pid);
   else if (doc.pid == null) doc.pid = process.ppid || null;
   doc.note = args.note != null ? String(args.note) : null;
-  doc.startedAt = doc.startedAt || new Date(now).toISOString();
+  // RE-ARM: a beat on an already-terminal run is the FIRST beat of a NEW dispatch on
+  // this branch (build -> review -> address-review -> rebase are separate dispatches;
+  // `done` is only ever written last, so nothing else beats after it within a
+  // dispatch). Clear the latched terminal marker and bump the lifecycle so this fresh
+  // dispatch is classifiable as working/wedged again instead of short-circuiting to
+  // 'done'. This can never revive a truly-finished agent — that agent has returned
+  // and will emit no further beats.
+  if (doc.terminal) {
+    doc.terminal = false;
+    doc.lifecycle = (num(doc.lifecycle) || 1) + 1;
+    doc.status = null;
+    doc.reason = null;
+    doc.endedAt = null;
+    doc.startedAt = new Date(now).toISOString(); // this dispatch's own start
+  } else {
+    doc.startedAt = doc.startedAt || new Date(now).toISOString();
+  }
+  if (doc.lifecycle == null) doc.lifecycle = 1;
   doc.beatAt = new Date(now).toISOString();
   doc.beatTs = now;
-  // A beat does NOT clear a latched terminal marker — 'done' stays unambiguous.
-  doc.terminal = !!doc.terminal;
   mkdirSync(dir, { recursive: true });
   writeFileSync(file, JSON.stringify(doc, null, 2));
   const rel = path.relative(process.cwd(), file).replace(/\\/g, '/');
@@ -168,8 +201,9 @@ function done(args) {
   const now = Date.now();
   doc.run = String(run);
   doc.step = (num(doc.step) || 0) + 1;
+  if (doc.lifecycle == null) doc.lifecycle = 1;
   doc.phase = 'done';
-  doc.terminal = true; // latched — never un-set by a later beat
+  doc.terminal = true; // terminal for THIS dispatch; the next dispatch's first beat re-arms it
   doc.status = args.status != null ? String(args.status) : 'done';
   doc.reason = args.reason != null ? String(args.reason) : null;
   doc.endedAt = new Date(now).toISOString();
@@ -188,8 +222,8 @@ function done(args) {
 function classifyDoc(doc, now) {
   const step = num(doc.step) || 0;
   const phase = doc.phase || null;
-  const base = { run: doc.run, phase, step, pid: doc.pid ?? null,
-    terminal: !!doc.terminal, beatAt: doc.beatAt || null,
+  const base = { run: doc.run, phase, step, lifecycle: num(doc.lifecycle) || 1,
+    pid: doc.pid ?? null, terminal: !!doc.terminal, beatAt: doc.beatAt || null,
     startedAt: doc.startedAt || null };
   if (doc.terminal) {
     // A finished agent is NEVER wedged — the terminal marker is the whole point.
@@ -238,7 +272,13 @@ function classify(args) {
       for (const f of readdirSync(dir)) {
         if (!f.endsWith('.json') || f.startsWith('_')) continue;
         try { runs.push(classifyDoc(JSON.parse(readFileSync(path.join(dir, f), 'utf8')), now)); }
-        catch { /* skip corrupt */ }
+        catch {
+          // A corrupt/truncated file must SURFACE as unknown, not silently vanish
+          // from the multi-run overview — a live-but-mid-write run is still a run.
+          runs.push({ run: f.replace(/\.json$/, ''), state: 'unknown', phase: null,
+            step: 0, lifecycle: 1, terminal: false, beatAt: null, sinceMs: null,
+            graceMs: null, reason: 'beat file unreadable/corrupt — treat conservatively, not wedged' });
+        }
       }
     }
     result = runs;

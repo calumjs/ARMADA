@@ -80,6 +80,13 @@ node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/liveness-beat.mjs" \
   done --run <branch|issue> --status <opened|blocked> --reason "<one line>"
 ```
 
+The terminal marker is **per-dispatch**, not a permanent latch on the branch: a branch flows through
+several back-to-back dispatches (build → review → address-review → rebase), so when you are dispatched
+again on a branch an earlier dispatch already marked `done` (e.g. an **address-review** round → phase
+`addressing`, or a **rebase** → `rebasing`), your **first beat automatically re-arms** the run — it
+clears the previous terminal marker and bumps the lifecycle so wedged-detection is live for your round.
+You do nothing special; just beat your phase as normal.
+
 The reader (crows-nest) classifies your run into `working` / `done` / `wedged` from these beats +
 the phase-aware grace — see crows-nest §2d *"Is an in-flight build actually stalled?"*. Beats are
 **best-effort and side-channel** (they write only under `out/liveness/`, gitignored): if the script is
