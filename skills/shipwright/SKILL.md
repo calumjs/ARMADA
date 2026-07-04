@@ -39,6 +39,60 @@ opening a pull request. `shipwright` is stack-agnostic: it discovers the project
   (§4.4b) **only when `autoMerge: true`**. If you're invoked to rebase/make-mergeable a PR rather
   than to build or to address review, jump to §12.
 
+## 0a. Emit a liveness beat as you advance (so a slow build isn't misread as stalled)
+
+When crows-nest dispatches you as a **background** subagent (§2d of its SKILL), the harness surfaces
+**nothing** to the lookout until you return — no mid-build stream. A slow-but-healthy build then looks
+identical to a wedged one, and #134 was chartered because that ambiguity got a healthy agent **killed
+one step from opening its PR**. Fix it at the source: **emit a coarse liveness beat as you cross each
+phase**, so the lookout can tell *working* from *wedged* without guessing on output-file mtime.
+
+As you **enter** each stage below, drop a beat via the bundled producer (resolve it by the standard
+scripts-dir rule — **prefer `${CLAUDE_PLUGIN_ROOT}`, else the `pluginRoot` from `.armada/config.json`**;
+key `--run` by your **branch**, else the issue number):
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/liveness-beat.mjs" \
+  beat --run <branch|issue> --phase <phase> [--note "<what you're doing>"]
+```
+
+Emit one beat **when you begin** each phase (and, inside a long phase, an extra beat at any natural
+checkpoint — e.g. between test files — is welcome but not required; the phase-aware grace already
+covers a single long tool call):
+
+| Stage | `--phase` |
+|-------|-----------|
+| §2 research & gather context | `research` |
+| §3 plan | `planning` |
+| §4 create the worktree | `worktree` |
+| §5 implement | `implementing` |
+| §6 validate (build/test/lint) | `validating` |
+| §7 open the PR | `opening-pr` |
+| §11 address-review round | `addressing` |
+| §12 rebase | `rebasing` |
+
+Then, **when you finish** — right after you've reported your structured result (§8), whether the outcome
+is `opened` or `blocked` — write the **terminal marker** so a finished agent going quiet is never
+mistaken for a wedged one:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/liveness-beat.mjs" \
+  done --run <branch|issue> --status <opened|blocked> --reason "<one line>"
+```
+
+The terminal marker is **per-dispatch**, not a permanent latch on the branch: a branch flows through
+several back-to-back dispatches (build → review → address-review → rebase), so when you are dispatched
+again on a branch an earlier dispatch already marked `done` (e.g. an **address-review** round → phase
+`addressing`, or a **rebase** → `rebasing`), your **first beat automatically re-arms** the run — it
+clears the previous terminal marker and bumps the lifecycle so wedged-detection is live for your round.
+You do nothing special; just beat your phase as normal.
+
+The reader (crows-nest) classifies your run into `working` / `done` / `wedged` from these beats +
+the phase-aware grace — see crows-nest §2d *"Is an in-flight build actually stalled?"*. Beats are
+**best-effort and side-channel** (they write only under `out/liveness/`, gitignored): if the script is
+missing or a beat fails, **swallow it and carry on** — a liveness write must **never** block, fail, or
+delay the build. It is a courtesy to the lookout, not a step the build depends on.
+
 ## 0. Discover the project's commands
 
 Read `.armada/config.json` → `commands` for `build` / `test` / `lint` / `format` / `run` and
