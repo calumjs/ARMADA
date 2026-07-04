@@ -129,6 +129,7 @@ function parseArgs(argv) {
     else if (a === '--watch') args.watch = Number(argv[++i]) || 0;
     else if (a === '--recent-hours') args.recentHours = argv[++i];
     else if (a === '--recent-cap') args.recentCap = argv[++i];
+    else if (a === '--est-burn') args.estBurn = argv[++i];
   }
   return args;
 }
@@ -465,14 +466,35 @@ function normalizeCost(cost) {
     matchMode: d.matchMode ?? d.match ?? null,
     unpriced: Array.isArray(d.unpriced) ? d.unpriced.map(String) : [],
     totalCost,
+    // `final` — the producer latches it true at the ship reconcile (--final,
+    // crows-nest §8g.ii); a file written at build/PR reconcile is `final:false`
+    // (real-so-far, still accruing). Legacy files (#109/#112) predate the flag —
+    // pass through whatever's present; buildRun ORs it with recent/terminal so a
+    // completed run's cost still reads as final. Boolean or null when absent.
+    final: (typeof d.final === 'boolean') ? d.final : null,
     updatedAt: d.updatedAt ?? d.generatedAt ?? null,
   };
+}
+
+// Rough elapsed-based cost estimate for an IN-FLIGHT run (#115). The dashboard is
+// strictly read-only and the harness surfaces a subagent's token usage ONLY in its
+// completion notification — there is no mid-build usage stream to read. So while a
+// run is actively working with no reconcile file yet, we derive an HONEST estimate
+// from the one live signal available read-only — elapsed build time — at a coarse,
+// configurable burn rate. It is CLEARLY labelled an estimate and converges to the
+// real figure the moment the producer writes real usage. Returns USD or null.
+function estFromElapsed(iso, ratePerMin) {
+  if (!iso || !(ratePerMin > 0)) return null;
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  if (ms <= 0) return 0;
+  return Number(((ms / 60000) * ratePerMin).toFixed(4));
 }
 
 // ---------------------------------------------------------------------------
 // Snapshot — the read-only scan + correlate + build runs.
 // ---------------------------------------------------------------------------
-function snapshot({ label, repo, commissioned, recentHours, recentCap }) {
+function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePerMin }) {
   const repoArgs = repo ? ['--repo', repo] : [];
 
   // Read-only §2a reads. NOTE: crows-nest DROPS the base trigger label when it
@@ -536,6 +558,30 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap }) {
     const worktree = (branch && wt[branch]) || (runRec && runRec.worktree) || null;
     const costRaw = readCost(branch, issueNumber);
     const cost = normalizeCost(costRaw);
+
+    // --- Estimated (in-flight) vs final (reconciled) cost — #115 -------------
+    // A run that is actively working (Building / In review) but hasn't finalised
+    // is "accruing"; if it has no reconcile file yet we show an elapsed-based
+    // ESTIMATE instead of a misleading $0.00. The burn clock is the time since
+    // BUILDING began — the crows-nest dispatch time (run map startedAt), else the
+    // PR/issue open time — NOT `startedAt` (the run's age), so idle queue time
+    // doesn't inflate the estimate.
+    const working = !recent && !stage.blocked && !stage.terminal
+      && stage.activeIndex >= IDX.BUILDING && stage.activeIndex <= IDX.IN_REVIEW;
+    const costSince = (runRec && (runRec.startedAt || runRec.dispatchedAt))
+      || (pr && pr.createdAt) || (issue && issue.createdAt) || null;
+    const recorded = cost.present && typeof cost.totalCost === 'number';
+    // final: producer latched it (--final at ship), or the run has left in-flight.
+    cost.final = !!(cost.final || recent || stage.terminal);
+    // accruing: actively working and not yet finalised — real-so-far or estimated.
+    cost.accruing = working && !cost.final;
+    // A pure estimate applies ONLY with no recorded usage yet (a build/review
+    // before any reconcile). Recorded-but-partial (final:false + real numbers) is
+    // real-so-far, not an estimate — the dashboard labels it "so far", not "est".
+    cost.estimated = cost.accruing && !recorded;
+    cost.costSince = cost.accruing ? costSince : null;
+    cost.estRatePerMin = estRatePerMin;
+    cost.estTotalCost = cost.estimated ? estFromElapsed(costSince, estRatePerMin) : null;
     const doneVideo = matchDoneVideo(assets, { issueNumber, prNumber, branch });
     // Elapsed since the run started: the issue/PR open time, or the crows-nest
     // dispatch time from the run map (whichever is earliest & known).
@@ -680,11 +726,18 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap }) {
   // Fleet roll-up — counts by coarse group, total in-flight, total cost — for the
   // totals bar. Client-recomputable, but emitted here so the grouping is
   // authoritative + documented in one place. (Additive; schema 2.)
-  const rollup = { inFlight: runs.length, totalCost: 0, costKnown: false };
+  // Fleet cost now folds in-flight runs into the total honestly (#115): a run's
+  // real recorded figure when present, else its elapsed-based estimate. `estIncluded`
+  // flags that the total carries non-final (estimated or accruing) figures so the
+  // manifest can caveat it rather than presenting a moving number as settled.
+  const rollup = { inFlight: runs.length, totalCost: 0, costKnown: false, estIncluded: false };
   for (const g of GROUPS) rollup[g] = 0;
   for (const r of runs) {
     if (rollup[r.group] != null) rollup[r.group] += 1;
-    const tc = r.cost && r.cost.present ? r.cost.totalCost : null;
+    const c = r.cost || {};
+    let tc = (c.present && typeof c.totalCost === 'number') ? c.totalCost : null;
+    if (tc == null && c.estimated && typeof c.estTotalCost === 'number') tc = c.estTotalCost;
+    if (c.accruing || c.estimated) rollup.estIncluded = true;
     if (typeof tc === 'number' && Number.isFinite(tc)) { rollup.totalCost += tc; rollup.costKnown = true; }
   }
   // Recent-lane counts (#113): how many completed voyages sit in the harbour, and
@@ -693,8 +746,9 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap }) {
   rollup.shippedToday = shippedToday;
 
   return {
-    schema: 3,
+    schema: 4,                         // schema 4 (#115): per-run cost gains final/accruing/estimated + estTotalCost; rollup gains estIncluded; top-level estRatePerMin. Additive — older tabs read tolerantly.
     appVersion: computeAppVersion(),   // content stamp of the shipped app, recomputed each snapshot (so a long-lived --watch producer re-stamps when the UI ships) → drives the tab's version self-reload (SKILL §6)
+    estRatePerMin,                     // coarse USD/min burn rate the dashboard uses to live-tick an in-flight run's estimate off `costSince` (kept here so it's server-configurable and driver/dashboard agree)
     generatedAt: new Date().toISOString(),
     repo: repo || 'unknown',
     triggerLabel: label,
@@ -751,9 +805,15 @@ function main() {
   const sg = (config && config.spyglass) || {};
   const recentHours = resolveNum(args.recentHours, 'SPYGLASS_RECENT_HOURS', sg.recentWindowHours, 24);
   const recentCap = resolveNum(args.recentCap, 'SPYGLASS_RECENT_CAP', sg.recentCap, 12);
+  // In-flight cost estimate burn rate (#115): coarse USD/min, --flag > env > config >
+  // default. A deliberately rough heuristic (the fleet runs on subscriptions/relays,
+  // not per-token billing) — clearly labelled an estimate on the dashboard. Default
+  // ~$0.03/min (≈ $1.80/hr), in the ballpark of an Opus build's API-equivalent spend.
+  // <=0 disables the estimate (in-flight runs then show "accruing…" with no number).
+  const estRatePerMin = resolveNum(args.estBurn, 'SPYGLASS_EST_BURN_PER_MIN', sg.estBurnUsdPerMin, 0.03);
 
   function once(firstRun) {
-    const state = snapshot({ label, repo, commissioned, recentHours, recentCap });
+    const state = snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePerMin });
     const out = writeOutputs(outDir, state);
     const d = state.degraded ? ` [degraded: ${state.degraded}]` : '';
     console.log(`spyglass-run: ${state.summary}${d}`);
