@@ -79,6 +79,11 @@ do nothing special; just beat your phase. Beats are **best-effort and side-chann
 liveness write must **never** block, fail, or delay the review. The reader (crows-nest §2d *"Is an
 in-flight build actually stalled?"*) consumes these beats + the phase-aware grace to classify the run.
 
+The phase you beat also drives a **coarse progress % estimate** (#156): the producer maps `reviewing`
+→ 40, `visual-inspection` → 70, `posting` → 90, and the terminal marker → 100, which spyglass shows as
+a slim progress bar + % on your in-flight review card. You do **nothing extra** — just beat your phase;
+the % is a read-only derivation, honestly an **estimate**, and degrades to **no bar** when unavailable.
+
 ## 1. Fan out two reviewers in parallel subagents
 
 > **Who owns the fan-out depends on how muster is reached — because a subagent can't nest agents.**

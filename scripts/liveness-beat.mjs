@@ -65,6 +65,7 @@
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 // ---------------------------------------------------------------------------
 // PHASE-AWARE grace table — how long a phase may legitimately go WITHOUT a beat
@@ -95,6 +96,44 @@ function graceFor(phase) {
   const p = String(phase || '').trim().toLowerCase();
   if (Object.prototype.hasOwnProperty.call(PHASE_GRACE, p)) return PHASE_GRACE[p];
   return DEFAULT_GRACE;
+}
+
+// ---------------------------------------------------------------------------
+// PHASE→PROGRESS map (issue #156) — a COARSE, honest progress estimate (0..100)
+// derived from the same phase a run beats. It is deliberately an ESTIMATE: labels
+// don't expose true sub-step progress, so a phase-derived % is the soundest honest
+// signal. It never stalls the fleet (a pure display derivation on the reader side)
+// and degrades to null on an unrecognised phase (→ the dashboard shows NO bar).
+//
+// The ladders mirror shipwright's stages (§0a/§2–§7/§11–§12) and muster's (§0b/§1–§3):
+//   shipwright: research 10 → planning 20 → worktree 25 → implementing 40 →
+//               validating 75 → (addressing 60, rebasing 80) → opening-pr 95
+//   muster:     reviewing 40 → visual-inspection 70 → posting 90
+//   done:       100 (terminal marker present)
+// Matched case-insensitively; an UNRECOGNISED phase → null (no honest estimate →
+// no bar). Keep in lockstep with the SKILL.md docs + the liveness reference.
+const PHASE_PROGRESS = {
+  research:            10,
+  planning:            20,
+  worktree:            25,
+  implementing:        40,
+  validating:          75,
+  addressing:          60,
+  rebasing:            80,
+  'opening-pr':        95,
+  reviewing:           40,
+  'visual-inspection': 70,
+  posting:             90,
+  done:               100,
+};
+
+// Coarse progress % (0..100) for a phase, or null when the phase is unrecognised
+// (the reader then shows no bar — degrade cleanly). A terminal run is handled by
+// the caller (classifyDoc) as 100 regardless of the last phase.
+function progressFor(phase) {
+  const p = String(phase || '').trim().toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(PHASE_PROGRESS, p)) return PHASE_PROGRESS[p];
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,10 +263,13 @@ function classifyDoc(doc, now) {
   const phase = doc.phase || null;
   const base = { run: doc.run, phase, step, lifecycle: num(doc.lifecycle) || 1,
     pid: doc.pid ?? null, terminal: !!doc.terminal, beatAt: doc.beatAt || null,
-    startedAt: doc.startedAt || null };
+    startedAt: doc.startedAt || null,
+    // COARSE progress estimate (#156) — phase-derived %, or null when the phase is
+    // unrecognised. A terminal run reads 100 (below). Honest: it's an estimate.
+    progress: progressFor(phase) };
   if (doc.terminal) {
     // A finished agent is NEVER wedged — the terminal marker is the whole point.
-    return { ...base, state: 'done', status: doc.status || 'done',
+    return { ...base, progress: 100, state: 'done', status: doc.status || 'done',
       sinceMs: null, graceMs: null,
       reason: `terminal marker present (${doc.status || 'done'}) — done, not wedged` };
   }
@@ -298,6 +340,11 @@ function check(args) {
     console.log(`    ${p.padEnd(20)} ${Math.round(g / MIN)}m`);
   }
   console.log(`    ${'(any other phase)'.padEnd(20)} ${Math.round(DEFAULT_GRACE / MIN)}m  (default — permissive)`);
+  console.log('  phase→progress map (#156) — coarse HONEST estimate surfaced on spyglass in-flight cards:');
+  for (const [p, pct] of Object.entries(PHASE_PROGRESS)) {
+    console.log(`    ${p.padEnd(20)} ${String(pct).padStart(3)}%`);
+  }
+  console.log(`    ${'(any other phase)'.padEnd(20)}   —   (no estimate → no bar)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -325,4 +372,13 @@ function main() {
   }
 }
 
-main();
+// Run only when invoked as the entry script, so other modules (e.g. the spyglass
+// snapshot driver, #156) can `import` the phase→progress map + progressFor without
+// kicking off a beat/classify. Importing this module has no side effects.
+const isEntry = process.argv[1]
+  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (isEntry) main();
+
+// Exported for consumers (the spyglass snapshot threads the phase→% into run-state.json)
+// and unit tests. Importing never triggers main() (see isEntry above).
+export { PHASE_PROGRESS, progressFor, PHASE_GRACE, graceFor, classifyDoc };

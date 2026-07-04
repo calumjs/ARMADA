@@ -93,6 +93,13 @@ the phase-aware grace — see crows-nest §2d *"Is an in-flight build actually s
 missing or a beat fails, **swallow it and carry on** — a liveness write must **never** block, fail, or
 delay the build. It is a courtesy to the lookout, not a step the build depends on.
 
+The same phase you beat also drives a **coarse progress % estimate** (#156): the producer maps each
+phase → a percentage (`research` 10 → `planning` 20 → `worktree` 25 → `implementing` 40 → `validating`
+75; `addressing` 60, `rebasing` 80; `opening-pr` 95; the terminal marker = 100), which spyglass reads
+and shows as a slim progress bar + % on your in-flight run card. You do **nothing extra** — just beat
+your phase as above; the % is a pure, read-only derivation. It is deliberately an **estimate** (labels
+don't expose true sub-step progress) and degrades to **no bar** on an unknown phase or a missing beat.
+
 ## 0. Discover the project's commands
 
 Read `.armada/config.json` → `commands` for `build` / `test` / `lint` / `format` / `run` and
