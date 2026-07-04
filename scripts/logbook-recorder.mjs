@@ -48,6 +48,7 @@ import {
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
@@ -338,6 +339,22 @@ function canResolve(mod) {
   }
 }
 
+// Import an OPTIONAL backend honouring the SAME search paths canResolve() reports
+// on (issue #103). A bare `import('playwright')` only resolves relative to THIS
+// module, so an out-of-repo Playwright on NODE_PATH / LOGBOOK_NODE_PATH /
+// LOGBOOK_PLAYWRIGHT_PATH — which --setup reports 'ready' via require.resolve(paths)
+// — would still fail to import at record time, contradicting the preflight. Resolve
+// the absolute path first (same paths as canResolve), then import it as a file URL;
+// fall back to a bare import for the ordinary in-repo case.
+async function importBackend(mod) {
+  try {
+    const resolved = require.resolve(mod, { paths: moduleResolvePaths() });
+    return await import(pathToFileURL(resolved).href);
+  } catch {
+    return import(mod);
+  }
+}
+
 // Common system-browser executable locations per platform. When Playwright's own
 // Chromium isn't installed we can still drive `web` capture by pointing the driver
 // at a system Edge/Chrome via `executablePath` (issue #103). Order matters: on
@@ -431,15 +448,23 @@ function detectCaptureBackend(surface, recipe) {
     // isn't installed (issue #103): a present Edge/Chrome keeps `web` capture ready
     // rather than degrading to a storyboard.
     const sys = resolveSystemBrowser(recipe);
+    // Only report a system browser the record path could ACTUALLY launch: an explicit
+    // override whose file is missing (exists === false) is NOT usable, so naming it as
+    // the backend would disagree with launchBrowser (which skips a missing executable).
+    // A channel has exists === null (unknown, still launchable) — keep it.
+    const sysUsable = sys && sys.exists !== false;
     // The browser driver is OPTIONAL: when absent the run degrades to captioned
     // stills / a storyboard, so its absence is 'degraded', never a hard 'missing'.
     return {
       surface,
       backend: playwright ? 'playwright/puppeteer' : null,
       status: playwright ? 'ready' : 'degraded',
-      ...(sys ? { systemBrowser: sys.path || sys.channel, systemBrowserName: sys.name, systemBrowserSource: sys.source } : {}),
-      ...(playwright && sys
+      ...(sysUsable ? { systemBrowser: sys.path || sys.channel, systemBrowserName: sys.name, systemBrowserSource: sys.source } : {}),
+      ...(playwright && sysUsable
         ? { note: `system browser available (${sys.name}${sys.path ? ` → ${sys.path}` : ''}) — used for web capture when Playwright-Chromium isn't installed` }
+        : {}),
+      ...(sys && sys.exists === false
+        ? { note: `requested browser (${sys.source}: ${sys.path}) not found — the record path will fall back to bundled Chromium / auto-detected system browser` }
         : {}),
       install: 'npm i -D playwright && npx playwright install chromium',
       degradesTo: 'captioned stills / storyboard',
@@ -695,11 +720,6 @@ function readRecipeBestEffort(stagingArg) {
     /* fall through to empty recipe */
   }
   return {};
-}
-
-function readSurfaceFromRecipe(stagingArg) {
-  const recipe = readRecipeBestEffort(stagingArg);
-  return recipe && recipe.surface ? recipe.surface : 'web';
 }
 
 // Resolve which URL to record against, and a fallback (issue #91). A worktree dev
@@ -1250,22 +1270,34 @@ async function moveCursorTo(page, selector, { tap = false } = {}) {
 //   3. Playwright's own bundled Chromium (the default when it's installed).
 //   4. Auto-fallback: if the default launch fails because no Chromium is installed,
 //      auto-detect a system Edge/Chrome and relaunch via its executablePath.
-// Returns { browser, via } where `via.system` marks a system-browser launch so the
-// caller can name it in the run summary.
+// Returns { browser, via, warning } where `via.system` marks a system-browser launch
+// so the caller can name it in the run summary, and `warning` (when set) flags a
+// requested override we could NOT honour (e.g. a missing explicit executable), so the
+// caller can surface that we fell back rather than silently drive a different browser.
 async function launchBrowser(pw, recipe) {
+  const explicitSource = process.env.LOGBOOK_BROWSER_EXECUTABLE
+    ? 'LOGBOOK_BROWSER_EXECUTABLE'
+    : (recipe && recipe.browserExecutable ? 'recipe.browserExecutable' : null);
   const explicit = process.env.LOGBOOK_BROWSER_EXECUTABLE || (recipe && recipe.browserExecutable) || null;
   const channel = process.env.LOGBOOK_BROWSER_CHANNEL || (recipe && recipe.browserChannel) || null;
+  let warning = null;
 
   // 1) Explicit executablePath wins — the reliable path per the issue's evidence.
   if (explicit && existsSync(explicit)) {
     const browser = await pw.chromium.launch({ executablePath: explicit });
     return { browser, via: { system: true, detail: `executablePath ${explicit}` } };
   }
+  // An explicit executable was requested but does not exist — do NOT silently drive a
+  // different browser; record it so the fall-through is visible (matches --setup's
+  // exists:false report for the same path).
+  if (explicit) {
+    warning = `requested browser ${explicitSource} (${explicit}) not found — falling back`;
+  }
   // 2) Explicit channel (e.g. msedge/chrome). Best-effort — fall through on failure.
   if (channel) {
     try {
       const browser = await pw.chromium.launch({ channel });
-      return { browser, via: { system: true, detail: `channel ${channel}` } };
+      return { browser, via: { system: true, detail: `channel ${channel}` }, warning };
     } catch {
       /* fall through to bundled Chromium / auto-detect */
     }
@@ -1273,7 +1305,7 @@ async function launchBrowser(pw, recipe) {
   // 3) Bundled Chromium — the default when Playwright installed its browser.
   try {
     const browser = await pw.chromium.launch();
-    return { browser, via: { system: false } };
+    return { browser, via: { system: false }, warning };
   } catch (e) {
     // 4) No Chromium installed — auto-detect a system browser and relaunch via its
     //    executablePath (the reliable channel-free path). If none is found, rethrow
@@ -1281,7 +1313,7 @@ async function launchBrowser(pw, recipe) {
     const sys = detectSystemBrowser();
     if (sys && sys.path) {
       const browser = await pw.chromium.launch({ executablePath: sys.path });
-      return { browser, via: { system: true, detail: `auto-detected ${sys.name} → ${sys.path}` } };
+      return { browser, via: { system: true, detail: `auto-detected ${sys.name} → ${sys.path}` }, warning };
     }
     throw e;
   }
@@ -1332,9 +1364,21 @@ async function captureWeb(recipe, chapter, ffmpegExe, captureDegraded = []) {
     return renderStoryboardCard(chapter, ffmpegExe);
   };
 
+  // Hoisted so the error path (catch, below) can tear down a browser that launched
+  // but then threw mid-capture — otherwise the launched instance (which may be a
+  // SYSTEM Edge/Chrome, issue #103) leaks a live process. Scoped teardown only —
+  // we close THIS browser, never a blanket kill (issue #104 discipline).
+  let browser = null;
   try {
-    const pw = await import('playwright').catch(() => import('playwright-core'));
-    const { browser, via } = await launchBrowser(pw, recipe);
+    const pw = await importBackend('playwright').catch(() => importBackend('playwright-core'));
+    const launched = await launchBrowser(pw, recipe);
+    browser = launched.browser;
+    const via = launched.via;
+    if (launched.warning) {
+      // A requested-but-unusable override (e.g. a missing LOGBOOK_BROWSER_EXECUTABLE):
+      // name it so the operator sees we did NOT silently drive a different browser.
+      if (!captureDegraded.includes(launched.warning)) captureDegraded.push(launched.warning);
+    }
     if (via && via.system) {
       // Not a degrade — capture proceeds normally — but surface WHICH browser drove
       // it so a run on a Chromium-less host reads clearly in the summary (issue #103).
@@ -1476,7 +1520,10 @@ async function captureWeb(recipe, chapter, ffmpegExe, captureDegraded = []) {
     if (isEmptyClip(clip)) return degradeWithStill('clip is empty/near-static (app not painted)', fallbackStill);
     return clip;
   } catch (e) {
-    // The page may be gone here; degrade to a storyboard card and name it.
+    // The page may be gone here; degrade to a storyboard card and name it. First
+    // tear down the launched browser if it's still open — a throw mid-capture must
+    // not leak the process (scoped to THIS instance only; issue #104 discipline).
+    if (browser) await browser.close().catch(() => {});
     return degrade(`capture backend error: ${e.message || e}`);
   }
 

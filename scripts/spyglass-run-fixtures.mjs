@@ -4,11 +4,12 @@
 // The sea-chart fixtures in spyglass-fixtures.mjs are `fleet-state.json` (schema 2)
 // snapshots for the coastline view. The per-run dashboard (spyglass-run-app.html)
 // instead consumes a `run-state.json` snapshot written by spyglass-run-snapshot.mjs
-// (schema 3). The live fleet only exhibits a couple of run states at any moment, so
-// to demo/test the run dashboard across its FULL range — every pipeline stage, a
-// blocked run, a recent-voyages lane, live cost breakdowns and a done-video — we
-// synthesise ONE deterministic schema-3 snapshot that matches the exact shape the
-// snapshot script writes (issue #103).
+// (schema 4 — #115 added the per-run final/accruing/estimated cost lifecycle,
+// rollup.estIncluded and top-level estRatePerMin). The live fleet only exhibits a
+// couple of run states at any moment, so to demo/test the run dashboard across its
+// FULL range — every pipeline stage, a blocked run, a recent-voyages lane, live cost
+// breakdowns (final vs. accruing) and a done-video — we synthesise ONE deterministic
+// schema-4 snapshot that matches the exact shape the snapshot script writes (issue #103).
 //
 // READ-ONLY w.r.t. the fleet: this never touches GitHub or the repo — it only emits
 // JSON. It is a dev/test aid, not shipped into the rendered view. A materialised copy
@@ -27,7 +28,7 @@ import { fileURLToPath } from 'url';
 const REPO = 'calumjs/ARMADA';
 
 // The genuine ARMADA voyage stages + captions — kept in lockstep with
-// spyglass-run-snapshot.mjs (STAGES / STAGE_CAPTIONS / GROUPS, schema 3).
+// spyglass-run-snapshot.mjs (STAGES / STAGE_CAPTIONS / GROUPS, schema 4).
 const STAGES = [
   'Queued', 'Building', 'PR opened', 'In review', 'Awaiting merge', 'Merged', 'Shipped',
 ];
@@ -50,8 +51,20 @@ const D = 24 * H;
 
 const unitUrl = (kind, n) => `https://github.com/${REPO}/${kind === 'pr' ? 'pull' : 'issues'}/${n}`;
 
-// A per-model cost breakdown in the shape normalizeCost() emits (schema 3).
-function cost({ totalCost, models, sessions = 1, subagents = 0, codex = 0 }) {
+// Coarse USD/min burn rate the run dashboard live-ticks an in-flight estimate at
+// (schema 4 / #115) — matches spyglass-run-snapshot.mjs's estBurnUsdPerMin default.
+const EST_RATE_PER_MIN = 0.03;
+
+// A per-model cost breakdown in the shape normalizeCost() + buildRun() emit (schema 4,
+// #115): the base ledger PLUS the final/accruing/estimated lifecycle flags. `final`
+// marks a reconciled figure (recent/terminal runs); `accruing` marks a real-so-far
+// figure still being added to (in-flight, working); `estimated` marks an elapsed-based
+// estimate with no recorded usage yet (accruing && no ledger). costSince/estTotalCost
+// drive the live tick. Defaults keep a plain recorded ledger when no flag is passed.
+function cost({
+  totalCost, models, sessions = 1, subagents = 0, codex = 0,
+  final = false, accruing = false, estimated = false, costSince = null,
+}) {
   return {
     present: true,
     pointer: 'out/costs/<branch>.json',
@@ -62,6 +75,12 @@ function cost({ totalCost, models, sessions = 1, subagents = 0, codex = 0 }) {
     matchMode: 'branch',
     unpriced: [],
     totalCost,
+    final,
+    accruing,
+    estimated,
+    costSince,
+    estRatePerMin: EST_RATE_PER_MIN,
+    estTotalCost: estimated ? totalCost : null,
     updatedAt: ago(20 * 60e3),
   };
 }
@@ -117,6 +136,7 @@ function inFlightRuns() {
         totalCost: 4.12,
         models: [{ model: 'claude-opus-4-8', in: 182000, out: 39000, cacheRead: 1240000, cacheWrite: 96000, cost: 4.12 }],
         sessions: 1, subagents: 2,
+        accruing: true, costSince: ago(3 * H), // working: real-so-far, not yet reconciled
       }),
     }),
     mk({
@@ -131,6 +151,7 @@ function inFlightRuns() {
           { model: 'claude-haiku-4-5', in: 88000, out: 12000, cacheRead: 410000, cacheWrite: 0, cost: 0.96 },
         ],
         sessions: 2, subagents: 3, codex: 1,
+        accruing: true, costSince: ago(6 * H), // working: real-so-far, not yet reconciled
       }),
     }),
     mk({
@@ -176,6 +197,7 @@ function recentRunsList() {
         totalCost: 7.21,
         models: [{ model: 'claude-opus-4-8', in: 260000, out: 58000, cacheRead: 2400000, cacheWrite: 140000, cost: 7.21 }],
         sessions: 3, subagents: 4,
+        final: true, // reconciled at ship (--final)
       }),
     }),
     mk({
@@ -187,6 +209,7 @@ function recentRunsList() {
         totalCost: 5.66,
         models: [{ model: 'claude-opus-4-8', in: 210000, out: 47000, cacheRead: 1900000, cacheWrite: 115000, cost: 5.66 }],
         sessions: 2, subagents: 3,
+        final: true, // reconciled at merge
       }),
     }),
   ];
@@ -197,19 +220,25 @@ function runStateFixture() {
   const recentRuns = recentRunsList();
 
   const blockedCount = runs.filter((r) => r.blocked).length;
-  const rollup = { inFlight: runs.length, totalCost: 0, costKnown: false };
+  // Mirror spyglass-run-snapshot.mjs's rollup (schema 4, #115): estIncluded flags that
+  // the in-flight total carries non-final (accruing/estimated) figures, so the fleet
+  // cost reads as an estimate rather than a settled bill.
+  const rollup = { inFlight: runs.length, totalCost: 0, costKnown: false, estIncluded: false };
   for (const g of GROUPS) rollup[g] = 0;
   for (const r of runs) {
     if (rollup[r.group] != null) rollup[r.group] += 1;
-    const tc = r.cost && r.cost.present ? r.cost.totalCost : null;
+    const c = r.cost && r.cost.present ? r.cost : null;
+    const tc = c ? c.totalCost : null;
     if (typeof tc === 'number' && Number.isFinite(tc)) { rollup.totalCost += tc; rollup.costKnown = true; }
+    if (c && (c.accruing || c.estimated)) rollup.estIncluded = true;
   }
   rollup.recent = recentRuns.length;
   rollup.shippedToday = recentRuns.filter((r) => !r.blocked).length;
 
   return {
-    schema: 3,
+    schema: 4,
     appVersion: 'fixture000000',
+    estRatePerMin: EST_RATE_PER_MIN,
     generatedAt: new Date(NOW).toISOString(),
     repo: REPO,
     triggerLabel: 'armada',

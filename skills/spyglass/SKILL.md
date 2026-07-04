@@ -520,13 +520,13 @@ the app into an output dir — it is **not** loaded into the rendered view:
   on, narrow, empty) matching the same schema the snapshot script writes, for states the live fleet
   doesn't currently exhibit.
 - **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-run-fixtures.mjs`** — the equivalent for the per-**run**
-  operations dashboard: a deterministic `run-state.json` (schema 3) covering every pipeline group
+  operations dashboard: a deterministic `run-state.json` (schema 4) covering every pipeline group
   (queued → building → reviewing → awaiting-merge → done), a **blocked** overlay, a **recent-voyages**
-  lane, per-model **cost** breakdowns and a **done-video**, so the run dashboard can be demoed/tested
-  without hand-authoring one or hitting `gh`. A materialised copy is committed at
-  **`scripts/fixtures/run-state.json`** — point the run app at it (`node spyglass-run-fixtures.mjs
-  --out <dir>` writes it next to a copied `spyglass-run.html`). READ-ONLY dev/test aid; not loaded into
-  the live view.
+  lane, per-model **cost** breakdowns (final vs. accruing) and a **done-video**, so the run dashboard
+  can be demoed/tested without hand-authoring one or hitting `gh`. A materialised copy is committed at
+  **`scripts/fixtures/run-state.json`** — `node spyglass-run-fixtures.mjs --out <dir>` (or `--write`)
+  writes only the `run-state.json`; serve that dir alongside a copy of `spyglass-run-app.html` (e.g. via
+  `spyglass-trial.mjs`) to point the run app at it. READ-ONLY dev/test aid; not loaded into the live view.
 - **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-trial.mjs`** — serves the output dir over a throwaway
   localhost server (file:// blocks the app's `fetch`) and drives the already-available Playwright
   CLI to capture each canonical state at a wide and a narrow viewport plus a **reduced-motion**
