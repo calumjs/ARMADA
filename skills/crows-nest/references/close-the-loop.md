@@ -135,16 +135,22 @@ A PR is a **reconcile candidate** iff it is MERGED **and** carries **neither** `
 `armada:blocked`. The presence of `armada:merged` is the whole idempotency mechanism: it is added on
 reconcile (below) and thereafter filters the PR out of this candidate set on every later tick — so the
 relabel and the ring fire **exactly once**, and survive a `/loop` restart because the marker is a
-GitHub label, not in-memory state. (A PR the §3e pipeline already merged carries `armada:merged` and
-already rang — skipped here by the same guard, so the two merge paths never double-ring.)
+GitHub label, not in-memory state. **The guard is symmetric across both merge paths, so the shipped
+bell rings exactly once regardless of which reconciles first:** a PR the §3e pipeline already merged
+carries `armada:merged` and already rang — skipped here by this guard; and in the reverse case (a tick
+fires in the non-atomic gap between the pipeline's `gh pr merge` and its Workflow return, while the PR
+is MERGED but still `armada:reviewing`) **this** reconcile wins the race, sets `armada:merged`, and
+rings — after which §3e's on-completion reconcile observes `armada:merged` already present and **skips
+its own ring** (SKILL.md §3 / [ready-pr-watch §3e](ready-pr-watch.md#3e-record-the-outcome-on-completion)).
+Either way the two merge paths never double-ring.
 
 ### Reconcile (per candidate, in order)
 
-1. **PR → terminal `armada:merged`**, clearing the transient in-flight state:
+1. **PR → terminal `armada:merged`**, clearing the transient in-flight state. (The candidate set above
+   already excludes `armada:blocked` PRs, so only the transient `armada:reviewing` needs clearing.)
 
    ```bash
-   gh pr edit <pr> --add-label "armada:merged" \
-     --remove-label "armada:reviewing" --remove-label "armada:blocked"
+   gh pr edit <pr> --add-label "armada:merged" --remove-label "armada:reviewing"
    gh pr comment <pr> --body "🔭 crows-nest: reconciled — merged out-of-band; marked armada:merged."
    ```
 
@@ -154,8 +160,11 @@ already rang — skipped here by the same guard, so the two merge paths never do
    PR auto-closes its issue, this is normally the §5d **label reconcile** on an already-closed issue,
    not a fresh close. `Relates to #<n>` (partial) links are **not** closed — same rule as §5b.
 
-3. **Ring the shipped bell once** (SKILL.md §8), `ARMADA_BELL_EVENT=shipped`:
-   `⚓ Shipped #<issue> → PR #<pr> merged` — both channels, fired **after** steps 1–2 land (§8c).
+3. **Ring the shipped bell once** (SKILL.md §8), `ARMADA_BELL_EVENT=shipped`, worded to what step 2
+   resolved: with a shipped closing issue, `⚓ Shipped #<issue> → PR #<pr> merged`; when step 2 found
+   **no** resolvable closing issue (unlinked PR, or AC not met so no issue closed), ring about the PR
+   only — `⚓ Shipped: PR #<pr> merged` — never naming a `#<issue>` that doesn't exist. Both channels,
+   fired **after** steps 1–2 land (§8c).
 
 The head-branch reap of §5d ("Reap a lingering head branch") applies here too — a hand-merged PR is
 exactly the "merged outside the pipeline" case that fallback exists for.
