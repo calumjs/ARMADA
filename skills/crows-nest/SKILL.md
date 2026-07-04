@@ -819,8 +819,9 @@ whose PR already has a `🎬`/`logbook-pr-<n>` walkthrough is **not** re-recorde
 background under the §8c discipline; it never blocks or fails the close.
 
 And when an issue closes `armada:shipped`, if the `costs` key isn't `"off"` (§8g), **finalise the cost
-post-mortem** — record any remaining usage into `out/costs/<run>.json` (§8g.ii), the accumulated
-per-run total the spyglass dashboard shows for the shipped run. Best-effort, side-channel, never fatal.
+post-mortem** — record any remaining usage into `out/costs/<run>.json` **with `--final`** (§8g.ii) so
+the file is stamped `final: true`, the accumulated per-run total the spyglass dashboard shows as the
+settled figure for the shipped run (not an accruing one). Best-effort, side-channel, never fatal.
 
 ## 6. Arm the loop — hand the /loop line to the user
 
@@ -1274,6 +1275,23 @@ writes a **per-model** IN/OUT/CACHE R/CACHE W breakdown, an **API-equivalent cos
 Opus/Sonnet/Haiku priced; codex/GPT **unpriced**), and a sessions/subagents/codex summary — exactly the
 shape §6 of the spyglass SKILL documents. Recording is after the bell, the cartography record, and the
 logbook step; it is the last, optional courtesy of the reconcile.
+
+**`--final` at the ship reconcile — the accruing → settled latch.** Every record writes a `final` flag.
+Absent `--final` it is `final: false` = **real usage recorded so far, but the run is still accruing**
+(more will land at review / address / ship). At the **issue-shipped reconcile (§5)** — the run's last —
+pass **`--final`** so the file is stamped `final: true` and latched (a later re-record can't demote it).
+This is what lets the strictly read-only dashboard tell an in-flight/partial figure from the **final
+reconciled** cost, and — because the harness surfaces usage only at completion, with no mid-build stream
+— lets the dashboard show an honest **elapsed-based estimate** for a still-building run instead of a
+misleading `$0.00`, converging to the real figure the moment this producer writes it (spyglass §6). The
+producer never itself estimates — the recorded numbers are always real (`estimated: false`); the live
+estimate is a read-only, dashboard-side derivation from elapsed.
+
+```bash
+# the ship reconcile (§5) — the run's final usage; latch final:true
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-cost-postmortem.mjs" \
+  record --run <branch|issue> --final --usage-json '[{ "role": "ship", ... }]'
+```
 
 #### 8g.iii Gating and the discipline
 

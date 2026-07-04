@@ -274,9 +274,11 @@ When the fleet is busy the dashboard opens on the **overview**, not a stack of f
 - **Compact voyage rows** — one row per concurrent run (the default, no scrolling through full cards):
   a **vessel** tinted by state, **issue #**, **title**, the **voyage bar** (one leg per real stage —
   done legs brass-filled, the active leg outlined with a bobbing ship marker, a blocked leg red), a
-  live **status label**, live **running cost** (the API-equivalent estimate), and **live-ticking
-  elapsed**. Legible with many concurrent runs (6+); a blocked run reads red. **Sort** by furthest-
-  along / cost / age.
+  live **status label**, live **running cost**, and **live-ticking elapsed**. The cost is **honest
+  about phase** (#115): a still-building run reads **`~$X est`** (a live elapsed-based **estimate**,
+  not a misleading `$0.00`) or **`accruing…`** when no rate is set; a recorded-but-partial figure reads
+  **`$X`** tagged *so far*; only a reconciled run reads a plain **`$X`** (final). Legible with many
+  concurrent runs (6+); a blocked run reads red. **Sort** by furthest-along / cost / age.
 - **Expand on demand** — any voyage row **expands** into the full per-run **log card** below it and
   **collapses** again. It is **click + keyboard accessible** (each row is a `role="button"`,
   `tabindex="0"` with `aria-expanded`; **Enter**/**Space** toggles) and rows **expand independently**
@@ -290,9 +292,12 @@ The manifest **groups** are derived from the real voyage stages (see the mapping
 **queued** = Queued; **building** = Building; **reviewing** = PR opened + In review; **awaiting-merge**
 = Awaiting merge; **done** = Merged + Shipped; and **blocked** overrides all of them for any blocked
 run. The snapshot emits each run's `group` and a top-level `rollup` object (counts per group +
-`inFlight` + `totalCost` + `costKnown` + `recent` + `shippedToday`), **additively — schema 3** (an
-older snapshot is regrouped client-side against the same rule; a schema-2 snapshot with no
-`recentRuns` simply shows no harbour lane).
+`inFlight` + `totalCost` + `costKnown` + `estIncluded` + `recent` + `shippedToday`), **additively —
+schema 4** (an older snapshot is regrouped client-side against the same rule; a schema-2 snapshot with
+no `recentRuns` simply shows no harbour lane; a pre-4 snapshot without the cost estimate fields just
+shows recorded cost or `n/a`, never a wrong figure). **`estIncluded`** flags that `totalCost` folds in
+non-final (estimated / accruing) figures, so the manifest caveats it (**`~$X · incl. live estimates`**)
+rather than presenting a moving number as settled.
 
 ### Recent voyages — completed runs stay on the board (#113)
 
@@ -340,10 +345,13 @@ A dark two-column log card, the cost ledger below:
   video** player (the logbook walkthrough release asset, standard `<video controls>`). Every field
   **degrades gracefully** when absent (branch `n/a — not dispatched yet`, worktree `n/a — no local
   worktree`, "no walkthrough recorded yet").
-- **Cost ledger** — one row per model with **MODEL · IN · OUT · CACHE R · CACHE W · ≈ COST**, plus a
+- **Cost ledger** — one row per model with **MODEL · IN · OUT · CACHE R · CACHE W · ≈ COST**, a
+  **phase banner** stating whether the figure is *estimating from elapsed* (in-flight, no usage yet),
+  *recorded so far — accruing* (real-so-far, not final), or *final — reconciled at ship* (#115), plus a
   footer summarising **session / subagent / codex counts**, the *"API-equivalent estimate, not
   billing"* caveat, any **unpriced** models, and a pointer to `out/costs/<run>.json`. It reads that
-  file **when present** and shows a graceful empty state when absent.
+  file **when present**; when absent for a still-building run it shows the elapsed-based estimate and a
+  graceful empty state naming it.
 
 ### Stage mapping — ARMADA's real voyage stages from the `armada:*` labels
 
@@ -398,7 +406,8 @@ API billing). The dashboard **reads** this shape (all fields tolerant/optional �
     { "model": "gpt-5.4",         "in": 113000, "out": 6000, "cacheRead": 0, "cacheWrite": 0, "cost": null }
   ],
   "sessions": 1, "subagents": 3, "codex": 3,
-  "matchMode": "heuristic", "unpriced": ["gpt-5.4"], "totalCost": 0.67, "updatedAt": "…"
+  "matchMode": "heuristic", "unpriced": ["gpt-5.4"], "totalCost": 0.67,
+  "final": true, "estimated": false, "updatedAt": "…"
 }
 ```
 
@@ -409,6 +418,33 @@ shown but cost renders `n/a` and its id goes to `unpriced[]`. Cost is **re-price
 token axes** on every write, so repeated reconciles accumulate tokens without double-counting cost.
 When the file is **absent**, the ledger shows an empty state and the footer still points at the
 conventional `out/costs/<run>.json` path.
+
+#### Estimated (in-flight) vs final (reconciled) — the `$0.00` fix (#115)
+
+The producer only writes at crows-nest's **reconcile points**, and the harness surfaces a background
+subagent's token usage **only in its completion notification** — there is no mid-build usage stream. So
+a **currently-building** run has no `out/costs/<run>.json` yet and used to read a misleading **`$0.00`**.
+Two things fix this, keeping the dashboard **strictly read-only**:
+
+- **A `final` flag on the file (producer-side).** `final: false` = real usage **recorded so far**, but
+  the run is still **accruing** (more at review / address / ship); the ship reconcile writes it with
+  **`--final`** (crows-nest §8g.ii) to latch **`final: true`** = the settled figure. `estimated` is
+  always **`false`** in the file — the recorded numbers are real; the file never holds an estimate.
+- **A live elapsed-based estimate (read-only, driver + dashboard).** For a run that is **actively
+  working** (Building / In review) with no reconcile file yet, the read-only driver derives an
+  **estimate** from the one live signal available without any write — **elapsed build time** (the
+  crows-nest dispatch clock, *not* the run's age, so idle queue time doesn't inflate it) × a coarse
+  **burn rate** (`estRatePerMin`, resolved `--est-burn` > `SPYGLASS_EST_BURN_PER_MIN` >
+  `spyglass.estBurnUsdPerMin` > default `~$0.03/min`; `<=0` disables it → the row reads `accruing…`).
+  The snapshot carries `estRatePerMin` top-level so the **dashboard live-ticks** the estimate every
+  second off `cost.costSince`, and it **converges to the real figure** the instant the producer writes
+  real usage. Each run's cost object carries `final` / `accruing` / `estimated` / `estTotalCost`, and
+  the fleet `rollup.totalCost` folds estimates in with `estIncluded: true` so the manifest caveats it.
+  The estimate is a **display derivation** — never written back; the read-only guarantee holds.
+
+The dashboard shows the phase everywhere: the compact row (`~$X est` / `accruing…` / `$X so far` /
+final `$X`), a **phase banner** on the ledger card, and the caveated **fleet cost**. A **queued** run
+(not yet building) shows `—`, not an estimate — nothing is burning yet.
 
 ### ARMADA nautical theme + live motion
 
