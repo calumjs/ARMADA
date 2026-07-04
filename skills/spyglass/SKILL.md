@@ -200,21 +200,27 @@ spyglass never hard-fails on a thin or uncommissioned repo:
 ## 6. Per-run operations dashboard (companion mode)
 
 The sea-chart shows the **whole fleet at a glance**; its companion the **per-run operations
-dashboard** zooms in on the **in-flight runs**. It defaults to a scannable **multi-run overview** —
-every concurrent run as a compact summary row under a fleet **status roll-up** — and lets the
-operator **expand** any row into the full per-run detail card (a 12-stage pipeline, its
-worktree/branch/folder metadata, its logbook **"done video"**, and a **per-model cost table**). So a
-busy fleet reads at a glance and you drill into a single run on demand. It is the natural companion
-to the chart (issue #101) and shares spyglass's core promise: it is **READ-ONLY with respect to the
-fleet**.
+dashboard** zooms in on the **in-flight runs**, ARMADA-nautical themed to match it. It defaults to a
+scannable **multi-run overview** — every concurrent run as a compact **voyage row** under a fleet
+**totals manifest** — and lets the operator **expand** any row into the full per-run **log card** (the
+run's real pipeline, its worktree/branch/folder metadata, its logbook **"done video"**, and a
+**per-model cost ledger** with real numbers). So a busy fleet reads at a glance and you drill into a
+single run on demand. It is the natural companion to the chart (issue #101) and shares spyglass's core
+promise: it is **READ-ONLY with respect to the fleet**.
+
+Each run is drawn as a **voyage**: a vessel sailing ARMADA's genuine `armada:*` pipeline from harbour
+to port. The stages are the fleet's **real, observable states** — not the inspiration mock's invented
+list (issue #109's accuracy directive replaced the mock's Feasibility/Scoping/Planning/Testing/AI
+review/PR submitted/Watching PR/Feedback/Approved/Harvest with what ARMADA actually does).
 
 > **One run:** **snapshot** the same live GitHub state the chart reads (the §2a `gh issue list` /
 > `gh pr list` queries) → **correlate** each issue with the PR that closes it → **enrich** each run
-> with local read-only detail (its git worktree path, its `out/costs/<run>.json` cost post-mortem,
-> its logbook done-video release asset) → **map** the coarse `armada:*` labels onto the 12 finer
-> operator stages → **write** `run-state.json` + the bundled dashboard app into a scratch/output dir
-> → **open** it in the browser. The page polls the snapshot, so re-running (or `--watch`) keeps it
-> live.
+> with local read-only detail (its git worktree path from `git worktree list` *and* the crows-nest
+> run→worktree map for in-flight builds with no PR yet, its `out/costs/<run>.json` cost post-mortem,
+> its logbook done-video release asset) → **map** the `armada:*` labels (+ PR draft/CI/review
+> sub-state) onto ARMADA's real voyage stages → **write** `run-state.json` + the bundled dashboard app
+> into a scratch/output dir → **open** it in the browser. The page polls the snapshot, so re-running
+> (or `--watch`) keeps it live — cost climbs and elapsed ticks as the run progresses.
 
 ```bash
 # one-shot: snapshot in-flight runs and open the dashboard
@@ -237,104 +243,142 @@ The dashboard makes **zero mutations**. Every source it touches is a read:
 - **GitHub:** `gh repo view`, `gh issue list`, `gh pr list`, and GET-only `gh api .../releases`.
   There is **no** `gh` write anywhere — no label, comment, review, merge, or close. (The driver's
   code contains only `... list` / `repo view` / `api ... releases` invocations.)
-- **Local disk:** `git worktree list` (to resolve a run's on-disk worktree path) and
-  `out/costs/<run>.json` (the cost post-mortem, **consumed** when present). It **never produces**
-  `out/costs/*.json` — that is out of scope (a separate concern).
+- **Local disk (reads only):** `git worktree list` (to resolve a run's on-disk worktree path);
+  `out/costs/_runs.json` (the crows-nest-written run→(branch, worktree) map, so an **in-flight** run's
+  branch/worktree/folder resolve **before** a PR exists); and `out/costs/<run>.json` (the per-model
+  cost post-mortem, **consumed** when present). The **driver never PRODUCES** any of these — it only
+  reads them. The producer is **crows-nest-side** (`spyglass-cost-postmortem.mjs`, crows-nest §8g),
+  writing **only** under `out/costs/` (gitignored). Keeping the writer out of the read-only driver is
+  what preserves the driver's zero-mutation guarantee.
 
-The only files it writes are the snapshot (`run-state.json`) and the copied app
+The only files the driver writes are the snapshot (`run-state.json`) and the copied app
 (`spyglass-run.html`), in the scratch/output dir — **never the tracked repo**.
 
 ### Multi-run overview — the default view
 
 When the fleet is busy the dashboard opens on the **overview**, not a stack of full cards:
 
-- **Status roll-up header** — the fleet at a glance: **total in-flight**, a count **per group**
-  (**building · reviewing · awaiting-merge · blocked · done**), and **total cost** across all runs.
-  The blocked chip flags red when non-zero; empty groups dim. It **recomputes on every poll** as runs
-  appear, move group, or leave.
-- **Compact summary rows** — one row per concurrent run (the default, no scrolling through full
-  cards): **issue #**, **title**, its **current stage**, a live **status label**, a **compact
-  12-segment stage/progress indicator** (done filled, active outlined, blocked red), and **running
-  cost**. Legible with many concurrent runs (6+); a blocked run's status reads red.
-- **Expand on demand** — any summary row **expands** into the full per-run detail card below it and
+- **Fleet totals manifest** — the fleet at a glance: **total in-flight** ("N voyages"), a gauge
+  **per group** (**queued · building · reviewing · awaiting · done · blocked**), and **fleet cost**
+  (the summed API-equivalent estimate). The blocked gauge flags red when non-zero; empty gauges dim. A
+  **weather badge** (calm / choppy / storm) reflects fleet health — storm when any run is blocked. It
+  **recomputes on every poll** as runs appear, move group, or leave.
+- **Compact voyage rows** — one row per concurrent run (the default, no scrolling through full cards):
+  a **vessel** tinted by state, **issue #**, **title**, the **voyage bar** (one leg per real stage —
+  done legs brass-filled, the active leg outlined with a bobbing ship marker, a blocked leg red), a
+  live **status label**, live **running cost** (the API-equivalent estimate), and **live-ticking
+  elapsed**. Legible with many concurrent runs (6+); a blocked run reads red. **Sort** by furthest-
+  along / cost / age.
+- **Expand on demand** — any voyage row **expands** into the full per-run **log card** below it and
   **collapses** again. It is **click + keyboard accessible** (each row is a `role="button"`,
   `tabindex="0"` with `aria-expanded`; **Enter**/**Space** toggles) and rows **expand independently**
   — open as many as you like. Expanded state is **preserved across the live poll** and pruned when a
   run leaves the fleet.
-- **Graceful empty state** — an idle fleet (or an uncommissioned/failing `gh`) shows the calm "no
-  runs to show" / "no in-flight runs" state, exactly as the chart does.
+- **Graceful empty state** — an idle fleet shows a calm **"an empty harbour"**; an
+  uncommissioned/failing `gh` shows **"no runs to chart"** with the degraded reason, exactly as the
+  chart does.
 
-The roll-up **groups** are derived from the 12 operator stages (see the mapping table below):
-**building** = Feasibility…AI review (pre-PR + build/test + the pre-submit self-review);
-**awaiting-merge** = PR submitted / Watching PR / Approved (open, waiting on the gate);
-**reviewing** = Feedback (the muster + address-review loop); **done** = Merged / Harvest; and
-**blocked** overrides all of them for any blocked run. The snapshot emits each run's `group` and a
-top-level `rollup` object (counts + `inFlight` + `totalCost`), **additively — schema 1, back-compat**
-(an older snapshot with no `group`/`rollup` is regrouped client-side).
+The manifest **groups** are derived from the real voyage stages (see the mapping table below):
+**queued** = Queued; **building** = Building; **reviewing** = PR opened + In review; **awaiting-merge**
+= Awaiting merge; **done** = Merged + Shipped; and **blocked** overrides all of them for any blocked
+run. The snapshot emits each run's `group` and a top-level `rollup` object (counts per group +
+`inFlight` + `totalCost` + `costKnown`), **additively — schema 2** (an older snapshot is regrouped
+client-side against the same rule).
 
-### Each run expands to a detail card
+### Each run expands to a log card
 
-Modelled on the reference mock (dark two-column card, cost table below):
+A dark two-column log card, the cost ledger below:
 
-- **Header** — issue `#number`, run title, a **segmented 12-stage progress bar** (done segments
-  filled, the active one outlined, blocked runs flagged red), a live **status label** (e.g.
-  "Watching PR"), **elapsed** time (since the issue/PR opened), and **running cost**.
-- **Left — the stage pipeline** — the 12 stages, each with a **status dot** (done / active /
-  upcoming, or blocked). Stages: **Feasibility, Scoping, Planning, Building, Testing, AI review, PR
-  submitted, Watching PR, Feedback, Approved, Merged, Harvest**.
-- **Right — the metadata panel** — the **issue link**, the **branch** (with a copy action), the
-  **worktree** and **folder** paths (each with open / copy-path actions), and an embedded **done
+- **Left — the voyage** — the real stages, each with a **status dot** (done / active / upcoming, or
+  blocked) and a one-line caption of what ARMADA actually does there. A ⛵ marker sits on the active
+  leg (⚓ when shipped, ⚠ when blocked).
+- **Right — the metadata panel** — the **issue / PR** deep links, the **branch** (with a copy action),
+  the **worktree** and **folder** paths (each with open / copy-path actions), and an embedded **done
   video** player (the logbook walkthrough release asset, standard `<video controls>`). Every field
-  **degrades gracefully** when absent (branch/worktree `n/a`, "no done video yet", etc.).
-- **Cost table** — one row per model with **MODEL · IN · OUT · CACHE R · CACHE W · ≈ COST**, plus a
-  footer summarising **session/subagent/codex counts**, the **match mode**, the *"API-equivalent
-  estimate, not billing"* caveat, and a pointer to `out/costs/<run>.json`. It reads that file **when
-  present** and shows a graceful **`n/a`/empty** state when absent.
+  **degrades gracefully** when absent (branch `n/a — not dispatched yet`, worktree `n/a — no local
+  worktree`, "no walkthrough recorded yet").
+- **Cost ledger** — one row per model with **MODEL · IN · OUT · CACHE R · CACHE W · ≈ COST**, plus a
+  footer summarising **session / subagent / codex counts**, the *"API-equivalent estimate, not
+  billing"* caveat, any **unpriced** models, and a pointer to `out/costs/<run>.json`. It reads that
+  file **when present** and shows a graceful empty state when absent.
 
-### Stage mapping — 12 finer stages from the coarse `armada:*` labels
+### Stage mapping — ARMADA's real voyage stages from the `armada:*` labels
 
-The 12 operator stages are finer than the `armada:*` label state machine crows-nest runs, so several
-are **inferred** from PR draft/CI/review sub-state. The active stage marks earlier stages **done**
-and later stages **upcoming**; `armada:blocked` overrides the active dot to **blocked**:
+The seven stages are ARMADA's **genuine, observable** pipeline — every one is derivable from the
+`armada:*` labels plus PR draft/CI/review sub-state (nothing invented, nothing the dashboard can't
+detect). The active stage marks earlier stages **done** and later stages **upcoming**; `armada:blocked`
+overrides the active dot to **blocked**. Kept in **lockstep** with `stageForIssue` / `stageForPr` /
+`groupForStage` in `spyglass-run-snapshot.mjs`:
 
-| Unit + state                              | Active stage    | Done (implied)        |
-| ----------------------------------------- | --------------- | --------------------- |
-| issue `armada` (queued, unclaimed)        | **Feasibility** | —                     |
-| issue `armada:underway` (shipwright building) | **Building**    | Feasibility→Planning  |
-| issue `armada:done` (built, PR opening)   | **PR submitted**| Feasibility→AI review |
-| PR draft (`isDraft`)                      | **PR submitted**| Feasibility→AI review |
-| PR `armada` ready (crows-nest will pick up) | **Watching PR** | …→PR submitted        |
-| PR `armada` ready + `reviewDecision APPROVED` | **Approved**    | …→Feedback            |
-| PR `armada:reviewing` (muster / address-review) | **Feedback**    | …→Watching PR         |
-| PR `armada:merged` (gated merge in progress) | **Merged**      | …→Approved            |
-| PR `armada:shipped` (merged & done → cartographer) | **Harvest**     | …→Merged (complete)   |
-| any `armada:blocked`                      | *(last reached)* — **blocked** | up to that stage |
+| Unit + state                                       | Active stage        | Group          |
+| -------------------------------------------------- | ------------------- | -------------- |
+| issue `armada` (armed, unclaimed)                  | **Queued**          | queued         |
+| issue `armada:underway` (shipwright building)      | **Building**        | building       |
+| issue `armada:done` / a **draft** PR               | **PR opened**       | reviewing      |
+| ready PR carrying `armada`, not yet claimed        | **PR opened**       | reviewing      |
+| PR `armada:reviewing` (muster review)              | **In review**       | reviewing      |
+| PR `armada:reviewing` + `reviewDecision CHANGES_REQUESTED` | **In review** — status "Addressing" | reviewing |
+| ready PR + `reviewDecision APPROVED`, not merged   | **Awaiting merge**  | awaiting-merge |
+| `armada:merged` (gated merge landed)               | **Merged**          | done           |
+| `armada:shipped` (closed; logbook + cartography)   | **Shipped**         | done           |
+| any `armada:blocked`                               | *(approximate)* — **blocked** | blocked |
 
-Feasibility/Scoping/Planning collapse onto the pre-build/build labels (a queued issue sits at
-Feasibility; an underway issue has cleared scoping+planning into Building); AI review is the
-pre-submit self-review that precedes **PR submitted**; **Feedback** is the muster review +
-address-review loop on the open PR; **Harvest** is the post-merge cartographer learning pass.
+`Building` collapses shipwright's research → plan → implement → validate — the dashboard renders that
+as the stage caption, **not** as sub-steps it claims to detect (labels don't expose sub-step state).
+`In review` covers muster's 2-lens review and the shipwright address rounds; "Addressing" is the one
+review sub-state we **can** observe (a change request on the PR). `Awaiting merge` is the
+`ready_awaiting_human` terminal (reviewed + green, `autoMerge` off), distinguished by an APPROVED
+review decision.
 
-### Cost post-mortem schema (consumed, not produced)
+**`armada:blocked` is lossy — the approximation is documented, in lockstep.** crows-nest **drops the
+prior state label** when it sets `armada:blocked` (see [pitfalls](../../.armada/cartography/pitfalls.md),
+#106), so the exact last-reached stage isn't recoverable from labels. The dashboard approximates from
+the unit **kind**: a blocked **issue** with no PR was `armada:underway` → **Building**; a blocked **PR**
+reached the review pipeline → **In review**. The SKILL wording here and the `stageForIssue` /
+`stageForPr` code state the **same** approximation (fixing the doc-vs-impl-lockstep defect #106 flagged).
 
-When a future feature writes `out/costs/<run>.json` (keyed by the run's **branch**, e.g.
-`out/costs/hubx-6676-atx-insert-at-cursor.json`), the dashboard consumes this shape (all fields
-tolerant/optional — missing values render `n/a`):
+### Cost post-mortem — produced by crows-nest, consumed here
+
+The cost table shows **real numbers**, produced crows-nest-side by
+`scripts/spyglass-cost-postmortem.mjs` at the reconcile points (crows-nest §8g): as each dispatched
+subagent completes, crows-nest hands its token usage to the producer, which **accumulates** a per-model
+breakdown into `out/costs/<run>.json` (keyed by the run's **branch**, else its issue number) with an
+**API-equivalent cost estimate** (a heuristic — the fleet runs on subscriptions/relays, not per-token
+API billing). The dashboard **reads** this shape (all fields tolerant/optional — missing values render
+`n/a`):
 
 ```json
 {
-  "run": "hubx-6676-atx-insert-at-cursor",
+  "run": "109-live-cost-metadata-armada-theme",
   "models": [
-    { "model": "opus-4-8", "in": 29000, "out": 704, "cacheRead": 74000, "cacheWrite": 41000, "cost": 0.61 },
-    { "model": "gpt-5.4", "in": 113000, "out": 6000, "cacheRead": 86000, "cacheWrite": 0, "cost": null }
+    { "model": "claude-opus-4-8", "in": 41000, "out": 3704, "cacheRead": 124000, "cacheWrite": 49000, "cost": 0.67 },
+    { "model": "gpt-5.4",         "in": 113000, "out": 6000, "cacheRead": 0, "cacheWrite": 0, "cost": null }
   ],
-  "sessions": 1, "subagents": 0, "codex": 3,
-  "matchMode": "heuristic", "unpriced": ["gpt-5.4"], "totalCost": 0.61
+  "sessions": 1, "subagents": 3, "codex": 3,
+  "matchMode": "heuristic", "unpriced": ["gpt-5.4"], "totalCost": 0.67, "updatedAt": "…"
 }
 ```
 
-When the file is **absent**, the cost table shows an empty `n/a` state and the footer still points at
-the conventional `out/costs/<run>.json` path.
+The producer's baked price table reflects the models ARMADA truly uses — Claude **Opus** (build /
+review) and **Sonnet** / **Haiku** at their per-1M API rates (cache-read ≈ 0.1×, cache-write ≈ 1.25×
+input); **codex / GPT** (the codex-rescue second lens) is intentionally **UNPRICED** — its tokens are
+shown but cost renders `n/a` and its id goes to `unpriced[]`. Cost is **re-priced from the accumulated
+token axes** on every write, so repeated reconciles accumulate tokens without double-counting cost.
+When the file is **absent**, the ledger shows an empty state and the footer still points at the
+conventional `out/costs/<run>.json` path.
+
+### ARMADA nautical theme + live motion
+
+The dashboard matches the spyglass **sea-chart identity**: a brass / wood / deep-sea palette, a serif
+**ARMADA** wordmark with an anchor, per-run **vessel iconography** (a sloop tinted by state), and the
+**voyage** metaphor for the pipeline (harbour → open sea → port). Tasteful live motion — a thin animated
+**sea swell** under the masthead, a **live-ticking elapsed** timer (updated every second, independent of
+the 4-second poll), a bobbing ship marker on the active leg, a **"just shipped ⚓" glow** on a
+merge/ship transition, and a **storm** cue (red vessel) when a run blocks. A couple of operator touches:
+**sort** by furthest-along / cost / age, issue/PR **deep links**, **copy/open** on branch+worktree+folder,
+and an optional **foghorn chime** on ship/block — **OFF by default** (an opt-in toggle; a dependency-free
+WebAudio blast, no bundled audio asset). It stays legible with many concurrent runs and honours
+**`prefers-reduced-motion`** (drops the swell/bob/glow, instant state changes).
 
 ### Degrades gracefully
 
@@ -358,10 +402,15 @@ plugin-cache rule — relative paths break once a plugin is installed to its cac
 Per-run operations dashboard (companion mode, §6):
 
 - **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-run-snapshot.mjs`** — the read-only per-run snapshot +
-  correlate + enrich + write + open driver (Node built-ins + `gh`/`git` only, dependency-free).
-- **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-run-app.html`** — the self-contained, no-server dark
-  dashboard (vanilla HTML/CSS/JS, **no external/CDN libraries, no build step**). Copied next to its
-  snapshot at run time so it can fetch `./run-state.json` locally with no server.
+  correlate + enrich + write + open driver (Node built-ins + `gh`/`git` only, dependency-free). Reads
+  the crows-nest run→worktree map + cost post-mortem; **produces neither**.
+- **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-run-app.html`** — the self-contained, no-server
+  ARMADA-nautical dashboard (vanilla HTML/CSS/JS, **no external/CDN libraries, no build step**). Copied
+  next to its snapshot at run time so it can fetch `./run-state.json` locally with no server.
+- **`${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-cost-postmortem.mjs`** — the **crows-nest-side** cost
+  post-mortem producer + run-map writer (crows-nest §8g). The one thing that WRITES the cost /
+  in-flight-metadata the read-only driver consumes; it writes **only** under `out/costs/` (gitignored),
+  never the tracked tree. Dependency-free.
 
 The **only** files written at run time are the snapshots (`fleet-state.json` / `run-state.json`) and
 the rendered HTML (`spyglass.html` / `spyglass-run.html`), in the scratch/output dir — never the

@@ -1,581 +1,789 @@
 <!DOCTYPE html>
 <!--
-  ARMADA spyglass — per-run operations dashboard (view).
+  ARMADA spyglass — per-run operations dashboard (the view).
   Self-contained, no server, no external/CDN libraries, no build step. Polls the
   sibling run-state.json written by spyglass-run-snapshot.mjs and renders each
-  in-flight run as a dark, two-column detail card with a 12-stage pipeline,
-  metadata panel, embedded "done video", and a per-model cost table.
-  READ-ONLY: it renders a snapshot; it never talks to GitHub or mutates anything.
+  in-flight run as a VOYAGE: a ship sailing ARMADA's real armada:* pipeline from
+  harbour to port, with live-ticking elapsed, real per-model cost, and the run's
+  branch / worktree / folder / logbook "done video".
+
+  ARMADA / nautical themed to match the spyglass sea-chart identity: brass + wood +
+  deep-sea palette, a serif ARMADA wordmark, vessel iconography per run, a voyage
+  metaphor for the pipeline, and subtle sea swell + bob motion (reduced-motion safe).
+
+  READ-ONLY: it renders a snapshot. It never talks to GitHub or mutates anything —
+  the cost/metadata it shows is produced crows-nest-side (crows-nest §8g) and read
+  here. The foghorn chime is OFF by default (an opt-in toggle).
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>ARMADA — per-run operations dashboard</title>
+<title>ARMADA — the lookout's dashboard</title>
 <style>
   :root {
-    --bg: #0b0f14;
-    --card: #10151c;
-    --card-b: #1c2530;
-    --ink: #d7e0ea;
-    --muted: #8494a6;
-    --faint: #5b6775;
-    --line: #202a36;
-    --accent: #4a9eff;
-    --done: #3fb950;
-    --active: #4a9eff;
-    --upcoming: #3a4553;
-    --blocked: #f85149;
-    --chip: #161c24;
-    --seg-empty: #263140;
+    /* deep sea */
+    --abyss: #07131f;
+    --sea-deep: #0a1d30;
+    --sea: #0e3050;
+    /* wood + panels */
+    --wood: #14263a;
+    --wood-2: #182d43;
+    --wood-edge: #26405b;
+    --wood-edge-2: #33506e;
+    /* brass */
+    --brass: #c6a86a;
+    --brass-bright: #e6c886;
+    --brass-dim: #8a7647;
+    /* parchment ink */
+    --parch: #ece3cd;
+    --ink: #dfe6ee;
+    --ink-dim: #a4b6c7;
+    --ink-faint: #6d8498;
+    /* fleet states (colour-blind-safe hues; never colour alone — shape+label too) */
+    --queued: #7fb8e6;
+    --building: #56b4e9;
+    --review: #cf8fbe;
+    --awaiting: #e6a93c;
+    --done: #37b58c;
+    --blocked: #e0563f;
+    --line: #21374e;
+    --chip: #122234;
     --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
     --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
   * { box-sizing: border-box; }
   html, body {
-    margin: 0; padding: 0; background: var(--bg); color: var(--ink);
+    margin: 0; padding: 0; color: var(--ink);
     font-family: var(--sans); font-size: 14px; line-height: 1.45;
+    background:
+      radial-gradient(1200px 520px at 22% -8%, #123a5c 0%, rgba(18,58,92,0) 60%),
+      linear-gradient(180deg, var(--sea-deep) 0%, var(--abyss) 62%);
+    background-attachment: fixed;
+    min-height: 100vh;
   }
-  .page { max-width: 1180px; margin: 0 auto; padding: 20px 18px 60px; }
-  .topbar {
-    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
-    padding: 4px 6px 16px; color: var(--muted);
+  .page { max-width: 1200px; margin: 0 auto; padding: 0 18px 72px; }
+
+  /* ---------- masthead ---------- */
+  .masthead { position: relative; padding: 26px 6px 0; margin-bottom: 6px; }
+  .brandrow { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+  .wordmark {
+    font-family: var(--serif); font-weight: 700; color: var(--parch);
+    font-size: 30px; letter-spacing: .40em; margin: 0; padding-left: .1em;
+    text-shadow: 0 1px 0 #05101a, 0 0 22px rgba(198,168,106,.18);
+    line-height: 1;
   }
-  .topbar h1 { font-size: 15px; font-weight: 650; color: var(--ink); margin: 0; }
-  .topbar .meta { font-size: 12px; color: var(--faint); font-family: var(--mono); }
-  .topbar .ro { margin-left: auto; font-size: 11px; color: var(--done);
-    border: 1px solid #1e3a24; background: #0e1a10; padding: 2px 8px; border-radius: 999px; }
-
-  .runs { display: flex; flex-direction: column; gap: 18px; }
-
-  .card {
-    background: var(--card); border: 1px solid var(--card-b); border-radius: 12px;
-    overflow: hidden;
+  .wordmark .anchor { color: var(--brass); letter-spacing: normal; margin-right: .28em; }
+  .lede { color: var(--brass); font-family: var(--serif); font-style: italic;
+    font-size: 14.5px; letter-spacing: .02em; margin-bottom: 3px; }
+  .brandrow .spacer { flex: 1 1 30px; }
+  .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-bottom: 3px; }
+  .ro {
+    font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: #a7e6c2;
+    border: 1px solid #1f4a30; background: #0d1e12; padding: 3px 9px; border-radius: 999px;
   }
-  .card.blocked { border-color: #4a2020; }
-
-  /* ---- header ---- */
-  .card-head {
-    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-    padding: 14px 18px; border-bottom: 1px solid var(--line);
+  .weather {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+    letter-spacing: .10em; text-transform: uppercase; padding: 3px 10px; border-radius: 999px;
+    border: 1px solid var(--wood-edge);
   }
-  .card-head .num { color: var(--done); font-family: var(--mono); font-weight: 650; }
-  .card-head .title { font-weight: 600; color: var(--ink); }
-  .card-head .spacer { flex: 1 1 40px; }
-  .card-head .cost { color: var(--muted); font-family: var(--mono); }
-  .segbar { display: inline-flex; gap: 4px; }
-  .seg { width: 15px; height: 15px; border-radius: 3px; background: var(--seg-empty); }
-  .seg.done { background: var(--done); }
-  .seg.active { background: transparent; border: 2px solid var(--active); box-shadow: 0 0 0 1px #0b0f14 inset; }
-  .seg.blocked { background: var(--blocked); }
-  .card-head .status { color: var(--accent); font-weight: 600; }
-  .card-head .status.blocked { color: var(--blocked); }
-  .card-head .elapsed { color: var(--faint); font-family: var(--mono); font-size: 12px; }
-
-  /* ---- body: two columns ---- */
-  .card-body { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 8px; padding: 6px 6px 12px; }
-
-  /* left: stage pipeline */
-  .pipeline { padding: 12px 14px; }
-  .stage { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--upcoming); flex: none; }
-  .stage.done .dot { background: var(--done); }
-  .stage.active .dot { background: var(--active); box-shadow: 0 0 6px var(--active); }
-  .stage.blocked .dot { background: var(--blocked); box-shadow: 0 0 6px var(--blocked); }
-  .stage .tag { width: 52px; font-size: 12px; font-family: var(--mono); color: var(--faint); }
-  .stage.done .tag { color: var(--done); }
-  .stage.active .tag { color: var(--active); }
-  .stage.blocked .tag { color: var(--blocked); }
-  .stage .name { color: var(--muted); font-family: var(--mono); }
-  .stage.active .name, .stage.done .name { color: var(--ink); }
-
-  /* right: metadata */
-  .meta { padding: 10px 14px; }
-  .row { display: grid; grid-template-columns: 92px 1fr; gap: 12px; align-items: start; padding: 5px 0; }
-  .row .k { color: var(--faint); text-align: right; font-size: 13px; }
-  .row .v { color: var(--ink); min-width: 0; }
-  .row .v a { color: var(--accent); text-decoration: none; }
-  .row .v a:hover { text-decoration: underline; }
-  .path { font-family: var(--mono); font-size: 12.5px; color: var(--muted); word-break: break-all; }
-  .btn {
-    display: inline-block; margin-left: 8px; padding: 1px 9px; border-radius: 6px;
-    border: 1px solid var(--card-b); background: var(--chip); color: var(--muted);
-    font-size: 11.5px; font-family: var(--mono); cursor: pointer; vertical-align: middle;
+  .weather .glyph { font-size: 13px; line-height: 1; }
+  .weather.calm { color: #a4e6c6; background: #0d1f17; border-color: #1e4630; }
+  .weather.choppy { color: #b9caf0; background: #10192c; border-color: #2a3c62; }
+  .weather.storm { color: #f0b8a2; background: #22110c; border-color: #5a2a1d; }
+  .btn-ghost {
+    font: inherit; font-size: 11.5px; letter-spacing: .04em; color: var(--ink-dim);
+    background: var(--chip); border: 1px solid var(--wood-edge); border-radius: 999px;
+    padding: 4px 11px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
   }
-  .btn:hover { border-color: var(--accent); color: var(--ink); }
-  .btn.copied { border-color: var(--done); color: var(--done); }
-  .video-wrap { margin-top: 4px; }
-  .video-wrap video { width: 320px; max-width: 100%; background: #000; border-radius: 6px; border: 1px solid var(--line); }
-  .video-cap { color: var(--faint); font-size: 12px; margin-top: 4px; font-family: var(--mono); }
-  .naval { color: var(--faint); font-style: italic; }
-
-  /* ---- cost table ---- */
-  .cost-block { padding: 4px 20px 16px; }
-  .cost-h { color: var(--faint); font-size: 12px; letter-spacing: .06em; text-transform: lowercase; padding: 4px 0; }
-  table.cost { width: 100%; border-collapse: collapse; font-family: var(--mono); }
-  table.cost th {
-    text-align: left; color: var(--faint); font-weight: 600; font-size: 11px;
-    letter-spacing: .08em; padding: 6px 10px; border-bottom: 1px solid var(--line);
+  .btn-ghost:hover { border-color: var(--brass); color: var(--parch); }
+  .btn-ghost.on { border-color: var(--brass); color: var(--brass-bright); background: #1a1608; }
+  .sortsel {
+    font: inherit; font-size: 11.5px; color: var(--ink-dim); background: var(--chip);
+    border: 1px solid var(--wood-edge); border-radius: 999px; padding: 4px 8px; cursor: pointer;
   }
-  table.cost th.n, table.cost td.n { text-align: right; }
-  table.cost td { padding: 9px 10px; border-bottom: 1px solid var(--line); color: var(--muted); }
-  table.cost td.model { color: var(--ink); font-weight: 600; }
-  table.cost td.cost { color: var(--ink); font-weight: 600; }
-  table.cost td.na { color: var(--faint); }
-  .cost-foot { color: var(--faint); font-size: 12px; padding: 10px 10px 2px; }
-  .cost-foot .ptr { color: var(--muted); }
+  .sortsel:hover { border-color: var(--brass); }
 
-  .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
-  .empty .big { font-size: 16px; color: var(--ink); margin-bottom: 6px; }
+  /* thin animated sea swell under the masthead */
+  .swell { height: 26px; margin: 14px 0 0; overflow: hidden; position: relative;
+    border-bottom: 1px solid var(--line); }
+  .swell svg { position: absolute; bottom: -2px; left: 0; width: 200%; height: 100%;
+    animation: drift 13s linear infinite; opacity: .55; }
+  .swell svg.b { animation-duration: 21s; animation-direction: reverse; opacity: .3; bottom: -6px; }
+  @keyframes drift { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+  .substamp { color: var(--ink-faint); font-family: var(--mono); font-size: 11px;
+    padding: 8px 6px 2px; letter-spacing: .02em; }
 
-  /* ---- status roll-up header (multi-run overview) ---- */
-  .rollup {
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 12px 14px; margin-bottom: 14px;
-    background: var(--card); border: 1px solid var(--card-b); border-radius: 12px;
+  /* ---------- manifest (fleet totals) bar ---------- */
+  .manifest {
+    display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; margin: 12px 0 18px;
+    background: linear-gradient(180deg, var(--wood-2), var(--wood));
+    border: 1px solid var(--wood-edge); border-radius: 12px; overflow: hidden;
+    box-shadow: inset 0 1px 0 rgba(198,168,106,.08), 0 6px 18px rgba(0,0,0,.35);
   }
-  .rollup .rl-total { font-weight: 650; color: var(--ink); font-size: 15px; margin-right: 4px; }
-  .rollup .rl-total .n { color: var(--accent); font-family: var(--mono); }
-  .stat {
-    display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 10px;
-    border: 1px solid var(--line); background: var(--chip); border-radius: 999px;
-    color: var(--muted); font-size: 12.5px;
+  .m-lede {
+    display: flex; flex-direction: column; justify-content: center; gap: 1px;
+    padding: 11px 16px; border-right: 1px solid var(--line); min-width: 132px;
   }
-  .stat .n { font-family: var(--mono); font-weight: 650; color: var(--ink); font-size: 13.5px; }
-  .stat .lbl { letter-spacing: .02em; }
-  .stat.zero { opacity: .45; }
-  .stat.building .n { color: var(--active); }
-  .stat.reviewing .n { color: #d2a34a; }
-  .stat.awaiting-merge .n { color: var(--done); }
-  .stat.done .n { color: var(--faint); }
-  .stat.blocked { border-color: #4a2020; }
-  .stat.blocked:not(.zero) { background: #1a0f10; }
-  .stat.blocked .n { color: var(--blocked); }
-  .rollup .rl-cost { margin-left: auto; color: var(--muted); font-family: var(--mono); }
-  .rollup .rl-cost .n { color: var(--ink); font-weight: 650; }
+  .m-lede .label { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); }
+  .m-lede .val { font-family: var(--serif); font-size: 26px; color: var(--parch); line-height: 1; }
+  .m-lede .val .n { color: var(--brass-bright); }
+  .gauges { display: flex; align-items: stretch; flex-wrap: wrap; flex: 1 1 auto; }
+  .gauge {
+    display: flex; flex-direction: column; justify-content: center; gap: 2px;
+    padding: 10px 14px; min-width: 96px; border-right: 1px solid var(--line);
+  }
+  .gauge .n { font-family: var(--mono); font-size: 18px; font-weight: 650; color: var(--ink); line-height: 1; }
+  .gauge .lbl { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); }
+  .gauge.zero { opacity: .38; }
+  .gauge.queued .n { color: var(--queued); }
+  .gauge.building .n { color: var(--building); }
+  .gauge.reviewing .n { color: var(--review); }
+  .gauge.awaiting-merge .n { color: var(--awaiting); }
+  .gauge.done .n { color: var(--done); }
+  .gauge.blocked .n { color: var(--blocked); }
+  .gauge.blocked:not(.zero) { background: #1c0f0b; }
+  .m-cost {
+    display: flex; flex-direction: column; justify-content: center; gap: 1px;
+    padding: 10px 18px; margin-left: auto; text-align: right; border-left: 1px solid var(--line);
+  }
+  .m-cost .label { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-faint); }
+  .m-cost .val { font-family: var(--mono); font-size: 19px; font-weight: 650; color: var(--brass-bright); }
+  .m-cost .caveat { font-size: 9.5px; color: var(--ink-faint); letter-spacing: .02em; }
 
-  /* ---- compact summary row (the default overview view) ---- */
-  .run { margin-bottom: 10px; }
-  .summary {
-    display: grid; align-items: center; gap: 12px;
-    grid-template-columns: 18px 62px minmax(0, 1fr) auto auto 118px 70px;
-    padding: 11px 14px;
-    background: var(--card); border: 1px solid var(--card-b); border-radius: 12px;
+  /* ---------- a run (compact voyage row) ---------- */
+  .runs { display: flex; flex-direction: column; gap: 11px; }
+  .run { position: relative; }
+  .voyage-row {
+    display: grid; align-items: center; gap: 13px;
+    grid-template-columns: 30px 60px minmax(0,1fr) 150px 96px 92px 66px 14px;
+    padding: 11px 15px;
+    background: linear-gradient(180deg, var(--wood-2), var(--wood));
+    border: 1px solid var(--wood-edge); border-radius: 12px;
     cursor: pointer; user-select: none;
   }
-  .summary:hover { border-color: #2b3a4d; }
-  .summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .run.expanded > .summary { border-color: var(--accent); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-  .run.blocked > .summary { border-color: #4a2020; }
-  .chev { color: var(--faint); font-size: 11px; transition: transform .12s ease; text-align: center; }
-  .run.expanded > .summary .chev { transform: rotate(90deg); color: var(--accent); }
-  .summary .s-num { color: var(--done); font-family: var(--mono); font-weight: 650; }
-  .summary .s-title { color: var(--ink); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .summary .s-stage { color: var(--muted); font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
-  .summary .s-status { color: var(--accent); font-weight: 600; font-size: 13px; white-space: nowrap; text-align: right; }
-  .summary .s-status.blocked { color: var(--blocked); }
-  .summary .s-cost { color: var(--muted); font-family: var(--mono); text-align: right; }
-  .segbar.mini .seg { width: 9px; height: 9px; border-radius: 2px; }
-  .segbar.mini .seg.active { border-width: 2px; }
-  .run.expanded > .card { border-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+  .voyage-row:hover { border-color: var(--wood-edge-2); }
+  .voyage-row:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+  .run.expanded > .voyage-row { border-color: var(--brass-dim); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  .run.blocked > .voyage-row { border-color: #532a20; }
+  .run.blocked > .voyage-row .ship svg { filter: drop-shadow(0 0 5px rgba(224,86,63,.55)); }
+  .run.just-shipped > .voyage-row { animation: shipped-glow 2.4s ease-out 1; }
+  @keyframes shipped-glow {
+    0% { box-shadow: 0 0 0 0 rgba(55,181,140,.55); border-color: var(--done); }
+    100% { box-shadow: 0 0 0 14px rgba(55,181,140,0); }
+  }
+  .ship { width: 30px; height: 22px; display: flex; align-items: center; justify-content: center; }
+  .ship svg { width: 28px; height: 21px; }
+  .run:not(.blocked) .ship.sailing svg { animation: bob 3.6s ease-in-out infinite; }
+  @keyframes bob { 0%,100% { transform: translateY(0) rotate(-1.2deg); } 50% { transform: translateY(-1.6px) rotate(1.2deg); } }
+  .s-num { color: var(--brass); font-family: var(--mono); font-weight: 650; font-size: 13px; }
+  .s-title { color: var(--parch); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  @media (max-width: 720px) {
+  /* voyage progress bar (the signature) */
+  .voyage { display: inline-grid; grid-auto-flow: column; gap: 3px; align-items: center; }
+  .leg { height: 8px; width: 15px; border-radius: 2px; background: #22384f; position: relative; }
+  .leg.done { background: linear-gradient(180deg, var(--brass), var(--brass-dim)); }
+  .leg.active { background: transparent; box-shadow: inset 0 0 0 2px currentColor; }
+  .leg.active::after {
+    content: ""; position: absolute; top: -6px; left: 50%; width: 0; height: 0;
+    transform: translateX(-50%);
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-bottom: 6px solid currentColor;
+  }
+  .run:not(.blocked) .leg.active::after { animation: bob 3.6s ease-in-out infinite; }
+  .leg.blocked { background: var(--blocked); box-shadow: none; }
+  .leg.blocked::after { content: none; }
+
+  .s-status { font-weight: 600; font-size: 12.5px; white-space: nowrap; text-align: right; letter-spacing: .01em; }
+  .s-cost { color: var(--ink-dim); font-family: var(--mono); text-align: right; font-size: 13px; }
+  .s-cost.est { color: var(--brass); }
+  .s-elapsed { color: var(--ink-faint); font-family: var(--mono); font-size: 12px; text-align: right; }
+  .chev { color: var(--ink-faint); font-size: 10px; text-align: center; transition: transform .14s ease; }
+  .run.expanded > .voyage-row .chev { transform: rotate(90deg); color: var(--brass); }
+
+  /* ---------- expanded log card ---------- */
+  .logcard {
+    border: 1px solid var(--brass-dim); border-top: 0; border-radius: 0 0 12px 12px;
+    background: linear-gradient(180deg, var(--wood), #10202f);
+    overflow: hidden;
+  }
+  .run.blocked > .logcard { border-color: #532a20; }
+  .card-body { display: grid; grid-template-columns: minmax(240px, 320px) 1fr; gap: 4px; padding: 8px 6px; }
+
+  /* left: the voyage pipeline */
+  .pipeline { padding: 12px 16px; border-right: 1px solid var(--line); }
+  .pipeline h3 { margin: 0 0 9px; font-family: var(--serif); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--brass); font-weight: 600; }
+  .stage { display: grid; grid-template-columns: 16px 1fr; gap: 10px; padding: 4px 0; align-items: start; }
+  .rung { display: flex; flex-direction: column; align-items: center; gap: 2px; padding-top: 3px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #33506e; flex: none; }
+  .rail { width: 2px; flex: 1 1 14px; min-height: 14px; background: #22384f; }
+  .stage:last-child .rail { display: none; }
+  .stage.done .dot { background: var(--brass); }
+  .stage.done .rail { background: var(--brass-dim); }
+  .stage.active .dot { background: currentColor; box-shadow: 0 0 7px currentColor; }
+  .stage.blocked .dot { background: var(--blocked); box-shadow: 0 0 7px var(--blocked); }
+  .stage .body { min-width: 0; }
+  .stage .name { font-family: var(--serif); font-size: 13.5px; color: var(--ink-faint); }
+  .stage.done .name { color: var(--ink-dim); }
+  .stage.active .name { color: var(--parch); font-weight: 600; }
+  .stage.blocked .name { color: var(--blocked); font-weight: 600; }
+  .stage .cap { font-size: 11px; color: var(--ink-faint); font-family: var(--mono); }
+  .stage.active .cap { color: var(--ink-dim); }
+  .stage .here { margin-left: 7px; font-size: 15px; }
+
+  /* right: metadata */
+  .meta { padding: 12px 16px; }
+  .row { display: grid; grid-template-columns: 92px 1fr; gap: 12px; align-items: start; padding: 5px 0; }
+  .row .k { color: var(--ink-faint); text-align: right; font-size: 11px; letter-spacing: .07em;
+    text-transform: uppercase; padding-top: 2px; }
+  .row .v { color: var(--ink); min-width: 0; }
+  .row .v a { color: var(--brass-bright); text-decoration: none; }
+  .row .v a:hover { text-decoration: underline; }
+  .path { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); word-break: break-all; }
+  .naval { color: var(--ink-faint); font-style: italic; }
+  .btn {
+    display: inline-block; margin-left: 7px; padding: 1px 8px; border-radius: 6px;
+    border: 1px solid var(--wood-edge); background: var(--chip); color: var(--ink-dim);
+    font-size: 11px; font-family: var(--mono); cursor: pointer; vertical-align: middle;
+  }
+  .btn:hover { border-color: var(--brass); color: var(--parch); }
+  .btn.copied { border-color: var(--done); color: var(--done); }
+  .video-wrap { margin-top: 4px; }
+  .video-wrap video { width: 330px; max-width: 100%; background: #000; border-radius: 6px; border: 1px solid var(--line); }
+  .video-cap { color: var(--ink-faint); font-size: 11.5px; margin-top: 4px; font-family: var(--mono); }
+
+  /* cost ledger */
+  .ledger { padding: 6px 20px 16px; border-top: 1px solid var(--line); }
+  .ledger h3 { margin: 4px 0 6px; font-family: var(--serif); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--brass); font-weight: 600; }
+  table.cost { width: 100%; border-collapse: collapse; font-family: var(--mono); }
+  table.cost th {
+    text-align: left; color: var(--ink-faint); font-weight: 600; font-size: 10.5px;
+    letter-spacing: .09em; padding: 6px 10px; border-bottom: 1px solid var(--wood-edge);
+  }
+  table.cost th.n, table.cost td.n { text-align: right; }
+  table.cost td { padding: 9px 10px; border-bottom: 1px solid var(--line); color: var(--ink-dim); }
+  table.cost td.model { color: var(--parch); font-weight: 600; }
+  table.cost td.cost { color: var(--brass-bright); font-weight: 650; }
+  table.cost td.na { color: var(--ink-faint); }
+  .cost-foot { color: var(--ink-faint); font-size: 11.5px; padding: 9px 10px 2px; }
+  .cost-foot .ptr { color: var(--ink-dim); }
+
+  /* empty / degraded */
+  .empty { text-align: center; color: var(--ink-dim); padding: 70px 20px; }
+  .empty .glyph { font-size: 34px; opacity: .8; }
+  .empty .big { font-family: var(--serif); font-size: 18px; color: var(--parch); margin: 8px 0 6px; }
+  .empty .sub { color: var(--ink-faint); }
+
+  @media (max-width: 760px) {
     .card-body { grid-template-columns: 1fr; }
-    .row { grid-template-columns: 80px 1fr; }
-    .summary { grid-template-columns: 16px 52px minmax(0, 1fr) auto 64px; }
-    .summary .s-stage, .summary .segbar { display: none; }
-    .rollup .rl-cost { margin-left: 0; }
+    .pipeline { border-right: 0; border-bottom: 1px solid var(--line); }
+    .row { grid-template-columns: 76px 1fr; }
+    .voyage-row { grid-template-columns: 26px 50px minmax(0,1fr) auto 62px 14px; }
+    .voyage-row .voyage, .voyage-row .s-elapsed { display: none; }
+    .m-cost { margin-left: 0; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .stage.active .dot, .stage.blocked .dot { box-shadow: none; }
+    .swell svg { animation: none; }
+    .ship svg, .leg.active::after { animation: none !important; }
+    .stage.active .dot { box-shadow: none; }
     .chev { transition: none; }
+    .run.just-shipped > .voyage-row { animation: none; }
   }
 </style>
 </head>
 <body>
   <div class="page">
-    <div class="topbar">
-      <h1>ARMADA — operations dashboard</h1>
-      <span class="meta" id="sub">loading…</span>
-      <span class="ro" title="This view performs zero fleet mutations.">read-only</span>
+    <div class="masthead">
+      <div class="brandrow">
+        <div>
+          <div class="lede">the lookout's dashboard</div>
+          <h1 class="wordmark"><span class="anchor">⚓</span>ARMADA</h1>
+        </div>
+        <span class="spacer"></span>
+        <div class="controls">
+          <span class="weather" id="weather" title="Fleet health"><span class="glyph">·</span><span class="txt">…</span></span>
+          <select class="sortsel" id="sort" title="Order the fleet" aria-label="Sort runs">
+            <option value="stage">by furthest along</option>
+            <option value="cost">by cost</option>
+            <option value="age">by age</option>
+          </select>
+          <button class="btn-ghost" id="chime" title="Foghorn chime on ship / block — off by default" aria-pressed="false">
+            <span aria-hidden="true">🔇</span><span class="lbl">foghorn</span>
+          </button>
+          <span class="ro" title="This view performs zero fleet mutations.">read-only</span>
+        </div>
+      </div>
+      <div class="swell" aria-hidden="true">
+        <svg viewBox="0 0 1200 30" preserveAspectRatio="none"><path d="M0 18 C 150 6 300 6 450 18 S 750 30 900 18 1200 6 1200 18 L1200 30 0 30Z" fill="#0e3050"/></svg>
+        <svg class="b" viewBox="0 0 1200 30" preserveAspectRatio="none"><path d="M0 20 C 180 10 320 10 500 20 S 820 30 1000 20 1200 12 1200 20 L1200 30 0 30Z" fill="#15507f"/></svg>
+      </div>
+      <div class="substamp" id="sub">weighing anchor…</div>
     </div>
+    <div id="fleet"></div>
     <div class="runs" id="runs"></div>
   </div>
 <script>
 "use strict";
 
-// --- small helpers ---------------------------------------------------------
+// ---- small helpers --------------------------------------------------------
 const $ = (t, cls, txt) => { const e = document.createElement(t); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
-const esc = (s) => String(s == null ? '' : s);
-
+const esc = (s) => String(s == null ? "" : s);
 function compact(n) {
   if (n == null || !Number.isFinite(n)) return null;
-  if (Math.abs(n) >= 1000) return (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1).replace(/\.0$/, '') + 'k';
+  if (Math.abs(n) >= 1000) return (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1).replace(/\.0$/, "") + "k";
   return String(n);
 }
-function money(n) { return (n == null || !Number.isFinite(n)) ? null : '$' + n.toFixed(2); }
-function ageText(iso) {
+function money(n) { return (n == null || !Number.isFinite(n)) ? null : "$" + n.toFixed(2); }
+// elapsed from an ISO start, in a compact ship's-log form; ticks live (see below).
+function elapsedText(iso) {
   if (!iso) return null;
   const ms = Date.now() - Date.parse(iso);
   if (!Number.isFinite(ms)) return null;
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return s + 's';
-  const m = Math.floor(s / 60); if (m < 60) return m + 'm';
-  const h = Math.floor(m / 60); if (h < 24) return h + 'h';
-  return Math.floor(h / 24) + 'd';
+  let s = Math.max(0, Math.floor(ms / 1000));
+  const d = Math.floor(s / 86400); s -= d * 86400;
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60); s -= m * 60;
+  if (d) return `${d}d ${String(h).padStart(2, "0")}h`;
+  if (h) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m) return `${m}m ${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
 }
+
+// state colour by coarse group (never colour alone — shape + printed name too)
+const GROUP_COLOR = {
+  queued: "var(--queued)", building: "var(--building)", reviewing: "var(--review)",
+  "awaiting-merge": "var(--awaiting)", done: "var(--done)", blocked: "var(--blocked)",
+};
+// The gauges shown in the manifest bar, in voyage order (+ blocked).
+const GAUGES = [
+  ["queued", "queued"], ["building", "building"], ["reviewing", "reviewing"],
+  ["awaiting-merge", "awaiting"], ["done", "done"], ["blocked", "blocked"],
+];
+
+// vessel iconography — a little sloop, tinted by state colour.
+function shipSVG(color) {
+  return `<svg viewBox="0 0 28 21" fill="none" aria-hidden="true">
+    <path d="M14 1 L14 12" stroke="${color}" stroke-width="1.3"/>
+    <path d="M14 2 L22 11 L14 11 Z" fill="${color}" opacity=".9"/>
+    <path d="M13 3 L7 11 L13 11 Z" fill="${color}" opacity=".55"/>
+    <path d="M4 12 L24 12 L21 18 L7 18 Z" fill="${color}"/>
+  </svg>`;
+}
+
+// ---- run identity + group fallback (mirror the driver) --------------------
+const runKey = (run) => "r:" + (run.issueNumber != null ? "i" + run.issueNumber : "p" + run.prNumber);
+const expanded = new Set();        // run keys the operator has opened — preserved across polls
+let prevState = new Map();         // runKey -> { group, activeIndex, blocked } from the last render
+let sortMode = "stage";
+
+function groupOf(run) {
+  if (run.group) return run.group;
+  if (run.blocked) return "blocked";
+  const i = run.activeIndex;
+  if (run.terminal || i >= 5) return "done";
+  if (i === 4) return "awaiting-merge";
+  if (i === 2 || i === 3) return "reviewing";
+  if (i === 1) return "building";
+  return "queued";
+}
+
+// The voyage bar — one leg per real stage, a vessel marker on the active leg.
+function buildVoyage(run) {
+  const bar = $("span", "voyage");
+  const n = (run.stages || []).length || 7;
+  const color = GROUP_COLOR[groupOf(run)] || "var(--building)";
+  for (let i = 0; i < n; i++) {
+    const leg = $("span", "leg");
+    if (run.blocked && i === run.activeIndex) leg.classList.add("blocked");
+    else if (i < run.activeIndex) leg.classList.add("done");
+    else if (i === run.activeIndex) { leg.classList.add(run.terminal ? "done" : "active"); leg.style.color = color; }
+    bar.appendChild(leg);
+  }
+  return bar;
+}
+
+// ---- compact voyage row (default overview) --------------------------------
+function renderRow(run, isOpen) {
+  const num = "#" + (run.issueNumber ?? run.prNumber ?? "?");
+  const g = groupOf(run);
+  const color = GROUP_COLOR[g] || "var(--building)";
+  const row = $("div", "voyage-row");
+  row.setAttribute("role", "button");
+  row.setAttribute("tabindex", "0");
+  row.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  row.setAttribute("aria-label", `${num} ${run.title || ""} — ${run.blocked ? "Blocked" : (run.status || "")} — ${isOpen ? "expanded" : "collapsed"}`);
+
+  const ship = $("span", "ship" + (run.blocked || run.terminal ? "" : " sailing"));
+  ship.innerHTML = shipSVG(color);
+  row.appendChild(ship);
+  row.appendChild($("span", "s-num", num));
+  row.appendChild($("span", "s-title", esc(run.title)));
+  row.appendChild(buildVoyage(run));
+
+  const st = $("span", "s-status", run.blocked ? "Blocked" : esc(run.status));
+  st.style.color = color;
+  row.appendChild(st);
+
+  const cost = money(run.cost && run.cost.totalCost);
+  const c = $("span", "s-cost" + (cost ? " est" : ""), cost || (run.cost && run.cost.present ? "n/a" : "—"));
+  if (cost) c.title = "API-equivalent estimate, not billing";
+  row.appendChild(c);
+
+  const el = $("span", "s-elapsed js-elapsed");
+  if (run.startedAt) { el.dataset.since = run.startedAt; el.textContent = elapsedText(run.startedAt) || ""; }
+  row.appendChild(el);
+
+  row.appendChild($("span", "chev", "▶"));
+  return row;
+}
+
+// ---- the expanded log card ------------------------------------------------
 function copyBtn(label, text) {
-  const b = $('button', 'btn', label);
+  const b = $("button", "btn", label);
   if (text == null) { b.disabled = true; b.style.opacity = .4; return b; }
-  b.addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked — best effort */ }
-    b.classList.add('copied'); const old = b.textContent; b.textContent = 'copied';
-    setTimeout(() => { b.classList.remove('copied'); b.textContent = old; }, 1200);
+  b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    try { navigator.clipboard.writeText(text); } catch { /* clipboard blocked — best effort */ }
+    b.classList.add("copied"); const old = b.textContent; b.textContent = "copied";
+    setTimeout(() => { b.classList.remove("copied"); b.textContent = old; }, 1200);
   });
   return b;
 }
 function openBtn(pathStr) {
-  const b = $('a', 'btn', 'open');
+  const b = $("a", "btn", "open");
   if (pathStr == null) { b.style.opacity = .4; return b; }
-  // Browsers can't open an arbitrary local folder for security; a file:// link
-  // is the best-effort affordance, and copy path always works.
-  b.href = 'file:///' + String(pathStr).replace(/\\/g, '/').replace(/^\/+/, '');
-  b.target = '_blank'; b.rel = 'noopener';
+  b.href = "file:///" + String(pathStr).replace(/\\/g, "/").replace(/^\/+/, "");
+  b.target = "_blank"; b.rel = "noopener";
+  b.addEventListener("click", (e) => e.stopPropagation());
   return b;
 }
 
-// render() is defined in the second block below.
-window.__renderPlaceholder = true;
-</script>
-<script>
-"use strict";
-
-// --- multi-run overview: run identity, group fallback, shared segment bar ----
-const runKey = (run) => 'r:' + (run.issueNumber != null ? 'i' + run.issueNumber : 'p' + run.prNumber);
-const expanded = new Set(); // run keys the operator has opened — preserved across polls
-
-// Coarse fleet group — mirrors the driver's groupForStage() so an older snapshot
-// (pre-#108, no run.group) still groups correctly. Keep in lockstep with the driver.
-function groupOf(run) {
-  if (run.group) return run.group;
-  if (run.blocked) return 'blocked';
-  const i = run.activeIndex;
-  if (run.terminal || i >= 10) return 'done';
-  if (i === 8) return 'reviewing';
-  if (i === 6 || i === 7 || i === 9) return 'awaiting-merge';
-  return 'building';
-}
-
-// A 12-segment stage bar, shared by the compact summary row and the detail header.
-function buildSegbar(run, mini) {
-  const bar = $('span', 'segbar' + (mini ? ' mini' : ''));
-  const n = (run.stages || []).length || 12;
-  for (let i = 0; i < n; i++) {
-    const seg = $('span', 'seg');
-    if (run.blocked && i === run.activeIndex) seg.classList.add('blocked');
-    else if (i < run.activeIndex) seg.classList.add('done');
-    else if (i === run.activeIndex) seg.classList.add(run.terminal ? 'done' : 'active');
-    bar.appendChild(seg);
-  }
-  return bar;
-}
-
-// --- header: issue #, title, 12-segment stage bar, cost, status, elapsed -----
-function renderHead(run) {
-  const head = $('div', 'card-head' );
-  head.appendChild($('span', 'num', '#' + (run.issueNumber ?? run.prNumber ?? '?')));
-  head.appendChild($('span', 'title', esc(run.title)));
-  head.appendChild($('span', 'spacer'));
-
-  const cost = money(run.cost && run.cost.totalCost);
-  head.appendChild($('span', 'cost', cost || '$0.00'));
-
-  head.appendChild(buildSegbar(run, false));
-
-  const st = $('span', 'status' + (run.blocked ? ' blocked' : ''), run.blocked ? 'Blocked' : esc(run.status));
-  head.appendChild(st);
-  const el = ageText(run.startedAt);
-  if (el) head.appendChild($('span', 'elapsed', el));
-  return head;
-}
-
-// --- left column: the vertical stage pipeline with status dots ---------------
 function renderPipeline(run) {
-  const col = $('div', 'pipeline');
+  const col = $("div", "pipeline");
+  col.appendChild($("h3", null, "the voyage"));
+  const caps = run.stageCaptions || [];
+  const color = GROUP_COLOR[groupOf(run)] || "var(--building)";
   (run.stages || []).forEach((name, i) => {
-    let cls = 'stage', tag = '';
-    if (run.blocked && i === run.activeIndex) { cls += ' blocked'; tag = 'blocked'; }
-    else if (i < run.activeIndex) { cls += ' done'; tag = 'done'; }
-    else if (i === run.activeIndex) { cls += run.terminal ? ' done' : ' active'; tag = run.terminal ? 'done' : 'active'; }
-    const row = $('div', cls);
-    row.appendChild($('span', 'dot'));
-    row.appendChild($('span', 'tag', tag));
-    row.appendChild($('span', 'name', name));
-    col.appendChild(row);
+    let cls = "stage";
+    const isActive = i === run.activeIndex;
+    if (run.blocked && isActive) cls += " blocked";
+    else if (i < run.activeIndex) cls += " done";
+    else if (isActive) cls += run.terminal ? " done" : " active";
+    const stage = $("div", cls);
+    if (isActive && !run.blocked && !run.terminal) stage.style.color = color;
+    const rung = $("div", "rung");
+    rung.appendChild($("span", "dot"));
+    rung.appendChild($("span", "rail"));
+    stage.appendChild(rung);
+    const body = $("div", "body");
+    const nm = $("span", "name", name);
+    if (isActive) { const here = $("span", "here", run.blocked ? "⚠" : (run.terminal ? "⚓" : "⛵")); nm.appendChild(here); }
+    body.appendChild(nm);
+    if (caps[i]) body.appendChild($("div", "cap", caps[i]));
+    stage.appendChild(body);
+    col.appendChild(stage);
   });
   return col;
 }
 
-// --- right column: metadata panel (issue, branch, worktree, folder, video) ---
 function metaRow(k, valueNode) {
-  const row = $('div', 'row');
-  row.appendChild($('div', 'k', k));
-  const v = $('div', 'v');
+  const row = $("div", "row");
+  row.appendChild($("div", "k", k));
+  const v = $("div", "v");
   if (valueNode instanceof Node) v.appendChild(valueNode); else v.textContent = esc(valueNode);
   row.appendChild(v);
   return row;
 }
-
 function renderMeta(run) {
-  const col = $('div', 'meta');
-
-  // issue link
-  const issueV = $('span');
-  if (run.issueUrl) {
-    const a = $('a', null, '#' + run.issueNumber); a.href = run.issueUrl; a.target = '_blank'; a.rel = 'noopener';
-    issueV.appendChild(a);
-  } else issueV.appendChild($('span', 'naval', run.prUrl ? '' : 'n/a'));
-  if (run.prUrl) {
-    issueV.appendChild(document.createTextNode('  '));
-    const p = $('a', null, 'PR #' + run.prNumber); p.href = run.prUrl; p.target = '_blank'; p.rel = 'noopener';
-    issueV.appendChild(p);
-  }
-  col.appendChild(metaRow('issue', issueV));
-
-  // branch + copy
-  const brV = $('span');
-  if (run.branch) {
-    brV.appendChild($('span', 'path', '⎇ ' + run.branch));
-    brV.appendChild(copyBtn('copy', run.branch));
-  } else brV.appendChild($('span', 'naval', 'n/a'));
-  col.appendChild(metaRow('branch', brV));
-
-  // worktree + open + copy path
-  const wtV = $('span');
-  if (run.worktree) {
-    wtV.appendChild($('span', 'path', run.worktree));
-    wtV.appendChild(openBtn(run.worktree));
-    wtV.appendChild(copyBtn('copy path', run.worktree));
-  } else wtV.appendChild($('span', 'naval', 'n/a — no local worktree'));
-  col.appendChild(metaRow('worktree', wtV));
-
-  // folder + open + copy path
-  const foV = $('span');
-  if (run.folder) {
-    foV.appendChild($('span', 'path', run.folder));
-    foV.appendChild(openBtn(run.folder));
-    foV.appendChild(copyBtn('copy path', run.folder));
-  } else foV.appendChild($('span', 'naval', 'n/a'));
-  col.appendChild(metaRow('folder', foV));
-
-  // done video (embedded player) or graceful absence
-  const vidV = $('div');
+  const col = $("div", "meta");
+  // issue / PR deep links
+  const idV = $("span");
+  if (run.issueUrl) { const a = $("a", null, "#" + run.issueNumber); a.href = run.issueUrl; a.target = "_blank"; a.rel = "noopener"; a.addEventListener("click", (e) => e.stopPropagation()); idV.appendChild(a); }
+  else idV.appendChild($("span", "naval", run.prUrl ? "" : "n/a"));
+  if (run.prUrl) { idV.appendChild(document.createTextNode("  ")); const p = $("a", null, "PR #" + run.prNumber); p.href = run.prUrl; p.target = "_blank"; p.rel = "noopener"; p.addEventListener("click", (e) => e.stopPropagation()); idV.appendChild(p); }
+  col.appendChild(metaRow("issue / pr", idV));
+  // branch
+  const brV = $("span");
+  if (run.branch) { brV.appendChild($("span", "path", "⎇ " + run.branch)); brV.appendChild(copyBtn("copy", run.branch)); }
+  else brV.appendChild($("span", "naval", "n/a — not dispatched yet"));
+  col.appendChild(metaRow("branch", brV));
+  // worktree
+  const wtV = $("span");
+  if (run.worktree) { wtV.appendChild($("span", "path", run.worktree)); wtV.appendChild(openBtn(run.worktree)); wtV.appendChild(copyBtn("copy path", run.worktree)); }
+  else wtV.appendChild($("span", "naval", "n/a — no local worktree"));
+  col.appendChild(metaRow("worktree", wtV));
+  // folder
+  const foV = $("span");
+  if (run.folder) { foV.appendChild($("span", "path", run.folder)); foV.appendChild(openBtn(run.folder)); foV.appendChild(copyBtn("copy path", run.folder)); }
+  else foV.appendChild($("span", "naval", "n/a"));
+  col.appendChild(metaRow("folder", foV));
+  // done video
+  const vidV = $("div");
   if (run.doneVideo && run.doneVideo.url) {
-    const wrap = $('div', 'video-wrap');
-    const v = document.createElement('video');
-    v.controls = true; v.preload = 'metadata'; v.src = run.doneVideo.url;
+    const wrap = $("div", "video-wrap");
+    const v = document.createElement("video");
+    v.controls = true; v.preload = "metadata"; v.src = run.doneVideo.url;
+    v.addEventListener("click", (e) => e.stopPropagation());
     wrap.appendChild(v);
-    const cap = [run.doneVideo.name, ageText(run.doneVideo.updatedAt) ? ageText(run.doneVideo.updatedAt) + ' old' : null, 'fullscreen via player controls']
-      .filter(Boolean).join(' · ');
-    wrap.appendChild($('div', 'video-cap', cap));
+    const cap = [run.doneVideo.name, elapsedText(run.doneVideo.updatedAt) ? elapsedText(run.doneVideo.updatedAt) + " old" : null].filter(Boolean).join(" · ");
+    wrap.appendChild($("div", "video-cap", cap));
     vidV.appendChild(wrap);
-  } else {
-    vidV.appendChild($('span', 'naval', 'no done video yet'));
-  }
-  col.appendChild(metaRow('done video', vidV));
-
+  } else vidV.appendChild($("span", "naval", "no walkthrough recorded yet"));
+  col.appendChild(metaRow("done video", vidV));
   return col;
 }
 
-// --- cost table + footer -----------------------------------------------------
-function renderCost(run) {
-  const block = $('div', 'cost-block');
-  block.appendChild($('div', 'cost-h', 'cost'));
+function renderLedger(run) {
+  const block = $("div", "ledger");
+  block.appendChild($("h3", null, "cost ledger"));
   const c = run.cost || {};
-  const table = $('table', 'cost');
-  const thead = $('thead'); const htr = $('tr');
-  ['MODEL', 'IN', 'OUT', 'CACHE R', 'CACHE W', '≈ COST'].forEach((h, i) => {
-    const th = $('th', i === 0 ? '' : 'n', h); htr.appendChild(th);
-  });
+  const table = $("table", "cost");
+  const thead = $("thead"); const htr = $("tr");
+  ["MODEL", "IN", "OUT", "CACHE R", "CACHE W", "≈ COST"].forEach((h, i) => htr.appendChild($("th", i === 0 ? "" : "n", h)));
   thead.appendChild(htr); table.appendChild(thead);
-
-  const tbody = $('tbody');
+  const tbody = $("tbody");
   const models = (c.present && Array.isArray(c.models)) ? c.models : [];
   if (models.length) {
     for (const m of models) {
-      const tr = $('tr');
-      tr.appendChild($('td', 'model', esc(m.model)));
-      const cell = (v) => { const td = $('td', 'n'); const t = compact(v); if (t == null) { td.textContent = 'n/a'; td.classList.add('na'); } else td.textContent = t; return td; };
-      tr.appendChild(cell(m.in));
-      tr.appendChild(cell(m.out));
-      tr.appendChild(cell(m.cacheRead));
-      tr.appendChild(cell(m.cacheWrite));
-      const costTd = $('td', 'n cost'); const mv = money(m.cost);
-      if (mv == null) { costTd.textContent = 'n/a'; costTd.className = 'n na'; } else costTd.textContent = mv;
+      const tr = $("tr");
+      tr.appendChild($("td", "model", esc(m.model)));
+      const cell = (v) => { const td = $("td", "n"); const t = compact(v); if (t == null) { td.textContent = "n/a"; td.classList.add("na"); } else td.textContent = t; return td; };
+      tr.appendChild(cell(m.in)); tr.appendChild(cell(m.out)); tr.appendChild(cell(m.cacheRead)); tr.appendChild(cell(m.cacheWrite));
+      const costTd = $("td", "n cost"); const mv = money(m.cost);
+      if (mv == null) { costTd.textContent = "n/a"; costTd.className = "n na"; } else costTd.textContent = mv;
       tr.appendChild(costTd);
       tbody.appendChild(tr);
     }
   } else {
-    const tr = $('tr'); const td = $('td', 'na'); td.colSpan = 6;
-    td.textContent = 'n/a — no out/costs/<run>.json cost post-mortem for this run yet';
+    const tr = $("tr"); const td = $("td", "na"); td.colSpan = 6;
+    td.textContent = "no cost post-mortem for this run yet — crows-nest writes out/costs/<run>.json as usage accrues";
     tr.appendChild(td); tbody.appendChild(tr);
   }
-  table.appendChild(tbody);
-  block.appendChild(table);
-
-  // footer: sessions/subagents · codex · match · caveat · unpriced · pointer
+  table.appendChild(tbody); block.appendChild(table);
   const parts = [];
   if (c.present) {
-    if (c.sessions != null || c.subagents != null)
-      parts.push(`${c.sessions ?? 0} claude session(s) + ${c.subagents ?? 0} subagents`);
+    if (c.sessions != null || c.subagents != null) parts.push(`${c.sessions ?? 0} claude session(s) + ${c.subagents ?? 0} subagents`);
     if (c.codex != null) parts.push(`${c.codex} codex`);
-    if (c.matchMode) parts.push('match: ' + c.matchMode);
   }
-  parts.push('API-equivalent estimate, not billing');
-  if (c.present && c.unpriced && c.unpriced.length) parts.push('unpriced: ' + c.unpriced.join(', '));
-  const foot = $('div', 'cost-foot', parts.join(' · '));
-  const ptr = $('div', 'cost-foot');
-  ptr.appendChild(document.createTextNode('post-mortem detail: '));
-  ptr.appendChild($('span', 'ptr', (c.pointer || 'out/costs/<run>.json')));
-  block.appendChild(foot); block.appendChild(ptr);
+  parts.push("API-equivalent estimate, not billing");
+  if (c.present && c.unpriced && c.unpriced.length) parts.push("unpriced: " + c.unpriced.join(", "));
+  block.appendChild($("div", "cost-foot", parts.join(" · ")));
+  const ptr = $("div", "cost-foot");
+  ptr.appendChild(document.createTextNode("post-mortem: "));
+  ptr.appendChild($("span", "ptr", c.pointer || "out/costs/<run>.json"));
+  block.appendChild(ptr);
   return block;
 }
 
 function renderCard(run) {
-  const card = $('div', 'card' + (run.blocked ? ' blocked' : ''));
-  card.appendChild(renderHead(run));
-  const body = $('div', 'card-body');
+  const card = $("div", "logcard");
+  const body = $("div", "card-body");
   body.appendChild(renderPipeline(run));
   body.appendChild(renderMeta(run));
   card.appendChild(body);
-  card.appendChild(renderCost(run));
+  card.appendChild(renderLedger(run));
   return card;
 }
 
-// --- status roll-up header: counts by group, total in-flight, total cost -----
-const GROUP_LABELS = [
-  ['building', 'building'], ['reviewing', 'reviewing'],
-  ['awaiting-merge', 'awaiting-merge'], ['blocked', 'blocked'], ['done', 'done'],
-];
-function renderRollup(state, runs) {
-  const r = state && state.rollup;
-  const counts = {}; for (const [k] of GROUP_LABELS) counts[k] = 0;
-  let total = 0, costKnown = false;
-  if (r) {
-    for (const [k] of GROUP_LABELS) counts[k] = r[k] || 0;
-    total = r.totalCost || 0; costKnown = !!r.costKnown;
-  } else {
-    // Back-compat: recompute client-side when the snapshot predates the roll-up.
-    for (const run of runs) {
-      const g = groupOf(run); counts[g] = (counts[g] || 0) + 1;
-      const tc = run.cost && run.cost.present ? run.cost.totalCost : null;
-      if (typeof tc === 'number' && Number.isFinite(tc)) { total += tc; costKnown = true; }
-    }
-  }
-  const bar = $('div', 'rollup');
-  const tot = $('div', 'rl-total');
-  tot.appendChild(document.createTextNode('in flight '));
-  tot.appendChild($('span', 'n', String(runs.length)));
-  bar.appendChild(tot);
-  for (const [key, label] of GROUP_LABELS) {
-    const n = counts[key] || 0;
-    const chip = $('span', 'stat ' + key + (n === 0 ? ' zero' : ''));
-    chip.appendChild($('span', 'n', String(n)));
-    chip.appendChild($('span', 'lbl', label));
-    bar.appendChild(chip);
-  }
-  const cost = $('div', 'rl-cost');
-  cost.appendChild(document.createTextNode('total cost '));
-  cost.appendChild($('span', 'n', costKnown ? (money(total) || '$0.00') : 'n/a'));
-  bar.appendChild(cost);
-  return bar;
-}
-
-// --- compact summary row (default view) — click / keyboard to expand ----------
-function renderSummaryRow(run, isOpen) {
-  const num = '#' + (run.issueNumber ?? run.prNumber ?? '?');
-  const row = $('div', 'summary');
-  row.setAttribute('role', 'button');
-  row.setAttribute('tabindex', '0');
-  row.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
-  row.setAttribute('aria-label', `${num} ${run.title || ''} — ${run.blocked ? 'Blocked' : (run.status || '')} — ${isOpen ? 'expanded' : 'collapsed'}`);
-  row.appendChild($('span', 'chev', '▶'));
-  row.appendChild($('span', 's-num', num));
-  row.appendChild($('span', 's-title', esc(run.title)));
-  row.appendChild($('span', 's-stage', esc((run.stages && run.stages[run.activeIndex]) || run.status || '')));
-  row.appendChild(buildSegbar(run, true));
-  row.appendChild($('span', 's-status' + (run.blocked ? ' blocked' : ''), run.blocked ? 'Blocked' : esc(run.status)));
-  row.appendChild($('span', 's-cost', money(run.cost && run.cost.totalCost) || '$0.00'));
-  return row;
-}
-
-// A run block = the summary row + (when expanded) the full detail card. Rows
-// expand independently; toggling one re-renders only that block in place so the
-// other rows and the scroll position are untouched.
+// a run block = the voyage row + (when expanded) the full log card.
 function renderRun(run) {
   const key = runKey(run);
   const isOpen = expanded.has(key);
-  const block = $('div', 'run' + (run.blocked ? ' blocked' : '') + (isOpen ? ' expanded' : ''));
-  const row = renderSummaryRow(run, isOpen);
+  const block = $("div", "run" + (run.blocked ? " blocked" : "") + (run.terminal ? " terminal" : "") + (isOpen ? " expanded" : ""));
+  block.dataset.key = key;
+  const row = renderRow(run, isOpen);
   const toggle = () => {
     if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
     const next = renderRun(run);
     block.replaceWith(next);
-    if (expanded.has(key)) { const s = next.querySelector('.summary'); if (s) s.focus(); }
+    if (expanded.has(key)) { const s = next.querySelector(".voyage-row"); if (s) s.focus(); }
   };
-  row.addEventListener('click', toggle);
-  row.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); toggle(); }
-  });
+  row.addEventListener("click", toggle);
+  row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); toggle(); } });
   block.appendChild(row);
   if (isOpen) block.appendChild(renderCard(run));
   return block;
 }
 
-function render(state) {
-  const sub = document.getElementById('sub');
-  const wrap = document.getElementById('runs');
-  wrap.textContent = '';
-  const runs = (state && state.runs) || [];
-  const stamp = state && state.generatedAt ? new Date(state.generatedAt).toLocaleTimeString() : '';
-  sub.textContent = `${esc(state && state.repo)} · ${runs.length} run(s) · ${esc(state && state.summary || '')}${stamp ? ' · ' + stamp : ''}`;
+// ---- manifest (fleet totals) bar ------------------------------------------
+function renderFleet(state, runs) {
+  const wrap = document.getElementById("fleet");
+  wrap.textContent = "";
+  if (!runs.length) return;
+  const r = state && state.rollup;
+  const counts = {}; for (const [k] of GAUGES) counts[k] = 0;
+  let total = 0, costKnown = false;
+  if (r) { for (const [k] of GAUGES) counts[k] = r[k] || 0; total = r.totalCost || 0; costKnown = !!r.costKnown; }
+  else { for (const run of runs) { const g = groupOf(run); counts[g] = (counts[g] || 0) + 1; const tc = run.cost && run.cost.present ? run.cost.totalCost : null; if (typeof tc === "number") { total += tc; costKnown = true; } } }
 
-  // Prune expand state for runs that have left the fleet (keep it bounded).
+  const bar = $("div", "manifest");
+  const lede = $("div", "m-lede");
+  lede.appendChild($("div", "label", "in flight"));
+  const val = $("div", "val"); val.appendChild($("span", "n", String(runs.length))); val.appendChild(document.createTextNode(runs.length === 1 ? " voyage" : " voyages"));
+  lede.appendChild(val);
+  bar.appendChild(lede);
+  const gauges = $("div", "gauges");
+  for (const [key, label] of GAUGES) {
+    const n = counts[key] || 0;
+    const g = $("div", "gauge " + key + (n === 0 ? " zero" : ""));
+    g.appendChild($("span", "n", String(n)));
+    g.appendChild($("span", "lbl", label));
+    gauges.appendChild(g);
+  }
+  bar.appendChild(gauges);
+  const cost = $("div", "m-cost");
+  cost.appendChild($("div", "label", "fleet cost"));
+  cost.appendChild($("div", "val", costKnown ? (money(total) || "$0.00") : "n/a"));
+  cost.appendChild($("div", "caveat", "API-equivalent estimate"));
+  bar.appendChild(cost);
+  wrap.appendChild(bar);
+}
+
+function setWeather(runs) {
+  const el = document.getElementById("weather");
+  const blocked = runs.filter((r) => r.blocked).length;
+  const anyFlight = runs.some((r) => !r.terminal && !r.blocked);
+  let cls, glyph, txt;
+  if (blocked) { cls = "storm"; glyph = "⛈"; txt = `storm · ${blocked} blocked`; }
+  else if (anyFlight) { cls = "choppy"; glyph = "🌊"; txt = "choppy · underway"; }
+  else { cls = "calm"; glyph = "⚓"; txt = "calm seas"; }
+  el.className = "weather " + cls;
+  el.querySelector(".glyph").textContent = glyph;
+  el.querySelector(".txt").textContent = txt;
+}
+
+// ---- sort -----------------------------------------------------------------
+function sortRuns(runs) {
+  const arr = runs.slice();
+  if (sortMode === "cost") {
+    arr.sort((a, b) => ((b.cost && b.cost.totalCost) || 0) - ((a.cost && a.cost.totalCost) || 0) || (Number(b.blocked) - Number(a.blocked)));
+  } else if (sortMode === "age") {
+    arr.sort((a, b) => (Date.parse(a.startedAt || 0) || 0) - (Date.parse(b.startedAt || 0) || 0));
+  } // "stage" — keep the driver's blocked-first / furthest-along order
+  return arr;
+}
+
+// ---- transition flourish + optional foghorn -------------------------------
+function detectTransitions(runs) {
+  const events = [];
+  const now = new Map();
+  for (const run of runs) {
+    const key = runKey(run);
+    const cur = { group: groupOf(run), activeIndex: run.activeIndex, blocked: !!run.blocked };
+    now.set(key, cur);
+    const prev = prevState.get(key);
+    if (!prev) continue;
+    if (cur.blocked && !prev.blocked) events.push({ key, kind: "blocked" });
+    else if (cur.group === "done" && prev.group !== "done") events.push({ key, kind: "shipped" });
+  }
+  prevState = now;
+  return events;
+}
+
+// foghorn chime — OFF by default, opt-in. No external asset: a short two-tone
+// WebAudio blast. Enabling requires the toggle click (the user gesture that also
+// unlocks audio). Plays only on a ship/block transition while enabled.
+let chimeOn = false, audioCtx = null;
+function foghorn(kind) {
+  if (!chimeOn) return;
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const t = audioCtx.currentTime;
+    const notes = kind === "blocked" ? [138, 110] : [110, 146];
+    notes.forEach((f, i) => {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = "sawtooth"; o.frequency.value = f;
+      const s = t + i * 0.55;
+      g.gain.setValueAtTime(0.0001, s);
+      g.gain.exponentialRampToValueAtTime(0.16, s + 0.05);
+      g.gain.exponentialRampToValueAtTime(0.0001, s + 0.5);
+      o.connect(g); g.connect(audioCtx.destination); o.start(s); o.stop(s + 0.55);
+    });
+  } catch { /* audio unavailable — silent */ }
+}
+document.getElementById("chime").addEventListener("click", (e) => {
+  chimeOn = !chimeOn;
+  const b = e.currentTarget;
+  b.classList.toggle("on", chimeOn);
+  b.setAttribute("aria-pressed", chimeOn ? "true" : "false");
+  b.querySelector("span[aria-hidden]").textContent = chimeOn ? "📢" : "🔇";
+  if (chimeOn) foghorn("shipped"); // confirmation blast (and unlocks audio)
+});
+document.getElementById("sort").addEventListener("change", (e) => { sortMode = e.target.value; if (lastState) render(lastState); });
+
+// ---- render ---------------------------------------------------------------
+let lastState = null;
+function render(state) {
+  lastState = state;
+  const sub = document.getElementById("sub");
+  const wrap = document.getElementById("runs");
+  wrap.textContent = "";
+  const runs = (state && state.runs) || [];
+  const stamp = state && state.generatedAt ? new Date(state.generatedAt).toLocaleTimeString() : "";
+  sub.textContent = `${esc(state && state.repo)} · ${runs.length} run(s) · ${esc((state && state.summary) || "")}${stamp ? " · charted " + stamp : ""}`;
+
+  setWeather(runs);
+
+  // prune expand state for runs that have left the fleet
   const live = new Set(runs.map(runKey));
   for (const k of Array.from(expanded)) if (!live.has(k)) expanded.delete(k);
 
   if (state && state.degraded) {
-    const e = $('div', 'empty');
-    e.appendChild($('div', 'big', 'no runs to show'));
-    e.appendChild($('div', null, esc(state.degraded)));
+    document.getElementById("fleet").textContent = "";
+    const e = $("div", "empty");
+    e.appendChild($("div", "glyph", "🧭"));
+    e.appendChild($("div", "big", "no runs to chart"));
+    e.appendChild($("div", "sub", esc(state.degraded)));
     wrap.appendChild(e);
+    prevState = new Map();
     return;
   }
   if (!runs.length) {
-    const e = $('div', 'empty');
-    e.appendChild($('div', 'big', 'no in-flight runs'));
-    e.appendChild($('div', null, 'The fleet is idle — no armed issues or open PRs to chart.'));
+    document.getElementById("fleet").textContent = "";
+    const e = $("div", "empty");
+    e.appendChild($("div", "glyph", "⚓"));
+    e.appendChild($("div", "big", "an empty harbour"));
+    e.appendChild($("div", "sub", "The fleet is idle — no armed issues or open PRs under way."));
     wrap.appendChild(e);
+    prevState = new Map();
     return;
   }
-  // Overview: the status roll-up header, then one compact summary row per run
-  // (expand any row into its full detail card). Legible with many concurrent runs.
-  wrap.appendChild(renderRollup(state, runs));
-  for (const run of runs) wrap.appendChild(renderRun(run));
+
+  renderFleet(state, runs);
+  const events = detectTransitions(runs);
+  for (const run of sortRuns(runs)) wrap.appendChild(renderRun(run));
+
+  // flourish + optional chime for ship/block transitions
+  for (const ev of events) {
+    const block = wrap.querySelector(`.run[data-key="${CSS.escape(ev.key)}"]`);
+    if (ev.kind === "shipped" && block) block.classList.add("just-shipped");
+    foghorn(ev.kind);
+  }
 }
 
-// --- polling: fetch the sibling snapshot, re-render on change -----------------
+// ---- live elapsed ticker (every second, independent of the 4s poll) -------
+setInterval(() => {
+  for (const el of document.querySelectorAll(".js-elapsed")) {
+    const t = elapsedText(el.dataset.since);
+    if (t != null) el.textContent = t;
+  }
+}, 1000);
+
+// ---- polling --------------------------------------------------------------
 let lastStamp = null;
 async function poll() {
   try {
-    const res = await fetch('./run-state.json?t=' + Date.now(), { cache: 'no-store' });
+    const res = await fetch("./run-state.json?t=" + Date.now(), { cache: "no-store" });
     if (res.ok) {
       const state = await res.json();
       if (state.generatedAt !== lastStamp) { lastStamp = state.generatedAt; render(state); }
     }
   } catch (e) {
-    const sub = document.getElementById('sub');
-    if (sub && lastStamp == null) sub.textContent = 'waiting for run-state.json …';
+    const sub = document.getElementById("sub");
+    if (sub && lastStamp == null) sub.textContent = "waiting for run-state.json …";
   }
 }
 poll();

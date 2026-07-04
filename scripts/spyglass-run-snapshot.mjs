@@ -2,15 +2,34 @@
 // ARMADA spyglass — per-run operations dashboard (data plumbing).
 //
 // Companion mode to `spyglass` (the sea-chart). Where spyglass renders the WHOLE
-// fleet as an animated chart, this renders each IN-FLIGHT run as a focused detail
-// card: a 12-stage pipeline, worktree/branch/folder metadata, the logbook "done
-// video", and a per-model cost table.
+// fleet as an animated chart, this renders each IN-FLIGHT run as a focused voyage
+// card: ARMADA's REAL pipeline (the armada:* label state machine), the run's
+// worktree/branch/folder metadata, the logbook "done video", and a per-model cost
+// table with REAL usage numbers.
+//
+// The stages are ARMADA's genuine, OBSERVABLE states — NOT the inspiration mock's
+// invented list. Every stage is derivable from labels + PR/CI/review state:
+//
+//   Queued (armada) → Building (armada:underway) → PR opened (armada:done / a
+//   draft PR / a ready-but-unclaimed PR) → In review (armada:reviewing; shows
+//   "Addressing" on a change-request round) → Awaiting merge (ready, approved,
+//   not merged) → Merged (armada:merged) → Shipped (armada:shipped), with
+//   Blocked (armada:blocked) as an exception overlay.
+//
+// The voyage metaphor (SKILL §6 + the app): harbour (Queued) → open sea (Building,
+// PR opened, In review, Awaiting merge) → port (Merged, Shipped). See SKILL.md §6
+// for the exact label→stage mapping — kept in lockstep with stageForIssue /
+// stageForPr / groupForStage below.
 //
 // It is READ-ONLY with respect to the fleet, exactly like spyglass/crows-nest:
 //   * GitHub reads only — `gh repo view`, `gh issue list`, `gh pr list`, and
 //     GET-only `gh api .../releases`. NEVER a write (no label/comment/merge/close).
-//   * Local reads only — `git worktree list` (to resolve a run's worktree path)
-//     and `out/costs/<run>.json` (the cost post-mortem, CONSUMED when present).
+//   * Local reads only — `git worktree list` (to resolve a run's worktree path),
+//     `out/costs/_runs.json` (the crows-nest-written run→(branch,worktree) map, so
+//     an in-flight run's branch/worktree/folder surface BEFORE a PR exists), and
+//     `out/costs/<run>.json` (the per-model cost post-mortem, CONSUMED when
+//     present). It NEVER produces either — crows-nest writes them at its reconcile
+//     points (crows-nest §8g); this driver only reads.
 //
 // The only files it writes are the snapshot + a copy of the bundled HTML app,
 // into a scratch/output dir — never the tracked repo:
@@ -33,11 +52,31 @@ import { execFileSync, spawn } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// The 12 finer operator-facing stages (coarser than the armada:* labels, which
-// several of these are INFERRED from — see stageFor() and the SKILL.md mapping).
+// ARMADA's genuine voyage stages — each is OBSERVABLE from the armada:* labels
+// plus PR draft/CI/review sub-state (see stageForIssue / stageForPr). This is the
+// REAL pipeline, not the inspiration mock's invented 12 (Feasibility, Scoping,
+// AI review, Watching PR, Approved, Harvest, …). Blocked is an overlay, not a leg.
 const STAGES = [
-  'Feasibility', 'Scoping', 'Planning', 'Building', 'Testing', 'AI review',
-  'PR submitted', 'Watching PR', 'Feedback', 'Approved', 'Merged', 'Harvest',
+  'Queued',         // 0 — issue armed (armada), waiting to be picked up
+  'Building',       // 1 — armada:underway: shipwright research → plan → implement → validate
+  'PR opened',      // 2 — armada:done / a draft or ready-but-unclaimed PR
+  'In review',      // 3 — PR armada:reviewing: muster's 2-lens review (+ address rounds)
+  'Awaiting merge', // 4 — reviewed, green, approved; waiting on the merge gate
+  'Merged',         // 5 — armada:merged: the gated merge landed
+  'Shipped',        // 6 — armada:shipped: issue closed, logbook + cartography done
+];
+
+// A short, honest description of what ARMADA actually does in each stage — used by
+// the app's pipeline captions. These describe the stage; they are NOT sub-steps the
+// dashboard claims to detect progress through (labels don't expose sub-step state).
+const STAGE_CAPTIONS = [
+  'armed & waiting for the lookout',
+  'shipwright: research → plan → implement → validate',
+  'branch pushed, PR open',
+  'muster: 2-lens review → consolidate → address',
+  'green & approved — at the merge gate',
+  'gated merge landed',
+  'closed; logbook walkthrough + cartography',
 ];
 
 // ---------------------------------------------------------------------------
@@ -114,9 +153,31 @@ function worktreeMap() {
   return map;
 }
 
+// Consume the crows-nest-written run→(branch, worktree) map (READ-ONLY). crows-nest
+// records the isolation worktree it dispatched each build into (crows-nest §8g),
+// keyed by issue number, so an IN-FLIGHT run surfaces its branch / worktree / folder
+// BEFORE a PR exists — no more "n/a — no local worktree" during a build. This driver
+// only reads it; the file lives under the gitignored out/costs/ dir. Degrades to {}.
+// Shape: { "<issue>": { issue, branch, worktree, startedAt } }.
+function readRunMap() {
+  const p = path.join(process.cwd(), 'out', 'costs', '_runs.json');
+  if (!existsSync(p)) return {};
+  try {
+    const data = JSON.parse(readFileSync(p, 'utf8'));
+    const runs = data && typeof data === 'object' ? (data.runs || data) : {};
+    const map = {};
+    for (const [k, v] of Object.entries(runs)) {
+      if (v && typeof v === 'object') map[String(k)] = v;
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
 // Consume the cost post-mortem for a run when present. This dashboard is a
-// CONSUMER — it never produces this file (out of scope, a separate concern).
-// Tries out/costs/<branch>.json then out/costs/<issue>.json. Degrades to null.
+// CONSUMER — it never produces this file (crows-nest writes it, §8g). Tries
+// out/costs/<branch>.json then out/costs/<issue>.json. Degrades to null.
 function readCost(branch, issueNumber) {
   const candidates = [];
   if (branch) candidates.push(path.join(process.cwd(), 'out', 'costs', `${branch}.json`));
@@ -139,24 +200,32 @@ function readCost(branch, issueNumber) {
 // Discover the logbook "done video" for a run from GitHub release assets
 // (READ-ONLY GET). logbook uploads the walkthrough as a per-PR/issue release
 // asset. Returns the best video match {name,url,updatedAt} or null.
+//
+// `gh api <list> --paginate` CONCATENATES one JSON value per page — `[...][...]`
+// is NOT valid JSON, so JSON.parse fails past page 1 (~30 releases) and the panel
+// silently shows "no done video" on exactly the repos big enough to page (the
+// fleet's OWN case — logbook uploads a release asset per run). `--paginate --slurp`
+// wraps every page in one outer array, so it parses cleanly; we flatten it. (#105.)
 function releaseAssets(repo) {
   if (!repo) return [];
-  const rows = ghJson([
-    'api', `repos/${repo}/releases`, '--paginate',
-    '--jq', '[.[] | {tag: .tag_name} as $r | .assets[] | {tag: $r.tag, name: .name, url: .browser_download_url, updatedAt: .updated_at, size: .size}]',
-  ]);
-  // gh --jq with --paginate can emit several JSON arrays concatenated; ghJson
-  // parses the first. Fall back to a plain fetch + flatten if needed.
-  if (Array.isArray(rows)) return rows;
-  const raw = ghJson(['api', `repos/${repo}/releases`, '--paginate']);
-  if (!Array.isArray(raw)) return [];
-  const flat = [];
-  for (const rel of raw) {
-    for (const a of (rel.assets || [])) {
-      flat.push({ tag: rel.tag_name, name: a.name, url: a.browser_download_url, updatedAt: a.updated_at, size: a.size });
+  const flatten = (pages) => {
+    const flat = [];
+    for (const rel of (pages || [])) {
+      for (const a of (rel.assets || [])) {
+        flat.push({ tag: rel.tag_name, name: a.name, url: a.browser_download_url, updatedAt: a.updated_at, size: a.size });
+      }
     }
+    return flat;
+  };
+  // --slurp yields an array of pages, each page an array of release objects.
+  const slurped = ghJson(['api', `repos/${repo}/releases`, '--paginate', '--slurp']);
+  if (Array.isArray(slurped)) {
+    const releases = slurped.flat ? slurped.flat() : [].concat(...slurped);
+    return flatten(releases);
   }
-  return flat;
+  // Fallback: a single (first) page without --slurp still parses.
+  const one = ghJson(['api', `repos/${repo}/releases`]);
+  return Array.isArray(one) ? flatten(one) : [];
 }
 
 const VIDEO_RE = /\.(mp4|webm|mov|m4v)$/i;
@@ -177,53 +246,72 @@ function matchDoneVideo(assets, { issueNumber, prNumber, branch }) {
 }
 
 // ---------------------------------------------------------------------------
-// Stage inference — map the coarse armada:* label state machine (+ PR/review
-// sub-state) onto the 12 finer operator stages. Documented in the SKILL.md.
+// Stage inference — map ARMADA's REAL armada:* state machine (+ PR draft/CI/review
+// sub-state) onto the genuine voyage stages. Documented in SKILL.md §6 (lockstep).
 //
 // activeIndex = the current stage (0-based into STAGES). Earlier stages render
-// "done", the active one "active", later ones "upcoming". `blocked` overrides
-// the dot for the active stage. A shipped/merged terminal run marks the last
-// reached stage done and the run complete.
+// "done", the active one "active", later ones "upcoming". `blocked` overrides the
+// active dot. A shipped/merged terminal run marks the last reached stage done.
+//
+// armada:blocked is LOSSY: crows-nest DROPS the prior state label when it sets
+// armada:blocked, so the exact last-reached stage isn't recoverable from labels.
+// We approximate from the unit KIND (the same thing SKILL §6 documents): a blocked
+// ISSUE with no PR was armada:underway → Building; a blocked PR reached the review
+// pipeline → In review. Code and SKILL state the SAME approximation.
 // ---------------------------------------------------------------------------
+const IDX = { QUEUED: 0, BUILDING: 1, PR_OPENED: 2, IN_REVIEW: 3, AWAITING: 4, MERGED: 5, SHIPPED: 6 };
+
 function stageForIssue(labels) {
   const ls = labelNames(labels);
-  if (ls.includes('armada:blocked')) return { activeIndex: 3, blocked: true, status: 'Blocked', terminal: false };
-  if (ls.includes('armada:done')) return { activeIndex: 6, blocked: false, status: 'PR submitted', terminal: false };
-  if (ls.includes('armada:underway')) return { activeIndex: 3, blocked: false, status: 'Building', terminal: false };
-  return { activeIndex: 0, blocked: false, status: 'Feasibility', terminal: false };
-}
-
-// ---------------------------------------------------------------------------
-// Coarse fleet GROUPS for the multi-run overview roll-up — derived from the 12
-// operator stages so the summary header can count runs by state at a glance.
-//   building      — pre-PR + build/test + the pre-submit self-review (stages 0–5)
-//   awaiting-merge— PR open / being watched / approved, waiting on the gate (6,7,9)
-//   reviewing     — the muster + address-review feedback loop (stage 8)
-//   done          — merged / harvest, or a terminal shipped run (stages 10,11)
-//   blocked       — any blocked run (overrides all of the above)
-// Documented in SKILL.md §6 alongside the 12-stage mapping.
-// ---------------------------------------------------------------------------
-const GROUPS = ['building', 'reviewing', 'awaiting-merge', 'blocked', 'done'];
-function groupForStage({ activeIndex, blocked, terminal }) {
-  if (blocked) return 'blocked';
-  if (terminal || activeIndex >= 10) return 'done';                 // Merged, Harvest
-  if (activeIndex === 8) return 'reviewing';                        // Feedback
-  if (activeIndex === 6 || activeIndex === 7 || activeIndex === 9)  // PR submitted / Watching PR / Approved
-    return 'awaiting-merge';
-  return 'building';                                                // Feasibility … AI review (0–5)
+  if (ls.includes('armada:blocked')) return { activeIndex: IDX.BUILDING, blocked: true, status: 'Blocked', terminal: false };
+  if (ls.includes('armada:shipped')) return { activeIndex: IDX.SHIPPED, blocked: false, status: 'Shipped', terminal: true };
+  if (ls.includes('armada:merged')) return { activeIndex: IDX.MERGED, blocked: false, status: 'Merged', terminal: false };
+  if (ls.includes('armada:done')) return { activeIndex: IDX.PR_OPENED, blocked: false, status: 'PR opened', terminal: false };
+  if (ls.includes('armada:underway')) return { activeIndex: IDX.BUILDING, blocked: false, status: 'Building', terminal: false };
+  return { activeIndex: IDX.QUEUED, blocked: false, status: 'Queued', terminal: false };
 }
 
 function stageForPr(pr) {
   const ls = labelNames(pr.labels);
   const decision = (pr.reviewDecision || '').toUpperCase();
-  if (ls.includes('armada:blocked')) return { activeIndex: 8, blocked: true, status: 'Blocked', terminal: false };
-  if (ls.includes('armada:shipped')) return { activeIndex: 11, blocked: false, status: 'Harvest', terminal: true };
-  if (ls.includes('armada:merged')) return { activeIndex: 10, blocked: false, status: 'Merged', terminal: false };
-  if (ls.includes('armada:reviewing')) return { activeIndex: 8, blocked: false, status: 'Feedback', terminal: false };
-  if (pr.isDraft) return { activeIndex: 6, blocked: false, status: 'PR submitted', terminal: false };
-  // Ready PR: approved → Approved, otherwise being watched by crows-nest.
-  if (decision === 'APPROVED') return { activeIndex: 9, blocked: false, status: 'Approved', terminal: false };
-  return { activeIndex: 7, blocked: false, status: 'Watching PR', terminal: false };
+  if (ls.includes('armada:blocked')) return { activeIndex: IDX.IN_REVIEW, blocked: true, status: 'Blocked', terminal: false };
+  if (ls.includes('armada:shipped')) return { activeIndex: IDX.SHIPPED, blocked: false, status: 'Shipped', terminal: true };
+  if (ls.includes('armada:merged')) return { activeIndex: IDX.MERGED, blocked: false, status: 'Merged', terminal: false };
+  if (ls.includes('armada:reviewing')) {
+    // muster's review is in flight, or shipwright is addressing a change round.
+    // "Addressing" is the one review sub-state we CAN observe (a change request
+    // on the PR); otherwise it's a fresh/ongoing review.
+    const addressing = decision === 'CHANGES_REQUESTED';
+    return { activeIndex: IDX.IN_REVIEW, blocked: false, status: addressing ? 'Addressing' : 'In review', terminal: false };
+  }
+  if (pr.isDraft) return { activeIndex: IDX.PR_OPENED, blocked: false, status: 'PR opened', terminal: false };
+  // Ready PR carrying the trigger label but not yet claimed for review. If it's
+  // been approved (muster/human), it's reviewed-and-green waiting on the gate
+  // (the ready_awaiting_human terminal, autoMerge off) → Awaiting merge; otherwise
+  // it's open and waiting for the lookout to pick it up → PR opened.
+  if (decision === 'APPROVED') return { activeIndex: IDX.AWAITING, blocked: false, status: 'Awaiting merge', terminal: false };
+  return { activeIndex: IDX.PR_OPENED, blocked: false, status: 'PR opened', terminal: false };
+}
+
+// ---------------------------------------------------------------------------
+// Coarse fleet GROUPS for the multi-run overview roll-up — derived from the voyage
+// stages so the totals bar can count runs by state at a glance:
+//   queued        — armed, not yet picked up (stage 0)
+//   building      — shipwright building (stage 1)
+//   reviewing     — PR open + under review / addressing (stages 2, 3)
+//   awaiting-merge— reviewed, green, at the gate (stage 4)
+//   done          — merged / shipped, or a terminal run (stages 5, 6)
+//   blocked       — any blocked run (overrides all of the above)
+// Documented in SKILL.md §6 alongside the stage mapping (kept in lockstep).
+// ---------------------------------------------------------------------------
+const GROUPS = ['queued', 'building', 'reviewing', 'awaiting-merge', 'done', 'blocked'];
+function groupForStage({ activeIndex, blocked, terminal }) {
+  if (blocked) return 'blocked';
+  if (terminal || activeIndex >= IDX.MERGED) return 'done';        // Merged, Shipped
+  if (activeIndex === IDX.AWAITING) return 'awaiting-merge';       // Awaiting merge
+  if (activeIndex === IDX.PR_OPENED || activeIndex === IDX.IN_REVIEW) return 'reviewing'; // PR opened / In review
+  if (activeIndex === IDX.BUILDING) return 'building';             // Building
+  return 'queued';                                                 // Queued
 }
 
 // ---------------------------------------------------------------------------
@@ -251,8 +339,8 @@ function ciOf(pr) {
 }
 
 // ---------------------------------------------------------------------------
-// Cost normalisation — tolerant of a cost post-mortem schema that may not exist
-// yet. Accepts { models:[{model,in,out,cacheRead,cacheWrite,cost}], sessions,
+// Cost normalisation — the per-model cost post-mortem crows-nest writes (§8g).
+// Accepts { models:[{model,in,out,cacheRead,cacheWrite,cost}], sessions,
 // subagents, codex, matchMode, unpriced:[], totalCost }. Missing → n/a.
 // ---------------------------------------------------------------------------
 function normalizeCost(cost) {
@@ -279,6 +367,7 @@ function normalizeCost(cost) {
     matchMode: d.matchMode ?? d.match ?? null,
     unpriced: Array.isArray(d.unpriced) ? d.unpriced.map(String) : [],
     totalCost,
+    updatedAt: d.updatedAt ?? d.generatedAt ?? null,
   };
 }
 
@@ -313,6 +402,7 @@ function snapshot({ label, repo, commissioned }) {
   const prs = (rawPrs || []).filter((pr) => inFleet(pr.labels));
 
   const wt = worktreeMap();
+  const runMap = readRunMap();
   const assets = ghOk ? releaseAssets(repo) : [];
 
   const unitUrl = (kind, n) =>
@@ -328,18 +418,24 @@ function snapshot({ label, repo, commissioned }) {
   const runs = [];
   const seen = new Set();
 
-  // A run is "in flight" if the issue is underway/done/blocked, or it has an
-  // open PR. Queued (unclaimed) issues are shown too — the intake stage.
+  // A run is "in flight" if the issue is queued/underway/done/blocked, or it has
+  // an open PR. Queued (unclaimed) issues are shown too — the intake leg.
   function buildRun({ issue, pr }) {
     const issueNumber = issue ? issue.number : null;
     const prNumber = pr ? pr.number : null;
-    const branch = pr ? pr.headRefName : null;
+    // Branch: prefer the PR's head; else the crows-nest run map (in-flight, pre-PR).
+    const runRec = issueNumber != null ? runMap[String(issueNumber)] : null;
+    const branch = (pr && pr.headRefName) || (runRec && runRec.branch) || null;
     const stage = pr ? stageForPr(pr) : stageForIssue(issue.labels);
-    const worktree = branch && wt[branch] ? wt[branch] : null;
+    // Worktree: git worktree list by branch, else the run map's recorded path.
+    const worktree = (branch && wt[branch]) || (runRec && runRec.worktree) || null;
     const costRaw = readCost(branch, issueNumber);
     const cost = normalizeCost(costRaw);
     const doneVideo = matchDoneVideo(assets, { issueNumber, prNumber, branch });
-    const startedAt = (issue && issue.createdAt) || (pr && pr.createdAt) || null;
+    // Elapsed since the run started: the issue/PR open time, or the crows-nest
+    // dispatch time from the run map (whichever is earliest & known).
+    const startedAt = (issue && issue.createdAt) || (pr && pr.createdAt)
+      || (runRec && (runRec.startedAt || runRec.dispatchedAt)) || null;
 
     return {
       issueNumber,
@@ -353,6 +449,7 @@ function snapshot({ label, repo, commissioned }) {
       startedAt,
       ci: pr ? ciOf(pr) : null,
       stages: STAGES,
+      stageCaptions: STAGE_CAPTIONS,
       activeIndex: stage.activeIndex,
       status: stage.status,
       blocked: stage.blocked,
@@ -382,11 +479,11 @@ function snapshot({ label, repo, commissioned }) {
 
   const blockedCount = runs.filter((r) => r.blocked).length;
 
-  // Fleet roll-up — counts by coarse group, total in-flight, total cost — for
-  // the multi-run overview header. Client-recomputable, but emitted here so the
-  // grouping is authoritative + documented in one place. (Additive; schema 1.)
-  const rollup = { building: 0, reviewing: 0, 'awaiting-merge': 0, blocked: 0, done: 0,
-    inFlight: runs.length, totalCost: 0, costKnown: false };
+  // Fleet roll-up — counts by coarse group, total in-flight, total cost — for the
+  // totals bar. Client-recomputable, but emitted here so the grouping is
+  // authoritative + documented in one place. (Additive; schema 2.)
+  const rollup = { inFlight: runs.length, totalCost: 0, costKnown: false };
+  for (const g of GROUPS) rollup[g] = 0;
   for (const r of runs) {
     if (rollup[r.group] != null) rollup[r.group] += 1;
     const tc = r.cost && r.cost.present ? r.cost.totalCost : null;
@@ -394,13 +491,14 @@ function snapshot({ label, repo, commissioned }) {
   }
 
   return {
-    schema: 1,
+    schema: 2,
     generatedAt: new Date().toISOString(),
     repo: repo || 'unknown',
     triggerLabel: label,
     commissioned,
     ghOk,
     stageNames: STAGES,
+    stageCaptions: STAGE_CAPTIONS,
     groupNames: GROUPS,
     degraded: !commissioned || !ghOk
       ? (!commissioned ? 'uncommissioned — no .armada/config.json; no runs to show'

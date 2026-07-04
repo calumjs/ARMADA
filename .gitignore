@@ -19,3 +19,10 @@
 # loads .armada/foghorn/.env then repo-root .env without overriding real env.)
 .armada/foghorn/.env
 /.env
+
+# spyglass cost post-mortem — the per-run token/cost breakdown crows-nest writes
+# at its reconcile points (crows-nest §8g), plus the run→(branch,worktree) map the
+# read-only dashboard consumes. Machine-/run-specific scratch, regenerated live from
+# real usage; the read-only driver only READS it. NEVER commit it (out of the tracked
+# tree by design — the producer writes ONLY under out/costs/).
+out/costs/
