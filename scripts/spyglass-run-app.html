@@ -152,6 +152,94 @@
   .m-cost .val { font-family: var(--mono); font-size: 19px; font-weight: 650; color: var(--brass-bright); }
   .m-cost .caveat { font-size: 9.5px; color: var(--ink-faint); letter-spacing: .02em; }
 
+  /* ---------- the horizon: waiting-runs dependency graph (#111) ---------- */
+  .horizon { margin: 4px 0 22px; }
+  .horizon .lane-head { margin: 8px 2px 10px; }
+  .horizon .lane-head h2 .glyph { color: var(--brass-bright); margin-right: .35em; letter-spacing: normal; }
+  .h-caption { color: var(--ink-faint); font-family: var(--serif); font-style: italic;
+    font-size: 12.5px; padding: 0 2px 10px; }
+  .h-note {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; letter-spacing: .04em;
+    color: #d9b78a; background: #1c1608; border: 1px solid #4a3c1c; border-radius: 999px;
+    padding: 2px 9px; margin-left: 6px; vertical-align: middle;
+  }
+  .graph {
+    position: relative; overflow-x: auto; overflow-y: hidden;
+    background:
+      radial-gradient(900px 300px at 12% -20%, rgba(18,58,92,.5), rgba(18,58,92,0) 60%),
+      linear-gradient(180deg, #0c1e30, #0a1826);
+    border: 1px solid var(--wood-edge); border-radius: 12px;
+    box-shadow: inset 0 1px 0 rgba(198,168,106,.06), 0 6px 18px rgba(0,0,0,.3);
+    padding: 16px 18px;
+  }
+  .graph-edges { position: absolute; inset: 0; width: 100%; height: 100%;
+    pointer-events: none; overflow: visible; z-index: 0; }
+  .graph-cols { position: relative; z-index: 1; display: flex; align-items: flex-start;
+    gap: 58px; min-width: min-content; }
+  .graph-col { display: flex; flex-direction: column; gap: 16px; min-width: 210px; }
+  .col-head { font-size: 9.5px; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--ink-faint); padding: 0 2px 2px; border-bottom: 1px dashed var(--line); }
+  .col-head.frontier { color: var(--brass); }
+
+  .gnode {
+    position: relative; display: block; width: 210px; text-align: left;
+    background: linear-gradient(180deg, var(--wood-2), var(--wood));
+    border: 1px solid var(--wood-edge); border-left: 3px solid var(--wood-edge-2);
+    border-radius: 10px; padding: 9px 11px 10px; cursor: pointer; color: inherit;
+    font: inherit; user-select: none;
+  }
+  .gnode:hover { border-color: var(--wood-edge-2); }
+  .gnode:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+  .gnode .gn-head { display: flex; align-items: center; gap: 7px; }
+  .gnode .gn-ship { width: 22px; height: 16px; flex: none; }
+  .gnode .gn-ship svg { width: 22px; height: 16px; }
+  .gnode .gn-num { color: var(--brass); font-family: var(--mono); font-weight: 650; font-size: 12.5px; }
+  .gnode .gn-pill { margin-left: auto; font-size: 9.5px; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase; padding: 1px 7px; border-radius: 999px;
+    border: 1px solid currentColor; }
+  .gnode .gn-title { color: var(--parch); font-weight: 600; font-size: 12.5px; margin-top: 6px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gnode .gn-reasons { margin-top: 7px; display: flex; flex-direction: column; gap: 4px; }
+  .gnode .gn-reason {
+    display: flex; align-items: baseline; gap: 5px; font-size: 10.5px; font-family: var(--mono);
+    color: #e6bfa0; background: #1e120c; border: 1px solid #4a2a1c; border-radius: 6px;
+    padding: 2px 7px; letter-spacing: .01em;
+  }
+  .gnode .gn-reason .rk { color: var(--blocked); font-size: 8px; }
+
+  /* the runnable frontier — glowing brass hulls, "clear to sail" */
+  .gnode.eligible { border-color: var(--brass-dim); border-left-color: var(--brass);
+    box-shadow: 0 0 0 1px rgba(198,168,106,.18), 0 0 16px rgba(198,168,106,.12); }
+  .gnode.eligible .gn-pill { color: var(--done); }
+  .gnode.eligible .gn-tag { margin-top: 7px; font-size: 10px; letter-spacing: .04em;
+    color: var(--done); font-family: var(--mono); }
+  /* held hulls — dimmed, amber seam */
+  .gnode.held { border-left-color: var(--awaiting); opacity: .96; }
+  .gnode.held .gn-pill { color: var(--awaiting); }
+  /* a prerequisite still under way (not part of the frontier decision) */
+  .gnode.flight { border-left-color: var(--building); background: linear-gradient(180deg, #10202f, #0d1a27); }
+  .gnode.flight .gn-pill { color: var(--building); }
+  .gnode.flight.pending { opacity: .78; border-left-color: var(--ink-faint); }
+  .gnode.flight.pending .gn-pill { color: var(--ink-faint); }
+
+  .graph-legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 4px 0;
+    font-size: 10.5px; color: var(--ink-faint); font-family: var(--mono); }
+  .graph-legend .lg { display: inline-flex; align-items: center; gap: 6px; }
+  .graph-legend .swatch { width: 22px; height: 0; border-top: 2px solid var(--ink-faint); }
+  .graph-legend .swatch.depends { border-top-style: solid; border-top-color: var(--awaiting); }
+  .graph-legend .swatch.samefile { border-top-style: dashed; border-top-color: var(--review); }
+  .graph-legend .swatch.lockfile { border-top-style: dashed; border-top-color: var(--brass); }
+  .graph-legend .swatch.base { border-top-style: dotted; border-top-color: var(--ink-dim); }
+  .graph-legend .dot-e { width: 9px; height: 9px; border-radius: 2px; background: var(--brass); }
+  .graph-legend .dot-h { width: 9px; height: 9px; border-radius: 2px; background: var(--awaiting); }
+  .graph-flat-note { color: var(--ink-faint); font-family: var(--serif); font-style: italic;
+    font-size: 12px; padding: 8px 2px 0; }
+
+  @media (max-width: 760px) {
+    .graph-col { min-width: 168px; }
+    .gnode { width: 168px; }
+  }
+
   /* ---------- a run (compact voyage row) ---------- */
   .runs { display: flex; flex-direction: column; gap: 11px; }
   .run { position: relative; }
@@ -374,6 +462,7 @@
       <div class="substamp" id="sub">weighing anchor…</div>
     </div>
     <div id="fleet"></div>
+    <div id="horizon"></div>
     <div class="runs" id="runs"></div>
     <div id="harbour"></div>
   </div>
@@ -874,6 +963,12 @@ document.getElementById("chime").addEventListener("click", (e) => {
   if (chimeOn) foghorn("shipped"); // confirmation blast (and unlocks audio)
 });
 document.getElementById("sort").addEventListener("change", (e) => { sortMode = e.target.value; if (lastState) render(lastState); });
+// Re-lay the horizon graph's SVG edges when the viewport reflows (debounced).
+let resizeT = null;
+window.addEventListener("resize", () => {
+  if (resizeT) clearTimeout(resizeT);
+  resizeT = setTimeout(() => { if (horizonRedraw) requestAnimationFrame(horizonRedraw); }, 120);
+});
 
 // ---- recent voyages lane (the harbour of completed voyages, #113) ----------
 function renderHarbour(state, recentRuns) {
@@ -904,6 +999,178 @@ function renderHarbour(state, recentRuns) {
   for (const run of recentRuns) wrap.appendChild(renderRun(run));
 }
 
+// ---- the horizon: waiting-runs dependency graph (#111) --------------------
+// Nodes = queued/held runs (+ any still-in-flight prerequisite they wait on);
+// directed edges = crows-nest §2b relationships (depends on #N / same-file or
+// shared-lockfile conflict / base about to move). The runnable FRONTIER (eligible,
+// no unsatisfied edge) glows brass — "clear to sail"; held nodes are dimmed with an
+// amber seam and carry their reason ("waiting on #N" / "conflicts with #M on <file>"
+// / "queued: N/M builds in flight"). Read-only. Degrades to a flat frontier list
+// when there are no edges, and renders nothing when there's no scheduler state.
+const SVGNS = "http://www.w3.org/2000/svg";
+const EDGE_COLOR = { depends: "var(--awaiting)", "same-file": "var(--review)", lockfile: "var(--brass)", base: "var(--ink-dim)" };
+const EDGE_DASH = { depends: "", "same-file": "5 4", lockfile: "5 4", base: "2 5" };
+let horizonRedraw = null;   // re-draw the SVG edges on resize without a full re-render
+
+function gnodeClass(n) {
+  if (!n.waiting) return "flight" + (n.status === "pending" ? " pending" : "");
+  return n.eligible ? "eligible" : "held";
+}
+
+// Longest-path ranking. An edge from→to means "from waits on to", so the prerequisite
+// `to` sits one column LEFT of the dependent `from`. rank(leaf)=0. Cycle-guarded.
+function rankNodes(nodes, edges) {
+  const present = new Set(nodes.map((n) => n.number));
+  const outs = new Map(nodes.map((n) => [n.number, []]));
+  for (const e of edges) if (present.has(e.from) && present.has(e.to) && e.from !== e.to) outs.get(e.from).push(e.to);
+  const rank = new Map(), inprog = new Set();
+  const of = (num) => {
+    if (rank.has(num)) return rank.get(num);
+    if (inprog.has(num)) return 0;
+    inprog.add(num);
+    let r = 0;
+    for (const p of (outs.get(num) || [])) r = Math.max(r, 1 + of(p));
+    inprog.delete(num); rank.set(num, r); return r;
+  };
+  for (const n of nodes) of(n.number);
+  return rank;
+}
+
+function renderGnode(n) {
+  const el = $("button", "gnode " + gnodeClass(n));
+  el.type = "button";
+  el.setAttribute("aria-label", `#${n.number} ${n.title || ""} — ${n.status}`);
+  const head = $("div", "gn-head");
+  const color = n.waiting
+    ? (n.eligible ? "var(--brass-bright)" : "var(--awaiting)")
+    : (n.status === "pending" ? "var(--ink-faint)" : "var(--building)");
+  const ship = $("span", "gn-ship"); ship.innerHTML = shipSVG(color); head.appendChild(ship);
+  head.appendChild($("span", "gn-num", "#" + n.number));
+  head.appendChild($("span", "gn-pill", n.status));
+  el.appendChild(head);
+  el.appendChild($("div", "gn-title", esc(n.title)));
+  if (n.waiting && n.eligible) el.appendChild($("div", "gn-tag", "⛵ clear to sail"));
+  if (n.waiting && n.held && n.reasons && n.reasons.length) {
+    const rs = $("div", "gn-reasons");
+    for (const r of n.reasons) { const c = $("div", "gn-reason"); c.appendChild($("span", "rk", "●")); c.appendChild(document.createTextNode(r)); rs.appendChild(c); }
+    el.appendChild(rs);
+  }
+  if (n.url) el.addEventListener("click", (e) => { e.stopPropagation(); window.open(n.url, "_blank", "noopener"); });
+  return el;
+}
+
+function graphLegend(kinds) {
+  const lg = $("div", "graph-legend");
+  const line = (cls, label) => { const w = $("span", "lg"); w.appendChild($("span", "swatch " + cls)); w.appendChild(document.createTextNode(label)); return w; };
+  if (kinds.has("depends")) lg.appendChild(line("depends", "depends on #N"));
+  if (kinds.has("same-file")) lg.appendChild(line("samefile", "same-file conflict"));
+  if (kinds.has("lockfile")) lg.appendChild(line("lockfile", "shared lockfile"));
+  if (kinds.has("base")) lg.appendChild(line("base", "base about to move"));
+  const fr = $("span", "lg"); fr.appendChild($("span", "dot-e")); fr.appendChild(document.createTextNode("runnable frontier")); lg.appendChild(fr);
+  const hd = $("span", "lg"); hd.appendChild($("span", "dot-h")); hd.appendChild(document.createTextNode("held")); lg.appendChild(hd);
+  return lg;
+}
+
+// Draw the directed edges as SVG beziers once the node boxes are laid out. Measured
+// against the SVG's own client rect, so it's correct at any horizontal scroll offset.
+function drawGraphEdges(graph, svg, edges, nodeEl) {
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const W = graph.scrollWidth, H = graph.scrollHeight;
+  svg.style.width = W + "px"; svg.style.height = H + "px";
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const defs = document.createElementNS(SVGNS, "defs");
+  const markers = { depends: "var(--awaiting)", "same-file": "var(--review)", lockfile: "var(--brass)", base: "var(--ink-dim)", satisfied: "var(--done)" };
+  for (const [k, c] of Object.entries(markers)) {
+    const mk = document.createElementNS(SVGNS, "marker");
+    mk.setAttribute("id", "ah-" + k); mk.setAttribute("viewBox", "0 0 10 10");
+    mk.setAttribute("refX", "9"); mk.setAttribute("refY", "5");
+    mk.setAttribute("markerWidth", "9"); mk.setAttribute("markerHeight", "9");
+    mk.setAttribute("orient", "auto"); mk.setAttribute("markerUnits", "userSpaceOnUse");
+    const p = document.createElementNS(SVGNS, "path");
+    p.setAttribute("d", "M0 0 L10 5 L0 10 z"); p.setAttribute("fill", c);
+    mk.appendChild(p); defs.appendChild(mk);
+  }
+  svg.appendChild(defs);
+  const sr = svg.getBoundingClientRect();
+  const leftMid = (el) => { const r = el.getBoundingClientRect(); return { x: r.left - sr.left, y: r.top - sr.top + r.height / 2 }; };
+  const rightMid = (el) => { const r = el.getBoundingClientRect(); return { x: r.right - sr.left, y: r.top - sr.top + r.height / 2 }; };
+  for (const e of edges) {
+    const fromEl = nodeEl.get(e.from), toEl = nodeEl.get(e.to);
+    if (!fromEl || !toEl) continue;
+    const mk = e.satisfied ? "satisfied" : (markers[e.kind] ? e.kind : "depends");
+    const color = e.satisfied ? "var(--done)" : (EDGE_COLOR[e.kind] || "var(--awaiting)");
+    const a = leftMid(fromEl), b = rightMid(toEl);   // dependent's left → prerequisite's right
+    const dx = Math.max(26, Math.abs(a.x - b.x) * 0.45);
+    const path = document.createElementNS(SVGNS, "path");
+    path.setAttribute("d", `M ${a.x} ${a.y} C ${a.x - dx} ${a.y}, ${b.x + dx} ${b.y}, ${b.x} ${b.y}`);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", color);
+    path.setAttribute("stroke-width", e.satisfied ? "1.4" : "1.8");
+    path.setAttribute("opacity", e.satisfied ? "0.5" : "0.85");
+    if (EDGE_DASH[e.kind]) path.setAttribute("stroke-dasharray", EDGE_DASH[e.kind]);
+    path.setAttribute("marker-end", `url(#ah-${mk})`);
+    if (e.reason) { const t = document.createElementNS(SVGNS, "title"); t.textContent = e.reason; path.appendChild(t); }
+    svg.appendChild(path);
+  }
+}
+
+function renderHorizon(state) {
+  const wrap = document.getElementById("horizon");
+  wrap.textContent = "";
+  horizonRedraw = null;
+  const sched = state && state.scheduler;
+  if (!sched || !Array.isArray(sched.nodes) || !sched.nodes.length) return;
+  const waiting = sched.nodes.filter((n) => n.waiting);
+  if (!waiting.length) return;
+  const nodes = sched.nodes, edges = Array.isArray(sched.edges) ? sched.edges : [];
+
+  const lane = $("div", "horizon");
+  const head = $("div", "lane-head");
+  const h2 = $("h2"); h2.appendChild($("span", "glyph", "🧭")); h2.appendChild(document.createTextNode("on the horizon"));
+  head.appendChild(h2);
+  const elig = waiting.filter((n) => n.eligible).length;
+  const sub = $("span", "lane-sub", `${waiting.length} waiting · ${elig} clear to sail · ${waiting.length - elig} held`);
+  head.appendChild(sub);
+  head.appendChild($("span", "spacer"));
+  if (sched.source === "inferred") { const note = $("span", "h-note", "⚑ best-effort graph"); note.title = sched.note || "inferred from issue/PR bodies + file overlap"; head.appendChild(note); }
+  lane.appendChild(head);
+  lane.appendChild($("div", "h-caption", "Left to right: what must land before what. Glowing hulls are the runnable frontier — clear to sail now; dimmed hulls are held, each with its reason."));
+
+  const rank = rankNodes(nodes, edges);
+  let maxRank = 0; for (const v of rank.values()) maxRank = Math.max(maxRank, v);
+  const cols = []; for (let i = 0; i <= maxRank; i++) cols.push([]);
+  const ordered = nodes.slice().sort((a, b) => (Number(b.waiting) - Number(a.waiting)) || (a.number - b.number));
+  for (const n of ordered) (cols[rank.get(n.number) || 0]).push(n);
+
+  const graph = $("div", "graph");
+  const svg = document.createElementNS(SVGNS, "svg"); svg.setAttribute("class", "graph-edges");
+  graph.appendChild(svg);
+  const colsWrap = $("div", "graph-cols");
+  const nodeEl = new Map();
+  cols.forEach((colNodes, ci) => {
+    const col = $("div", "graph-col");
+    const ch = $("div", "col-head" + (ci === 0 ? " frontier" : ""));
+    ch.textContent = ci === 0 ? "no dependency ahead" : `waits on ← (depth ${ci})`;
+    col.appendChild(ch);
+    for (const n of colNodes) { const el = renderGnode(n); nodeEl.set(n.number, el); col.appendChild(el); }
+    colsWrap.appendChild(col);
+  });
+  graph.appendChild(colsWrap);
+  lane.appendChild(graph);
+
+  if (edges.length) {
+    lane.appendChild(graphLegend(new Set(edges.map((e) => e.kind))));
+  } else {
+    lane.appendChild($("div", "graph-flat-note", "No dependencies or conflicts among the waiting runs — every hull is clear to sail (the fleet dispatches them as slots free)."));
+  }
+  wrap.appendChild(lane);
+
+  // Draw edges after the boxes have laid out; keep a redraw hook for resize.
+  const draw = () => drawGraphEdges(graph, svg, edges, nodeEl);
+  horizonRedraw = draw;
+  requestAnimationFrame(draw);
+}
+
 // ---- render ---------------------------------------------------------------
 let lastState = null;
 function render(state) {
@@ -927,6 +1194,7 @@ function render(state) {
 
   if (state && state.degraded) {
     document.getElementById("fleet").textContent = "";
+    document.getElementById("horizon").textContent = "";
     harbourEl.textContent = "";
     const e = $("div", "empty");
     e.appendChild($("div", "glyph", "🧭"));
@@ -938,6 +1206,7 @@ function render(state) {
   }
   if (!runs.length && !recentRuns.length) {
     document.getElementById("fleet").textContent = "";
+    document.getElementById("horizon").textContent = "";
     harbourEl.textContent = "";
     const e = $("div", "empty");
     e.appendChild($("div", "glyph", "⚓"));
@@ -949,14 +1218,22 @@ function render(state) {
   }
 
   renderFleet(state, runs);
+  // The horizon — the waiting-runs dependency graph (#111). Queued/held runs render
+  // here as a graph, so pull them OUT of the in-flight voyage list below to avoid
+  // double-listing them (only when the scheduler actually surfaces them as waiting).
+  renderHorizon(state);
+  const sched = state && state.scheduler;
+  const waitingNums = new Set(((sched && sched.nodes) || []).filter((n) => n.waiting).map((n) => n.number));
+  const flightRuns = runs.filter((r) => !(r.issueNumber != null && waitingNums.has(r.issueNumber) && groupOf(r) === "queued"));
+
   // Transitions across BOTH lanes: a run that merged this poll moves into the
   // harbour and earns the "just shipped ⚓" glow there.
   const events = detectTransitions([...runs, ...recentRuns]);
 
-  if (runs.length) {
-    for (const run of sortRuns(runs)) wrap.appendChild(renderRun(run));
-  } else {
-    // Nothing under way, but the harbour has recent arrivals — a calm note.
+  if (flightRuns.length) {
+    for (const run of sortRuns(flightRuns)) wrap.appendChild(renderRun(run));
+  } else if (!waitingNums.size) {
+    // Nothing under way and nothing waiting, but the harbour has recent arrivals.
     wrap.appendChild($("div", "lane-note", "No voyages under way — the fleet is idle. Recent arrivals below."));
   }
   renderHarbour(state, recentRuns);

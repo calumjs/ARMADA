@@ -426,6 +426,66 @@ function closesIssue(pr) {
 }
 
 // ---------------------------------------------------------------------------
+// Scheduler-state — the WAITING-runs dependency graph (#111).
+//
+// crows-nest builds a cross-track dependency/conflict graph every tick (§2b) and
+// holds the units that aren't on the runnable frontier, each with a REASON (§2e:
+// "waiting on #N" / "conflicts with #M on <file>" / "queued: N/M builds in flight").
+// That graph is crows-nest-internal — NOT in GitHub labels. The producer that
+// exposes it read-only is `spyglass-cost-postmortem.mjs schedule`, which crows-nest
+// runs at §2c to write out/costs/_schedule.json. This strictly READ-ONLY driver
+// CONSUMES that file when present (authoritative). When it's absent it degrades
+// gracefully: it infers what edges it can from the issue/PR bodies + file overlap
+// it already fetched, and renders a clearly-marked BEST-EFFORT graph — never a
+// fabricated one (with no signals at all the graph is just the flat queued list).
+// ---------------------------------------------------------------------------
+
+// The dependency lockfiles crows-nest §2b treats as an expected shared surface.
+const LOCKFILES = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'npm-shrinkwrap.json'];
+
+// Explicit prerequisite references in a body (crows-nest §2b explicit signals).
+function dependsRefs(body) {
+  const out = new Set();
+  const re = /\b(?:depends on|blocked by|needs|builds on|built on|build on|extends|after|requires)\s+#(\d+)/gi;
+  let m;
+  while ((m = re.exec(body || ''))) out.add(Number(m[1]));
+  return [...out];
+}
+
+// Best-effort file-path tokens in a body (for same-file / shared-lockfile overlap).
+// A path is a slash-joined dotted token (`scripts/foo.mjs`, `skills/spyglass/SKILL.md`);
+// bare lockfile names are recognised too. Deliberately conservative — a false hit only
+// matters if TWO runs mention the SAME bogus path, and the whole graph is marked inferred.
+function filePaths(body) {
+  const out = new Set();
+  const re = /(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]+/g;
+  let m;
+  while ((m = re.exec(body || ''))) out.add(m[0].replace(/[.,);:`'"]+$/, ''));
+  for (const lf of LOCKFILES) {
+    if (new RegExp(`(^|[^A-Za-z0-9._-])${lf.replace(/\./g, '\\.')}([^A-Za-z0-9._-]|$)`).test(body || '')) out.add(lf);
+  }
+  return [...out];
+}
+
+const isLockfile = (f) => LOCKFILES.includes(String(f || '').split('/').pop());
+
+// Consume the crows-nest-written scheduler-state file (READ-ONLY). Shape (schema 1):
+//   { schema, generatedAt, tick, maxConcurrentBuilds, inFlightBuilds,
+//     nodes:[{ unit:'issue'|'pr', number, held, eligible, reasons:[..], files:[..] }],
+//     edges:[{ from, to, kind:'depends'|'same-file'|'lockfile'|'base', file?, reason, satisfied }] }
+// Absent/corrupt → null (driver then infers). Never written here.
+function readSchedulerState() {
+  const p = path.join(process.cwd(), 'out', 'costs', '_schedule.json');
+  if (!existsSync(p)) return null;
+  try {
+    const d = JSON.parse(readFileSync(p, 'utf8'));
+    return (d && typeof d === 'object' && Array.isArray(d.nodes)) ? d : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // CI rollup → red / pending / green / none (same derivation as spyglass).
 // ---------------------------------------------------------------------------
 function ciOf(pr) {
@@ -492,9 +552,238 @@ function estFromElapsed(iso, ratePerMin) {
 }
 
 // ---------------------------------------------------------------------------
+// Build the WAITING-runs dependency graph for the snapshot (#111). Prefers the
+// crows-nest-written producer file (authoritative); falls back to a best-effort
+// graph inferred from the issue/PR bodies + file overlap this driver already has.
+//
+//   runs        — the in-flight run objects (already carrying group/activeIndex/status)
+//   recentRuns  — completed voyages (used to know which prerequisites have LANDED)
+//   issues,prs  — the raw §2a records, kept for `body`/`labels` (dependency + file signals)
+//   cap         — maxConcurrentBuilds (for the "queued: N/M builds in flight" reason)
+//   schedState  — the parsed producer file, or null (→ infer)
+//   repo        — owner/name for building unit URLs on inferred stub prerequisites
+//
+// Returns { present, source:'producer'|'inferred'|'none', note, maxConcurrentBuilds,
+//           inFlightBuilds, nodes:[...], edges:[...] }. A node is a queued/held run
+// (waiting:true) or a referenced prerequisite still in flight (waiting:false); the
+// runnable frontier is the waiting+eligible set. Edges point dependent → prerequisite.
+// ---------------------------------------------------------------------------
+function buildScheduler({ runs, recentRuns, issues, prs, cap, schedState, repo }) {
+  const inFlightBuilds = runs.filter((r) => r.group === 'building').length;
+  const IDX_DONE = IDX.MERGED;
+  const unitUrl = (unit, n) =>
+    repo ? `https://github.com/${repo}/${unit === 'pr' ? 'pull' : 'issues'}/${n}` : null;
+
+  // number → the in-flight run that carries it (issue OR pr number), for status/title.
+  const runByNum = new Map();
+  const landed = new Set(); // prerequisites that have landed (merged/shipped) — satisfied
+  for (const r of [...runs, ...recentRuns]) {
+    const done = r.group === 'done' || r.terminal || r.activeIndex >= IDX_DONE;
+    for (const n of [r.issueNumber, r.prNumber]) {
+      if (n == null) continue;
+      if (done) landed.add(n);
+      else if (!runByNum.has(n)) runByNum.set(n, r);
+    }
+  }
+  const bodyByNum = new Map();
+  const prioByNum = new Map();
+  for (const it of (issues || [])) {
+    bodyByNum.set(it.number, it.body || '');
+    prioByNum.set(it.number, labelNames(it.labels).some((n) => /^(priority|p0)$/i.test(n)));
+  }
+  for (const pr of (prs || [])) {
+    if (!bodyByNum.has(pr.number)) bodyByNum.set(pr.number, pr.body || '');
+    if (!prioByNum.has(pr.number)) prioByNum.set(pr.number, labelNames(pr.labels).some((n) => /^(priority|p0)$/i.test(n)));
+  }
+
+  // A node for a referenced-but-not-waiting prerequisite: use the in-flight run's real
+  // status when we can see it; else a lightweight external stub.
+  const nodeFromRun = (r, waiting, eligible, held, reasons, files) => ({
+    key: r.issueNumber != null ? 'i' + r.issueNumber : 'p' + r.prNumber,
+    unit: r.prNumber != null && r.issueNumber == null ? 'pr' : 'issue',
+    number: r.issueNumber ?? r.prNumber,
+    issueNumber: r.issueNumber ?? null,
+    prNumber: r.prNumber ?? null,
+    title: r.title || `#${r.issueNumber ?? r.prNumber}`,
+    url: r.prUrl || r.issueUrl || null,
+    group: r.group, activeIndex: r.activeIndex,
+    status: waiting ? (held ? 'Held' : 'Eligible') : (r.status || 'in flight'),
+    waiting, eligible, held, reasons: reasons || [], files: files || [],
+  });
+
+  // ---- authoritative: the crows-nest producer file ----
+  if (schedState && Array.isArray(schedState.nodes)) {
+    const nodes = schedState.nodes.map((n) => {
+      const num = Number(n.number);
+      const r = runByNum.get(num);
+      const held = !!n.held || (Array.isArray(n.reasons) && n.reasons.length > 0 && n.eligible !== true);
+      const eligible = n.eligible != null ? !!n.eligible : !held;
+      const base = r
+        ? nodeFromRun(r, true, eligible, held, n.reasons || [], n.files || [])
+        : {
+            key: (n.unit === 'pr' ? 'p' : 'i') + num, unit: n.unit || 'issue', number: num,
+            issueNumber: n.unit === 'pr' ? null : num, prNumber: n.unit === 'pr' ? num : null,
+            title: n.title || `#${num}`, url: unitUrl(n.unit || 'issue', num),
+            group: 'queued', activeIndex: IDX.QUEUED,
+            status: held ? 'Held' : 'Eligible', waiting: true, eligible, held,
+            reasons: n.reasons || [], files: n.files || [],
+          };
+      return base;
+    });
+    const edges = (schedState.edges || []).map((e) => ({
+      from: Number(e.from), to: Number(e.to), kind: e.kind || 'depends',
+      file: e.file || null, reason: e.reason || null,
+      satisfied: e.satisfied != null ? !!e.satisfied : false,
+    }));
+    return {
+      present: true, source: 'producer', note: null,
+      maxConcurrentBuilds: schedState.maxConcurrentBuilds ?? cap,
+      inFlightBuilds: schedState.inFlightBuilds ?? inFlightBuilds,
+      tick: schedState.tick ?? null, generatedAt: schedState.generatedAt ?? null,
+      nodes, edges,
+    };
+  }
+
+  // ---- best-effort inference (degraded) ----
+  const waiting = runs.filter((r) => !r.recent && !r.terminal && r.group === 'queued');
+  if (!waiting.length) {
+    return {
+      present: false, source: 'none', note: null,
+      maxConcurrentBuilds: cap, inFlightBuilds, nodes: [], edges: [],
+    };
+  }
+
+  // File sets for the in-flight (non-queued) runs too, so a queued run can conflict
+  // with a build already under way.
+  const inFlight = runs.filter((r) => !r.recent && !r.terminal && r.group !== 'queued');
+  const keyOf = (r) => (r.issueNumber != null ? 'i' + r.issueNumber : 'p' + r.prNumber);
+  const rawFilesOf = (r) => filePaths(bodyByNum.get(r.issueNumber) || bodyByNum.get(r.prNumber) || '');
+  // Body prose is a NOISY overlap signal in this repo: nearly every issue's acceptance
+  // criteria name the same repo-meta files (`scripts/validate-skills.mjs`,
+  // `.claude-plugin/plugin.json`, `.armada/config.json`), which would wire a spurious
+  // "same-file" edge between essentially all fleet runs. crows-nest uses real PR `files`;
+  // we only have prose, so we drop UBIQUITOUS files — any path mentioned by at least half
+  // the considered runs (and ≥3) is boilerplate, not a discriminating touch signal — while
+  // KEEPING lockfiles (a genuinely expected shared surface, §2b). This is why the inferred
+  // graph is explicitly marked best-effort.
+  const fileCache = new Map();
+  const considered = [...waiting, ...inFlight];
+  const freq = new Map();
+  for (const r of considered) {
+    const fs = rawFilesOf(r);
+    fileCache.set(keyOf(r), fs);
+    for (const f of fs) freq.set(f, (freq.get(f) || 0) + 1);
+  }
+  const ubiquitousCut = Math.max(3, Math.ceil(considered.length / 2));
+  const discriminating = (f) => isLockfile(f) || (freq.get(f) || 0) < ubiquitousCut;
+  const filesOf = (r) => (fileCache.get(keyOf(r)) || rawFilesOf(r)).filter(discriminating);
+
+  const edges = [];
+  const nodeMap = new Map();     // key → node
+  const ensureRunNode = (r, waitingFlag) => {
+    const k = r.issueNumber != null ? 'i' + r.issueNumber : 'p' + r.prNumber;
+    if (!nodeMap.has(k)) nodeMap.set(k, nodeFromRun(r, waitingFlag, false, false, [], filesOf(r)));
+    return nodeMap.get(k);
+  };
+  const ensureStubNode = (num) => {
+    const k = 'i' + num;
+    if (!nodeMap.has(k)) {
+      nodeMap.set(k, {
+        key: k, unit: 'issue', number: num, issueNumber: num, prNumber: null,
+        title: `#${num}`, url: unitUrl('issue', num), group: 'queued', activeIndex: IDX.QUEUED,
+        status: 'pending', waiting: false, eligible: false, held: false, reasons: [], files: [],
+      });
+    }
+    return nodeMap.get(k);
+  };
+  const addReason = (node, text) => { if (!node.reasons.includes(text)) node.reasons.push(text); };
+
+  // Seed every waiting run as a node.
+  for (const w of waiting) ensureRunNode(w, true);
+
+  // 1) Explicit prerequisites (depends on / blocked by / builds on / after …).
+  for (const w of waiting) {
+    const wn = ensureRunNode(w, true);
+    for (const dep of dependsRefs(bodyByNum.get(w.issueNumber) || bodyByNum.get(w.prNumber) || '')) {
+      if (dep === wn.number) continue;
+      if (landed.has(dep)) continue; // prerequisite already landed — satisfied, no hold
+      const target = runByNum.get(dep);
+      if (target) ensureRunNode(target, false); else ensureStubNode(dep);
+      addReason(wn, `waiting on #${dep}`);
+      edges.push({ from: wn.number, to: dep, kind: 'depends', file: null, reason: `waiting on #${dep}`, satisfied: false });
+    }
+  }
+
+  // 2) Same-file / shared-lockfile conflict with an IN-FLIGHT run (serialise; §2b).
+  for (const w of waiting) {
+    const wn = ensureRunNode(w, true);
+    const wf = wn.files;
+    for (const x of inFlight) {
+      const xf = filesOf(x);
+      const shared = wf.filter((f) => xf.includes(f));
+      for (const f of shared) {
+        const xNum = x.issueNumber ?? x.prNumber;
+        ensureRunNode(x, false);
+        const lock = isLockfile(f);
+        addReason(wn, lock ? `lockfile merge #${xNum} first` : `conflicts with #${xNum} on ${f}`);
+        edges.push({ from: wn.number, to: xNum, kind: lock ? 'lockfile' : 'same-file', file: f,
+          reason: lock ? `lockfile merge #${xNum} first` : `conflicts with #${xNum} on ${f}`, satisfied: false });
+      }
+    }
+  }
+
+  // 3) Same-file conflict between two WAITING runs — the FIFO-later / non-priority
+  //    one holds (crows-nest §2c de-conflicts the frontier against itself).
+  for (let i = 0; i < waiting.length; i++) {
+    for (let j = i + 1; j < waiting.length; j++) {
+      const a = ensureRunNode(waiting[i], true), b = ensureRunNode(waiting[j], true);
+      const shared = a.files.filter((f) => b.files.includes(f));
+      if (!shared.length) continue;
+      // Keep the priority unit, else the lower number (FIFO-earlier); hold the other.
+      const aPrio = prioByNum.get(a.number), bPrio = prioByNum.get(b.number);
+      const keepA = aPrio && !bPrio ? true : (bPrio && !aPrio ? false : a.number <= b.number);
+      const hold = keepA ? b : a, keep = keepA ? a : b;
+      for (const f of shared) {
+        const lock = isLockfile(f);
+        addReason(hold, lock ? `lockfile merge #${keep.number} first` : `conflicts with #${keep.number} on ${f}`);
+        edges.push({ from: hold.number, to: keep.number, kind: lock ? 'lockfile' : 'same-file', file: f,
+          reason: lock ? `lockfile merge #${keep.number} first` : `conflicts with #${keep.number} on ${f}`, satisfied: false });
+      }
+    }
+  }
+
+  // 4) Concurrency cap — a waiting run with no other hold, but the fleet is at its
+  //    build ceiling, is held "queued: N/M builds in flight" (crows-nest §2e).
+  const overCap = cap > 0 && inFlightBuilds >= cap;
+  for (const w of waiting) {
+    const wn = ensureRunNode(w, true);
+    if (wn.reasons.length === 0 && overCap) addReason(wn, `queued: ${inFlightBuilds}/${cap} builds in flight`);
+  }
+
+  // Finalise waiting-node status: held iff it has any reason, else on the frontier.
+  let anyEdge = false;
+  for (const node of nodeMap.values()) {
+    if (node.waiting) {
+      node.held = node.reasons.length > 0;
+      node.eligible = !node.held;
+      node.status = node.held ? 'Held' : 'Eligible';
+    }
+  }
+  if (edges.length) anyEdge = true;
+
+  return {
+    present: true, source: 'inferred',
+    note: 'best-effort — inferred from issue/PR bodies + file overlap; crows-nest scheduler-state (out/costs/_schedule.json) not available',
+    maxConcurrentBuilds: cap, inFlightBuilds,
+    nodes: [...nodeMap.values()], edges,
+    anyEdge,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot — the read-only scan + correlate + build runs.
 // ---------------------------------------------------------------------------
-function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePerMin }) {
+function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePerMin, maxConcurrentBuilds }) {
   const repoArgs = repo ? ['--repo', repo] : [];
 
   // Read-only §2a reads. NOTE: crows-nest DROPS the base trigger label when it
@@ -745,8 +1034,18 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
   rollup.recent = recentRuns.length;
   rollup.shippedToday = shippedToday;
 
+  // Waiting-runs dependency graph (#111) — the crows-nest scheduler-state producer
+  // when present, else a best-effort graph inferred from bodies + file overlap.
+  const scheduler = buildScheduler({
+    runs, recentRuns, issues, prs, cap: maxConcurrentBuilds,
+    schedState: (commissioned && ghOk) ? readSchedulerState() : null, repo,
+  });
+  rollup.waiting = scheduler.nodes.filter((n) => n.waiting).length;
+  rollup.eligible = scheduler.nodes.filter((n) => n.waiting && n.eligible).length;
+  rollup.held = scheduler.nodes.filter((n) => n.waiting && n.held).length;
+
   return {
-    schema: 4,                         // schema 4 (#115): per-run cost gains final/accruing/estimated + estTotalCost; rollup gains estIncluded; top-level estRatePerMin. Additive — older tabs read tolerantly.
+    schema: 5,                         // schema 5 (#111): + scheduler {source, nodes, edges} — the waiting-runs dependency graph (producer or inferred); rollup gains waiting/eligible/held. Additive — older tabs read tolerantly.
     appVersion: computeAppVersion(),   // content stamp of the shipped app, recomputed each snapshot (so a long-lived --watch producer re-stamps when the UI ships) → drives the tab's version self-reload (SKILL §6)
     estRatePerMin,                     // coarse USD/min burn rate the dashboard uses to live-tick an in-flight run's estimate off `costSince` (kept here so it's server-configurable and driver/dashboard agree)
     generatedAt: new Date().toISOString(),
@@ -764,8 +1063,9 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
     runs,
     recentRuns,
     recentWindow,
+    scheduler,
     rollup,
-    summary: `runs ${runs.length} · blocked ${blockedCount} · recent ${recentRuns.length}`,
+    summary: `runs ${runs.length} · blocked ${blockedCount} · recent ${recentRuns.length} · waiting ${rollup.waiting}`,
   };
 }
 
@@ -811,9 +1111,12 @@ function main() {
   // ~$0.03/min (≈ $1.80/hr), in the ballpark of an Opus build's API-equivalent spend.
   // <=0 disables the estimate (in-flight runs then show "accruing…" with no number).
   const estRatePerMin = resolveNum(args.estBurn, 'SPYGLASS_EST_BURN_PER_MIN', sg.estBurnUsdPerMin, 0.03);
+  // Build ceiling used only for the waiting-graph "queued: N/M builds in flight" reason
+  // (#111) — mirrors crows-nest's maxConcurrentBuilds (§1); config, else default 3.
+  const maxConcurrentBuilds = resolveNum(args.maxBuilds, 'ARMADA_MAX_BUILDS', config.maxConcurrentBuilds, 3);
 
   function once(firstRun) {
-    const state = snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePerMin });
+    const state = snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePerMin, maxConcurrentBuilds });
     const out = writeOutputs(outDir, state);
     const d = state.degraded ? ` [degraded: ${state.degraded}]` : '';
     console.log(`spyglass-run: ${state.summary}${d}`);
