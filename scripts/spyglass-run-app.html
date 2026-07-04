@@ -202,6 +202,33 @@
   .chev { color: var(--ink-faint); font-size: 10px; text-align: center; transition: transform .14s ease; }
   .run.expanded > .voyage-row .chev { transform: rotate(90deg); color: var(--brass); }
 
+  /* ---------- recent voyages lane (the harbour of completed voyages, #113) ---------- */
+  .lane-head {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    margin: 26px 2px 11px; padding-bottom: 7px;
+    border-bottom: 1px solid var(--line);
+  }
+  .lane-head h2 {
+    margin: 0; font-family: var(--serif); font-size: 15px; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--brass); font-weight: 600;
+  }
+  .lane-head h2 .anchor { color: var(--brass-bright); margin-right: .35em; letter-spacing: normal; }
+  .lane-head .lane-sub { color: var(--ink-faint); font-family: var(--mono); font-size: 11.5px; letter-spacing: .02em; }
+  .lane-head .lane-sub .today { color: var(--done); }
+  .lane-head .spacer { flex: 1 1 20px; }
+  .lane-note { color: var(--ink-faint); font-style: italic; font-family: var(--serif);
+    padding: 14px 6px; text-align: center; }
+
+  /* a completed voyage sits "at anchor": brass seam on the left, calmer wood, no bob */
+  .run.recent > .voyage-row {
+    background: linear-gradient(180deg, #12222f, #0e1c29);
+    border-color: var(--wood-edge); border-left: 3px solid var(--brass-dim);
+  }
+  .run.recent.blocked > .voyage-row { border-left-color: var(--blocked); }
+  .run.recent > .voyage-row:hover { border-color: var(--wood-edge-2); }
+  .run.recent.expanded > .voyage-row { border-color: var(--brass-dim); }
+  .s-when { color: var(--ink-faint); font-family: var(--mono); font-size: 12px; text-align: right; white-space: nowrap; }
+
   /* ---------- expanded log card ---------- */
   .logcard {
     border: 1px solid var(--brass-dim); border-top: 0; border-radius: 0 0 12px 12px;
@@ -324,6 +351,7 @@
     </div>
     <div id="fleet"></div>
     <div class="runs" id="runs"></div>
+    <div id="harbour"></div>
   </div>
 <script>
 "use strict";
@@ -432,9 +460,19 @@ function renderRow(run, isOpen) {
   if (cost) c.title = "API-equivalent estimate, not billing";
   row.appendChild(c);
 
-  const el = $("span", "s-elapsed js-elapsed");
-  if (run.startedAt) { el.dataset.since = run.startedAt; el.textContent = elapsedText(run.startedAt) || ""; }
-  row.appendChild(el);
+  if (run.recent) {
+    // A completed voyage: show when it landed (static), not a live-ticking clock.
+    const when = $("span", "s-when");
+    const ago = elapsedText(run.completedAt);
+    const verb = run.outcome === "Merged" ? "merged" : (run.blocked ? "blocked" : "shipped");
+    when.textContent = ago ? `${verb} ${ago} ago` : verb;
+    if (run.completedAt) when.title = new Date(run.completedAt).toLocaleString();
+    row.appendChild(when);
+  } else {
+    const el = $("span", "s-elapsed js-elapsed");
+    if (run.startedAt) { el.dataset.since = run.startedAt; el.textContent = elapsedText(run.startedAt) || ""; }
+    row.appendChild(el);
+  }
 
   row.appendChild($("span", "chev", "▶"));
   return row;
@@ -505,6 +543,28 @@ function renderMeta(run) {
   else idV.appendChild($("span", "naval", run.prUrl ? "" : "n/a"));
   if (run.prUrl) { idV.appendChild(document.createTextNode("  ")); const p = $("a", null, "PR #" + run.prNumber); p.href = run.prUrl; p.target = "_blank"; p.rel = "noopener"; p.addEventListener("click", (e) => e.stopPropagation()); idV.appendChild(p); }
   col.appendChild(metaRow("issue / pr", idV));
+  // outcome + merge commit (recent/terminal runs only)
+  if (run.recent) {
+    const ocV = $("span");
+    const g = groupOf(run);
+    const pill = $("span", "s-status", run.blocked ? "Blocked" : esc(run.outcome || run.status));
+    pill.style.color = GROUP_COLOR[g] || "var(--done)";
+    ocV.appendChild(pill);
+    if (run.completedAt) {
+      const ago = elapsedText(run.completedAt);
+      ocV.appendChild($("span", "naval", ago ? `  ·  ${ago} ago` : ""));
+    }
+    col.appendChild(metaRow("outcome", ocV));
+    const mcV = $("span");
+    if (run.mergeCommitUrl && run.mergeCommitOid) {
+      const a = $("a", null, run.mergeCommitOid.slice(0, 10));
+      a.href = run.mergeCommitUrl; a.target = "_blank"; a.rel = "noopener";
+      a.addEventListener("click", (e) => e.stopPropagation());
+      mcV.appendChild($("span", "path", "⌥ ")); mcV.appendChild(a);
+      mcV.appendChild(copyBtn("copy", run.mergeCommitOid));
+    } else mcV.appendChild($("span", "naval", "n/a"));
+    col.appendChild(metaRow("merge commit", mcV));
+  }
   // branch
   const brV = $("span");
   if (run.branch) { brV.appendChild($("span", "path", "⎇ " + run.branch)); brV.appendChild(copyBtn("copy", run.branch)); }
@@ -634,6 +694,14 @@ function renderFleet(state, runs) {
     gauges.appendChild(g);
   }
   bar.appendChild(gauges);
+  const shippedToday = r && typeof r.shippedToday === "number" ? r.shippedToday : null;
+  if (shippedToday != null) {
+    const st = $("div", "gauge done" + (shippedToday === 0 ? " zero" : ""));
+    st.title = "Completed voyages that landed today (see the recent-voyages lane)";
+    st.appendChild($("span", "n", String(shippedToday)));
+    st.appendChild($("span", "lbl", "shipped today"));
+    bar.appendChild(st);
+  }
   const cost = $("div", "m-cost");
   cost.appendChild($("div", "label", "fleet cost"));
   cost.appendChild($("div", "val", costKnown ? (money(total) || "$0.00") : "n/a"));
@@ -714,25 +782,58 @@ document.getElementById("chime").addEventListener("click", (e) => {
 });
 document.getElementById("sort").addEventListener("change", (e) => { sortMode = e.target.value; if (lastState) render(lastState); });
 
+// ---- recent voyages lane (the harbour of completed voyages, #113) ----------
+function renderHarbour(state, recentRuns) {
+  const wrap = document.getElementById("harbour");
+  wrap.textContent = "";
+  if (!recentRuns.length) return;
+  const r = state && state.rollup;
+  const shippedToday = r && typeof r.shippedToday === "number"
+    ? r.shippedToday
+    : recentRuns.filter((x) => !x.blocked).length;
+  const win = state && state.recentWindow;
+
+  const head = $("div", "lane-head");
+  const h2 = $("h2"); h2.appendChild($("span", "anchor", "⚓"));
+  h2.appendChild(document.createTextNode("recent voyages"));
+  head.appendChild(h2);
+  const sub = $("span", "lane-sub");
+  const bits = [`${recentRuns.length} in the harbour`];
+  const st = $("span"); st.appendChild(document.createTextNode(bits.join(" · ") + " · "));
+  const today = $("span", "today", `${shippedToday} shipped today`);
+  st.appendChild(today);
+  if (win && win.hours > 0) st.appendChild(document.createTextNode(` · last ${win.hours}h`));
+  sub.appendChild(st);
+  head.appendChild(sub);
+  wrap.appendChild(head);
+
+  // Recent runs arrive pre-sorted newest-completed-first from the driver; keep it.
+  for (const run of recentRuns) wrap.appendChild(renderRun(run));
+}
+
 // ---- render ---------------------------------------------------------------
 let lastState = null;
 function render(state) {
   lastState = state;
   const sub = document.getElementById("sub");
   const wrap = document.getElementById("runs");
+  const harbourEl = document.getElementById("harbour");
   wrap.textContent = "";
   const runs = (state && state.runs) || [];
+  const recentRuns = (state && state.recentRuns) || [];
   const stamp = state && state.generatedAt ? new Date(state.generatedAt).toLocaleTimeString() : "";
   sub.textContent = `${esc(state && state.repo)} · ${runs.length} run(s) · ${esc((state && state.summary) || "")}${stamp ? " · charted " + stamp : ""}`;
 
   setWeather(runs);
 
-  // prune expand state for runs that have left the fleet
-  const live = new Set(runs.map(runKey));
+  // prune expand state for runs that have left BOTH lanes (a run merging moves
+  // from in-flight to the harbour — keep its expanded state across that hop).
+  const live = new Set([...runs, ...recentRuns].map(runKey));
   for (const k of Array.from(expanded)) if (!live.has(k)) expanded.delete(k);
 
   if (state && state.degraded) {
     document.getElementById("fleet").textContent = "";
+    harbourEl.textContent = "";
     const e = $("div", "empty");
     e.appendChild($("div", "glyph", "🧭"));
     e.appendChild($("div", "big", "no runs to chart"));
@@ -741,24 +842,34 @@ function render(state) {
     prevState = new Map();
     return;
   }
-  if (!runs.length) {
+  if (!runs.length && !recentRuns.length) {
     document.getElementById("fleet").textContent = "";
+    harbourEl.textContent = "";
     const e = $("div", "empty");
     e.appendChild($("div", "glyph", "⚓"));
     e.appendChild($("div", "big", "an empty harbour"));
-    e.appendChild($("div", "sub", "The fleet is idle — no armed issues or open PRs under way."));
+    e.appendChild($("div", "sub", "The fleet is idle — no armed issues, open PRs, or recent voyages."));
     wrap.appendChild(e);
     prevState = new Map();
     return;
   }
 
   renderFleet(state, runs);
-  const events = detectTransitions(runs);
-  for (const run of sortRuns(runs)) wrap.appendChild(renderRun(run));
+  // Transitions across BOTH lanes: a run that merged this poll moves into the
+  // harbour and earns the "just shipped ⚓" glow there.
+  const events = detectTransitions([...runs, ...recentRuns]);
 
-  // flourish + optional chime for ship/block transitions
+  if (runs.length) {
+    for (const run of sortRuns(runs)) wrap.appendChild(renderRun(run));
+  } else {
+    // Nothing under way, but the harbour has recent arrivals — a calm note.
+    wrap.appendChild($("div", "lane-note", "No voyages under way — the fleet is idle. Recent arrivals below."));
+  }
+  renderHarbour(state, recentRuns);
+
+  // flourish + optional chime for ship/block transitions (either lane)
   for (const ev of events) {
-    const block = wrap.querySelector(`.run[data-key="${CSS.escape(ev.key)}"]`);
+    const block = document.querySelector(`.run[data-key="${CSS.escape(ev.key)}"]`);
     if (ev.kind === "shipped" && block) block.classList.add("just-shipped");
     foghorn(ev.kind);
   }
