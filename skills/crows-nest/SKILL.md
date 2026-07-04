@@ -146,6 +146,17 @@ Read `.armada/config.json` from the target repo:
   (rejects a blank/silent capture before posting), and **never blocks, fails, or delays** the tick or
   the merge. The full convention is §8f. Default `"off"` = crows-nest never records (manual `/logbook`
   still works).
+- `costs` — gates the **cost post-mortem producer** that feeds [`spyglass`](../spyglass/SKILL.md)'s
+  per-run dashboard. One of `"on" | "off"`, **default `"on"` when absent** (the write is cheap, local,
+  and gitignored, so it's on unless an operator opts out). When on, at each reconcile point the bell
+  rings (§2d build-completion, §3e PR-pipeline outcome, §5 issue-shipped) the lookout hands the just-
+  completed subagent's **real token usage** to `scripts/spyglass-cost-postmortem.mjs`, which accumulates
+  a per-model breakdown + an API-equivalent cost estimate into `out/costs/<run>.json`; and at **dispatch
+  (§2d)** it records the run→(branch, worktree) map into `out/costs/_runs.json` so the read-only
+  dashboard surfaces branch/worktree/folder **before** a PR exists. Writes **only** under `out/costs/`
+  (gitignored); under the **same best-effort side-channel discipline** as the bell (§8c), cartographer
+  (§8d), and logbook (§8f) — it never blocks, fails, or delays the tick. The full convention is §8g.
+  Default `"off"` = never produce (the dashboard just shows `n/a` cost + no in-flight worktree).
 - `lighthouse` — gates [`lighthouse`](../lighthouse/SKILL.md), the fleet's autonomous **reconnaissance**:
   it surveys the repo for *future* work and charters it (unarmed). A block with `enabled` (**default
   `false`** = opt-in), `autoArm` (default `false`), the trigger thresholds (`intervalHours`,
@@ -534,6 +545,10 @@ accumulator (§8d.i). cartographer is **not** dispatched here — it runs **once
 idle point (§8d.ii), so a busy backlog doesn't emit one cartography PR per build. Recording is cheap
 and synchronous; it never blocks or fails this reconcile.
 
+Also after this reconcile, if the `costs` key isn't `"off"` (§8g), **record the build subagent's real
+token usage** into `out/costs/<run>.json` (§8g.ii) so the spyglass dashboard shows real cost. (The
+run→worktree map was already recorded at dispatch, §8g.i.) Best-effort, side-channel, never fatal.
+
 #### Concurrency is bounded, not unbounded — per track
 
 Background dispatch is what lets the lookout run several builds *and* several reviews at once without
@@ -719,6 +734,10 @@ as a best-effort background subagent for the merged PR (gated to user-visible ch
 side-channel under the §8c discipline — a logbook failure never blocks, fails, or delays this reconcile
 or the merge. The merge has already landed; the recording is the last, optional step.
 
+And after the merge, if the `costs` key isn't `"off"` (§8g), **record the review pipeline's real usage**
+— the two review lenses + any codex second-lens tokens — into `out/costs/<run>.json` (§8g.ii),
+accumulated onto the build's tokens for one per-run total. Best-effort, side-channel, never fatal.
+
 ## 4. The review→merge pipeline (a Workflow)
 
 A scheduled PR (§3) runs through a deterministic **Workflow**: **parallel review fan-out → consolidate
@@ -798,6 +817,10 @@ walkthrough** if the `logbook` key isn't `"off"` (§8f), unless the issue's PR w
 its §3e merge reconcile (the same idempotency guard, §8f, dedupes the two paths so a shipped issue
 whose PR already has a `🎬`/`logbook-pr-<n>` walkthrough is **not** re-recorded). Best-effort and
 background under the §8c discipline; it never blocks or fails the close.
+
+And when an issue closes `armada:shipped`, if the `costs` key isn't `"off"` (§8g), **finalise the cost
+post-mortem** — record any remaining usage into `out/costs/<run>.json` (§8g.ii), the accumulated
+per-run total the spyglass dashboard shows for the shipped run. Best-effort, side-channel, never fatal.
 
 ## 6. Arm the loop — hand the /loop line to the user
 
@@ -1203,6 +1226,65 @@ the bug. Reconcile the two so the obligation is owned exactly once:
   the key is `"off"`, the tick is **completely unaffected** — swallow any failure (log at most once,
   prefixed `crows-nest logbook:`) and carry on. A failed or skipped recording never turns a green tick
   red and never affects the merge.
+
+### 8g. Spyglass cost post-mortem — write real cost + the run map at reconcile points
+
+[`spyglass`](../spyglass/SKILL.md)'s per-run dashboard renders each run's cost and in-flight metadata,
+but it is **strictly read-only** — it can only *consume* that data, never produce it. crows-nest is the
+producer: it already receives each dispatched subagent's token usage on completion, so it writes the
+data the dashboard reads. Gated by the `costs` key (§1); under the **identical best-effort, side-channel
+discipline as §8c** — it must **never block, derail, fail, or delay** the tick. The producer is the
+bundled `scripts/spyglass-cost-postmortem.mjs`, resolved with the standard scripts-dir rule (**prefer
+`${CLAUDE_PLUGIN_ROOT}`, else the `pluginRoot` from `.armada/config.json`**, §1/§4). It writes **only**
+under `out/costs/` (gitignored), never the tracked tree.
+
+#### 8g.i Record the run→worktree map at dispatch (§2d)
+
+When the lookout **dispatches** an issue build (§2d), after the claim + comment have landed, record the
+run's branch and isolation worktree so the read-only dashboard surfaces branch/worktree/folder **before
+a PR exists** (the AC-2 gap — a build shows `n/a — no local worktree` for its whole duration otherwise):
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-cost-postmortem.mjs" \
+  map --issue <n> --branch <branch> --worktree <worktree-path>
+```
+
+This is cheap and synchronous (no subagent). Recording is the last, optional step of the dispatch —
+never re-ordered ahead of the claim, never able to block or fail it.
+
+#### 8g.ii Accumulate real usage at each terminal reconcile (§2d / §3e / §5)
+
+At each of the **three reconcile points the bell rings** — build-completion (§2d), PR-pipeline outcome
+(§3e), issue-shipped (§5) — **after** the consequential action has landed, hand the just-completed
+subagent's usage to the producer, keyed by the run's **branch** (else its issue number). Each dispatched
+unit reports its usage on completion (`subagent_tokens` / model / tool-uses / duration, plus any codex
+usage from the review's second lens); pass it as a usage entry (or an array of them):
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-cost-postmortem.mjs" \
+  record --run <branch|issue> --usage-json '[{ "role": "build", "model": "claude-opus-4-8",
+    "usage": { "input_tokens": N, "output_tokens": N, "cache_read_input_tokens": N,
+               "cache_creation_input_tokens": N }, "subagents": 1 }]'
+```
+
+The producer **accumulates** — a build reconcile records the build subagent's tokens; the PR-pipeline
+reconcile records the two review lenses + codex; the address round adds more — into one per-run
+`out/costs/<run>.json`, re-priced from the accumulated axes each write (so it never double-counts). It
+writes a **per-model** IN/OUT/CACHE R/CACHE W breakdown, an **API-equivalent cost estimate** (Claude
+Opus/Sonnet/Haiku priced; codex/GPT **unpriced**), and a sessions/subagents/codex summary — exactly the
+shape §6 of the spyglass SKILL documents. Recording is after the bell, the cartography record, and the
+logbook step; it is the last, optional courtesy of the reconcile.
+
+#### 8g.iii Gating and the discipline
+
+- **Gated by `costs` (§1).** `"off"` → never map, never record (the dashboard shows `n/a` cost + no
+  in-flight worktree — degrades cleanly). Default `"on"` when absent.
+- **Never fatal.** If the producer errors or isn't available, the tick is **completely unaffected** —
+  swallow any failure (log at most once, prefixed `crows-nest cost:`) and carry on. The producer itself
+  never throws (it prints + exits non-zero), so a failed write is always log-and-ignore.
+- **Read-only boundary preserved.** The dashboard/driver stay strictly read-only; only this crows-nest-
+  side producer writes, and only under `out/costs/`. That split is what keeps the dashboard's
+  zero-mutation guarantee true (spyglass SKILL §6).
 
 ## Inputs
 
