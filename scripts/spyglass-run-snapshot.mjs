@@ -7,6 +7,13 @@
 // worktree/branch/folder metadata, the logbook "done video", and a per-model cost
 // table with REAL usage numbers.
 //
+// It ALSO keeps recently MERGED/SHIPPED (and blocked) runs on the board — a bounded
+// "recent voyages" harbour of completed voyages — so a run doesn't vanish the moment
+// it merges/ships. In addition to the open/in-flight set it fetches today, it scans a
+// BOUNDED recent window of recently-closed/merged issues & PRs (a configurable cap
+// AND/OR time window) and renders each as a terminal run with its accurate outcome
+// (Merged / Shipped / Blocked), merge-commit link, and final cost. (Issue #113.)
+//
 // The stages are ARMADA's genuine, OBSERVABLE states — NOT the inspiration mock's
 // invented list. Every stage is derivable from labels + PR/CI/review state:
 //
@@ -22,8 +29,11 @@
 // stageForPr / groupForStage below.
 //
 // It is READ-ONLY with respect to the fleet, exactly like spyglass/crows-nest:
-//   * GitHub reads only — `gh repo view`, `gh issue list`, `gh pr list`, and
-//     GET-only `gh api .../releases`. NEVER a write (no label/comment/merge/close).
+//   * GitHub reads only — `gh repo view`, `gh issue list` (open AND recently
+//     `--state closed`), `gh pr list` (open AND recently `--state merged`/`closed`),
+//     and GET-only `gh api .../releases`. Every `gh` verb is a read — NEVER a write
+//     (no label/comment/merge/close, no `gh api` POST/PATCH/DELETE). The recent-window
+//     scan (#113) adds only more READ list queries, never a write.
 //   * Local reads only — `git worktree list` (to resolve a run's worktree path),
 //     `out/costs/_runs.json` (the crows-nest-written run→(branch,worktree) map, so
 //     an in-flight run's branch/worktree/folder surface BEFORE a PR exists), and
@@ -43,6 +53,12 @@
 //   node spyglass-run-snapshot.mjs [--label <triggerLabel>] [--out <dir>]
 //                                  [--repo <owner/name>] [--open]
 //                                  [--watch <seconds>] [--no-open]
+//                                  [--recent-hours <N>] [--recent-cap <N>]
+//
+// The recent-voyages window is bounded and configurable (flag > env > config >
+// default): `--recent-hours` / `SPYGLASS_RECENT_HOURS` / `spyglass.recentWindowHours`
+// (default 24; <=0 = no time filter, cap only) and `--recent-cap` /
+// `SPYGLASS_RECENT_CAP` / `spyglass.recentCap` (default 12; <=0 = recent lane off).
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync } from 'fs';
 import path from 'path';
@@ -92,8 +108,28 @@ function parseArgs(argv) {
     else if (a === '--open') args.open = true;
     else if (a === '--no-open') args.open = false;
     else if (a === '--watch') args.watch = Number(argv[++i]) || 0;
+    else if (a === '--recent-hours') args.recentHours = argv[++i];
+    else if (a === '--recent-cap') args.recentCap = argv[++i];
   }
   return args;
+}
+
+// Resolve a numeric setting with the repo's documented precedence:
+// --flag > env var > config value > built-in default. Each candidate is trimmed
+// and skipped when empty / non-numeric (first-non-empty-wins), so a blank flag or
+// whitespace-only env doesn't short-circuit the chain. (Cartography conventions.)
+function resolveNum(flagVal, envName, cfgVal, def) {
+  const pick = (v) => {
+    if (v == null) return null;
+    const s = String(v).trim();
+    if (s === '') return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  };
+  const f = pick(flagVal); if (f != null) return f;
+  const e = pick(process.env[envName]); if (e != null) return e;
+  const c = pick(cfgVal); if (c != null) return c;
+  return def;
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +330,41 @@ function stageForPr(pr) {
 }
 
 // ---------------------------------------------------------------------------
+// Terminal outcome for a recently-closed/merged run (#113). A run that has left the
+// in-flight set (its issue closed, or its PR merged/closed) is rendered on the recent
+// "harbour" lane with its accurate terminal outcome, derived from the SAME state model
+// (labels + PR merged/closed state):
+//   * a merged PR whose issue closed as completed  → Shipped (activeIndex Shipped)
+//   * armada:shipped                               → Shipped
+//   * a merged PR / armada:merged                  → Merged  (activeIndex Merged)
+//   * armada:blocked, or a PR closed WITHOUT merge  → Blocked (blocked overlay)
+// terminal:true; group `done` (Merged/Shipped) or `blocked`. The blocked activeIndex
+// reuses the documented lossy approximation (a blocked PR → In review; else Building).
+// ---------------------------------------------------------------------------
+function recentOutcome({ issue, pr }) {
+  const ils = labelNames(issue && issue.labels);
+  const pls = labelNames(pr && pr.labels);
+  const has = (n) => ils.includes(n) || pls.includes(n);
+  const prMerged = !!(pr && (String(pr.state).toUpperCase() === 'MERGED' || pr.mergedAt));
+  const prClosedUnmerged = !!(pr && String(pr.state).toUpperCase() === 'CLOSED' && !pr.mergedAt);
+  const issueClosed = !!(issue && String(issue.state).toUpperCase() === 'CLOSED');
+  if (has('armada:blocked') || (prClosedUnmerged && !prMerged)) {
+    return {
+      activeIndex: pr ? IDX.IN_REVIEW : IDX.BUILDING,
+      blocked: true, status: 'Blocked', outcome: 'Blocked', terminal: true, group: 'blocked',
+    };
+  }
+  if (has('armada:shipped') || (issueClosed && prMerged)) {
+    return { activeIndex: IDX.SHIPPED, blocked: false, status: 'Shipped', outcome: 'Shipped', terminal: true, group: 'done' };
+  }
+  if (prMerged || has('armada:merged')) {
+    return { activeIndex: IDX.MERGED, blocked: false, status: 'Merged', outcome: 'Merged', terminal: true, group: 'done' };
+  }
+  // A closed issue that completed with no observable PR — count it as shipped.
+  return { activeIndex: IDX.SHIPPED, blocked: false, status: 'Shipped', outcome: 'Shipped', terminal: true, group: 'done' };
+}
+
+// ---------------------------------------------------------------------------
 // Coarse fleet GROUPS for the multi-run overview roll-up — derived from the voyage
 // stages so the totals bar can count runs by state at a glance:
 //   queued        — armed, not yet picked up (stage 0)
@@ -374,7 +445,7 @@ function normalizeCost(cost) {
 // ---------------------------------------------------------------------------
 // Snapshot — the read-only scan + correlate + build runs.
 // ---------------------------------------------------------------------------
-function snapshot({ label, repo, commissioned }) {
+function snapshot({ label, repo, commissioned, recentHours, recentCap }) {
   const repoArgs = repo ? ['--repo', repo] : [];
 
   // Read-only §2a reads. NOTE: crows-nest DROPS the base trigger label when it
@@ -419,14 +490,18 @@ function snapshot({ label, repo, commissioned }) {
   const seen = new Set();
 
   // A run is "in flight" if the issue is queued/underway/done/blocked, or it has
-  // an open PR. Queued (unclaimed) issues are shown too — the intake leg.
-  function buildRun({ issue, pr }) {
+  // an open PR. Queued (unclaimed) issues are shown too — the intake leg. When
+  // `recent` is set the run is a terminal, recently-closed/merged voyage (#113):
+  // its stage comes from recentOutcome() and it carries completedAt + merge commit.
+  function buildRun({ issue, pr, recent }) {
     const issueNumber = issue ? issue.number : null;
     const prNumber = pr ? pr.number : null;
     // Branch: prefer the PR's head; else the crows-nest run map (in-flight, pre-PR).
     const runRec = issueNumber != null ? runMap[String(issueNumber)] : null;
     const branch = (pr && pr.headRefName) || (runRec && runRec.branch) || null;
-    const stage = pr ? stageForPr(pr) : stageForIssue(issue.labels);
+    const stage = recent
+      ? recentOutcome({ issue, pr })
+      : (pr ? stageForPr(pr) : stageForIssue(issue.labels));
     // Worktree: git worktree list by branch, else the run map's recorded path.
     const worktree = (branch && wt[branch]) || (runRec && runRec.worktree) || null;
     const costRaw = readCost(branch, issueNumber);
@@ -436,6 +511,12 @@ function snapshot({ label, repo, commissioned }) {
     // dispatch time from the run map (whichever is earliest & known).
     const startedAt = (issue && issue.createdAt) || (pr && pr.createdAt)
       || (runRec && (runRec.startedAt || runRec.dispatchedAt)) || null;
+    // Terminal timestamp + merge-commit link for a recent (completed) run.
+    const completedAt = recent
+      ? ((pr && (pr.mergedAt || pr.closedAt)) || (issue && issue.closedAt) || null)
+      : null;
+    const mergeOid = recent && pr && pr.mergeCommit
+      ? (pr.mergeCommit.oid || pr.mergeCommit.sha || null) : null;
 
     return {
       issueNumber,
@@ -454,9 +535,15 @@ function snapshot({ label, repo, commissioned }) {
       status: stage.status,
       blocked: stage.blocked,
       terminal: stage.terminal,
-      group: groupForStage(stage),
+      group: recent ? stage.group : groupForStage(stage),
       doneVideo,
       cost,
+      // recent-lane fields (#113); absent/null on in-flight runs.
+      recent: !!recent,
+      outcome: recent ? stage.outcome : null,
+      completedAt,
+      mergeCommitOid: mergeOid,
+      mergeCommitUrl: (mergeOid && repo) ? `https://github.com/${repo}/commit/${mergeOid}` : null,
     };
   }
 
@@ -479,6 +566,83 @@ function snapshot({ label, repo, commissioned }) {
 
   const blockedCount = runs.filter((r) => r.blocked).length;
 
+  // -------------------------------------------------------------------------
+  // Recent voyages (#113) — a BOUNDED window of recently-closed/merged runs, so a
+  // run stays on the board after it merges/ships instead of vanishing. READ-ONLY:
+  // `gh issue list --state closed`, `gh pr list --state merged`, `--state closed`.
+  // Bounded by a configurable cap AND/OR time window; oldest runs age out.
+  // -------------------------------------------------------------------------
+  const recentRuns = [];
+  const recentWindow = { hours: recentHours, cap: recentCap };
+  let shippedToday = 0;
+  if (commissioned && ghOk && recentCap > 0) {
+    // Fetch a bounded slab, then filter to fleet + window + cap in JS. gh doesn't
+    // sort by merge/close date, so over-fetch a little and sort by completedAt here.
+    const listLimit = Math.min(100, Math.max(recentCap * 4, 40));
+    const closedIssues = ghJson([
+      'issue', 'list', ...repoArgs, '--state', 'closed',
+      '--json', 'number,title,labels,createdAt,updatedAt,closedAt,state,stateReason,author,body',
+      '--limit', String(listLimit),
+    ]) || [];
+    const mergedPrs = ghJson([
+      'pr', 'list', ...repoArgs, '--state', 'merged',
+      '--json', 'number,title,isDraft,labels,headRefName,baseRefName,state,mergeable,reviewDecision,statusCheckRollup,createdAt,updatedAt,closedAt,mergedAt,mergeCommit,body',
+      '--limit', String(listLimit),
+    ]) || [];
+    const closedPrs = ghJson([
+      'pr', 'list', ...repoArgs, '--state', 'closed',
+      '--json', 'number,title,isDraft,labels,headRefName,baseRefName,state,mergeable,reviewDecision,statusCheckRollup,createdAt,updatedAt,closedAt,mergedAt,mergeCommit,body',
+      '--limit', String(listLimit),
+    ]) || [];
+    const recentPrs = [...mergedPrs, ...closedPrs];
+
+    // Correlate a recent closed issue with the recent PR that closed it.
+    const prByIssueR = {};
+    for (const pr of recentPrs) {
+      const iss = closesIssue(pr);
+      if (iss != null && prByIssueR[iss] == null) prByIssueR[iss] = pr;
+    }
+
+    const seenR = new Set();
+    const built = [];
+    // Closed fleet issues first (each carries its terminal armada:* label).
+    for (const issue of closedIssues) {
+      if (!inFleet(issue.labels)) continue;
+      if (seen.has(issue.number)) continue; // still shown as in-flight — don't double-list
+      const pr = prByIssueR[issue.number] || null;
+      built.push(buildRun({ issue, pr, recent: true }));
+      seenR.add('i' + issue.number);
+      if (pr) seenR.add('p' + pr.number);
+    }
+    // Recent PRs whose closing issue isn't in the closed-issue set (or has no issue).
+    for (const pr of recentPrs) {
+      if (seenR.has('p' + pr.number)) continue;
+      if (!inFleet(pr.labels)) continue;
+      const iss = closesIssue(pr);
+      if (iss != null && (seen.has(iss) || seenR.has('i' + iss))) continue;
+      built.push(buildRun({ issue: null, pr, recent: true }));
+      seenR.add('p' + pr.number);
+    }
+
+    // Bound by the time window (when > 0), then sort newest-completed first, then cap.
+    const nowMs = Date.now();
+    const windowMs = recentHours > 0 ? recentHours * 3600 * 1000 : Infinity;
+    const completedMs = (r) => Date.parse(r.completedAt || '') || 0;
+    const withinWindow = built.filter((r) => {
+      const t = completedMs(r);
+      if (!t) return recentHours <= 0; // no timestamp — keep only when the window is off
+      return (nowMs - t) <= windowMs;
+    });
+    withinWindow.sort((a, b) => completedMs(b) - completedMs(a));
+    for (const r of withinWindow.slice(0, recentCap)) recentRuns.push(r);
+
+    // shipped-today roll-up — non-blocked terminal runs completed since local midnight
+    // (counted from the full windowed set, so the count is accurate even past the cap).
+    const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+    const sot = midnight.getTime();
+    shippedToday = withinWindow.filter((r) => !r.blocked && completedMs(r) >= sot).length;
+  }
+
   // Fleet roll-up — counts by coarse group, total in-flight, total cost — for the
   // totals bar. Client-recomputable, but emitted here so the grouping is
   // authoritative + documented in one place. (Additive; schema 2.)
@@ -489,9 +653,13 @@ function snapshot({ label, repo, commissioned }) {
     const tc = r.cost && r.cost.present ? r.cost.totalCost : null;
     if (typeof tc === 'number' && Number.isFinite(tc)) { rollup.totalCost += tc; rollup.costKnown = true; }
   }
+  // Recent-lane counts (#113): how many completed voyages sit in the harbour, and
+  // how many shipped today. The fleet cost above stays in-flight only.
+  rollup.recent = recentRuns.length;
+  rollup.shippedToday = shippedToday;
 
   return {
-    schema: 2,
+    schema: 3,
     generatedAt: new Date().toISOString(),
     repo: repo || 'unknown',
     triggerLabel: label,
@@ -505,8 +673,10 @@ function snapshot({ label, repo, commissioned }) {
                        : 'gh query failed or unauthenticated; no runs to show')
       : null,
     runs,
+    recentRuns,
+    recentWindow,
     rollup,
-    summary: `runs ${runs.length} · blocked ${blockedCount}`,
+    summary: `runs ${runs.length} · blocked ${blockedCount} · recent ${recentRuns.length}`,
   };
 }
 
@@ -542,8 +712,13 @@ function main() {
   const slug = (repo || 'local-repo').replace(/[^A-Za-z0-9._-]+/g, '-');
   const outDir = args.out || path.join(os.tmpdir(), 'armada-spyglass-run', slug);
 
+  // Recent-voyages window (#113) — bounded + configurable: --flag > env > config > default.
+  const sg = (config && config.spyglass) || {};
+  const recentHours = resolveNum(args.recentHours, 'SPYGLASS_RECENT_HOURS', sg.recentWindowHours, 24);
+  const recentCap = resolveNum(args.recentCap, 'SPYGLASS_RECENT_CAP', sg.recentCap, 12);
+
   function once(firstRun) {
-    const state = snapshot({ label, repo, commissioned });
+    const state = snapshot({ label, repo, commissioned, recentHours, recentCap });
     const out = writeOutputs(outDir, state);
     const d = state.degraded ? ` [degraded: ${state.degraded}]` : '';
     console.log(`spyglass-run: ${state.summary}${d}`);
