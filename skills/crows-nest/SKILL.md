@@ -549,6 +549,55 @@ Also after this reconcile, if the `costs` key isn't `"off"` (§8g), **record the
 token usage** into `out/costs/<run>.json` (§8g.ii) so the spyglass dashboard shows real cost. (The
 run→worktree map was already recorded at dispatch, §8g.i.) Best-effort, side-channel, never fatal.
 
+#### Is an in-flight build actually stalled? Read the liveness beat, never raw mtime
+
+A background build sits `armada:underway` for many minutes, and the harness surfaces **nothing** until
+the subagent returns — no mid-build stream. That silence is the trap that #134 was chartered on: while
+manning the crows-nest, a slow-but-healthy build was misdiagnosed as *stalled* **five times in one
+session** by guessing on a frozen output-file **mtime**, and one false positive **killed an agent that
+had already committed + pushed and was one step from opening its PR** (recovered only by luck). A stale
+mtime does **not** mean wedged: a **finished** agent goes quiet, and a **long single tool call** (a
+headless screenshot render — muster §1b — or a full test suite) freezes mtime while the agent works
+normally. **Never** decide "stalled" from mtime, output-file freshness, or elapsed time alone, and
+**never** `TaskStop` / kill an in-flight build on that basis.
+
+Instead, consult the **liveness beat** the dispatched subagent emits. Every fleet subagent
+(shipwright §4a, muster §1a) writes a coarse **phase** + a monotonic **step** counter to
+`out/liveness/<run>.json` via `scripts/liveness-beat.mjs` as it advances, and a latched **terminal
+marker** when it finishes. Classify a run with the **reader** subcommand — it centralises the
+**phase-aware grace** so you never re-implement the timeout math (resolve the script by the standard
+scripts-dir rule, **prefer `${CLAUDE_PLUGIN_ROOT}`, else `pluginRoot`**, §1/§4):
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/liveness-beat.mjs" classify --run <branch|issue>
+# -> { "state": "working" | "done" | "wedged" | "unknown", "phase": …, "step": …,
+#      "sinceMs": …, "graceMs": …, "reason": "…" }
+```
+
+Act **only** on the classified `state`, not on wall-clock intuition:
+
+- **`working`** — the beat is fresh, **or** stale but still within the phase's grace (a known-long
+  phase like `visual-inspection` / `validating` gets a generous window, so a healthy agent inside one
+  long tool call is **not** a false stall). **Do not intervene** — let it run. It stays `armada:underway`
+  and the watch keeps ticking on the rest of the backlog, exactly as *Reconciling a background
+  completion* describes.
+- **`done`** — a terminal marker is present. The agent finished; its structured result is arriving (or
+  has) and the completion reconcile above owns the label swap. Quiet-after-done is **never** wedged —
+  **do not intervene**.
+- **`unknown`** — no beat file yet (the subagent may not have started emitting) or an unreadable one.
+  Treat **conservatively**: give it a generous grace and re-check next tick; **never** kill on
+  `unknown`.
+- **`wedged`** — **only** here may you intervene: no terminal marker **and** no step progress past the
+  phase-aware timeout. Even then, prefer the least-destructive action — surface it (a schedule-line
+  note / the ship's bell), let the current build return or time out on its own, and re-dispatch the
+  issue on a fresh tick — rather than discarding possibly-committed work. If you must stop it, `TaskStop`
+  **only** the specific wedged unit, never a blanket kill.
+
+Reading liveness is cheap, synchronous, and **best-effort** — the same side-channel discipline as the
+cost producer (§8g): if the script or beat file is absent (e.g. an older subagent that predates the
+signal), `classify` returns `unknown` and you fall back to the conservative default — **never** kill on
+missing liveness. This is the one signal that tells the three states apart; use it, not mtime.
+
 #### Concurrency is bounded, not unbounded — per track
 
 Background dispatch is what lets the lookout run several builds *and* several reviews at once without

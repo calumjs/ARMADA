@@ -26,3 +26,11 @@
 # real usage; the read-only driver only READS it. NEVER commit it (out of the tracked
 # tree by design — the producer writes ONLY under out/costs/).
 out/costs/
+
+# fleet liveness beats — the per-run phase/step heartbeat + terminal marker that
+# shipwright/muster subagents emit (scripts/liveness-beat.mjs) so crows-nest can
+# tell working / done / wedged apart instead of guessing on output-file mtime
+# (crows-nest §2f, issue #134). Machine-/run-specific scratch, regenerated live;
+# the reader only READS it. NEVER commit it (out of the tracked tree by design —
+# the producer writes ONLY under out/liveness/).
+out/liveness/

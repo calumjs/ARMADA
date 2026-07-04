@@ -50,6 +50,31 @@ gh pr view <n> --json files --jq '.files[].path' # changed paths (for inline-com
 If the PR is **draft** or has no diff, stop early: there's nothing to muster yet. Report that and
 return an empty finding set rather than spawning reviewers on nothing.
 
+## 0b. Emit a liveness beat as you advance (so a long render isn't misread as stalled)
+
+When crows-nest runs you as a **background** review subagent, the lookout sees **nothing** until you
+return — and the §1b visual inspection is a **single long headless render** that freezes any
+output-file mtime while it works normally. That is exactly the false-stall trap #134 was chartered on.
+So, like shipwright (§0a of its SKILL), **emit a coarse liveness beat as you cross each phase** so the
+lookout can tell *working* from *wedged* without guessing on mtime — most importantly a
+`visual-inspection` beat **immediately before** you launch the render, so its generous phase-aware
+grace covers the whole (bounded, §1b) render:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/liveness-beat.mjs" \
+  beat --run <branch|PR> --phase <reviewing|visual-inspection|posting> [--note "<what>"]
+# and when you finish (after returning your findings, §4):
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/liveness-beat.mjs" \
+  done --run <branch|PR> --status reviewed --reason "<one line>"
+```
+
+Beat `reviewing` when the two lenses fan out (§1), `visual-inspection` just before the §1b render,
+`posting` when you post the review (§3), then the terminal `done` marker after §4. Key `--run` by the
+PR's **branch** (else its number). Beats are **best-effort and side-channel** (they write only under
+`out/liveness/`, gitignored) — if the producer is missing or a beat fails, swallow it and carry on; a
+liveness write must **never** block, fail, or delay the review. The reader (crows-nest §2d *"Is an
+in-flight build actually stalled?"*) consumes these beats + the phase-aware grace to classify the run.
+
 ## 1. Fan out two reviewers in parallel subagents
 
 > **Who owns the fan-out depends on how muster is reached — because a subagent can't nest agents.**
