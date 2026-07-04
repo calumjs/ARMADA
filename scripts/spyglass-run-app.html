@@ -295,6 +295,39 @@
     78% { opacity: 1; transform: translateY(0) scale(1); }
     100% { opacity: 0; transform: translateY(-5px); }
   }
+  /* ---------- state-specific run-card animations (#150) ----------
+     Ambient, per-state motion on LIVE (non-recent) run cards, keyed to the run's
+     REAL armada:* group (the .g-<group> class the row carries). Tasteful + nautical;
+     each state reads distinctly and none is distracting. All are a slow breathing
+     glow on a coloured left seam (no layout shift — pure box-shadow, no border/size
+     change, no overflow clip of the focus ring or the progress bar / chips inside).
+     The shipped/merged celebration is deliberately NOT here: it is a ONE-SHOT
+     flourish fired on the transition (.just-shipped glow + .landed-pennant, above),
+     never a loop. Every loop below is disabled + pinned to a static seam under
+     prefers-reduced-motion (see the reduced-motion block near the end). */
+
+  /* building — a gentle "working" pulse: the card breathes a soft building-blue glow,
+     so an in-flight build visibly ticks along. */
+  .run.g-building:not(.recent) > .voyage-row { animation: card-building 3.6s ease-in-out infinite; }
+  @keyframes card-building {
+    0%,100% { box-shadow: inset 3px 0 0 0 rgba(86,180,233,.55), 0 0 0 0 rgba(86,180,233,0); }
+    50%     { box-shadow: inset 3px 0 0 0 rgba(86,180,233,.90), 0 0 15px -3px rgba(86,180,233,.42); }
+  }
+  /* awaiting-merge — a calmer, warmer "ready" glow: a slower amber breathe, signalling
+     a run that is ready and waiting at the merge gate. */
+  .run.g-awaiting-merge:not(.recent) > .voyage-row { animation: card-awaiting 4.6s ease-in-out infinite; }
+  @keyframes card-awaiting {
+    0%,100% { box-shadow: inset 3px 0 0 0 rgba(230,169,60,.45), 0 0 6px -2px rgba(230,169,60,.20); }
+    50%     { box-shadow: inset 3px 0 0 0 rgba(230,169,60,.85), 0 0 16px -2px rgba(230,169,60,.44); }
+  }
+  /* blocked — a soft warning pulse in the fleet's danger tone, a touch more insistent
+     (faster) than the calm states: attention needed. Pairs with the red ship glow. */
+  .run.blocked:not(.recent) > .voyage-row { animation: card-blocked 2.2s ease-in-out infinite; }
+  @keyframes card-blocked {
+    0%,100% { box-shadow: inset 3px 0 0 0 rgba(224,86,63,.55), 0 0 5px -2px rgba(224,86,63,.26); }
+    50%     { box-shadow: inset 3px 0 0 0 rgba(224,86,63,.95), 0 0 18px -2px rgba(224,86,63,.56); }
+  }
+
   .ship { width: 30px; height: 22px; display: flex; align-items: center; justify-content: center; }
   .ship svg { width: 28px; height: 21px; }
   .run:not(.blocked) .ship.sailing svg { animation: bob 3.6s ease-in-out infinite; }
@@ -547,6 +580,11 @@
     .run.just-shipped > .voyage-row { animation: none; }
     .landed-pennant { animation: none; opacity: 1; }
     .gauge.shipped-today.flourish { animation: none; }
+    /* state-specific run animations (#150): drop the motion, keep a STATIC coloured
+       left seam so each state still reads distinctly for a reduced-motion viewer. */
+    .run.g-building:not(.recent) > .voyage-row { animation: none; box-shadow: inset 3px 0 0 0 rgba(86,180,233,.6); }
+    .run.g-awaiting-merge:not(.recent) > .voyage-row { animation: none; box-shadow: inset 3px 0 0 0 rgba(230,169,60,.6); }
+    .run.blocked:not(.recent) > .voyage-row { animation: none; box-shadow: inset 3px 0 0 0 rgba(224,86,63,.7); }
   }
 </style>
 </head>
@@ -1258,7 +1296,10 @@ function renderRun(run) {
   const key = runKey(run);
   const activeBuild = isActiveBuild(run);
   const isOpen = isRunOpen(run);
-  const block = $("div", "run" + (run.recent ? " recent" : "") + (run.blocked ? " blocked" : "") + (run.terminal ? " terminal" : "") + (isOpen ? " expanded" : ""));
+  // The run's real armada:* GROUP rides as a `g-<group>` class so the CSS can key
+  // the state-specific ambient animations off it (#150) — building shimmer, awaiting
+  // ready-glow, blocked warning pulse; the shipped flourish stays one-shot (below).
+  const block = $("div", "run g-" + groupOf(run) + (run.recent ? " recent" : "") + (run.blocked ? " blocked" : "") + (run.terminal ? " terminal" : "") + (isOpen ? " expanded" : ""));
   block.dataset.key = key;
   const row = renderRow(run, isOpen);
   const toggle = () => {
