@@ -193,6 +193,26 @@ function stageForIssue(labels) {
   return { activeIndex: 0, blocked: false, status: 'Feasibility', terminal: false };
 }
 
+// ---------------------------------------------------------------------------
+// Coarse fleet GROUPS for the multi-run overview roll-up — derived from the 12
+// operator stages so the summary header can count runs by state at a glance.
+//   building      — pre-PR + build/test + the pre-submit self-review (stages 0–5)
+//   awaiting-merge— PR open / being watched / approved, waiting on the gate (6,7,9)
+//   reviewing     — the muster + address-review feedback loop (stage 8)
+//   done          — merged / harvest, or a terminal shipped run (stages 10,11)
+//   blocked       — any blocked run (overrides all of the above)
+// Documented in SKILL.md §6 alongside the 12-stage mapping.
+// ---------------------------------------------------------------------------
+const GROUPS = ['building', 'reviewing', 'awaiting-merge', 'blocked', 'done'];
+function groupForStage({ activeIndex, blocked, terminal }) {
+  if (blocked) return 'blocked';
+  if (terminal || activeIndex >= 10) return 'done';                 // Merged, Harvest
+  if (activeIndex === 8) return 'reviewing';                        // Feedback
+  if (activeIndex === 6 || activeIndex === 7 || activeIndex === 9)  // PR submitted / Watching PR / Approved
+    return 'awaiting-merge';
+  return 'building';                                                // Feasibility … AI review (0–5)
+}
+
 function stageForPr(pr) {
   const ls = labelNames(pr.labels);
   const decision = (pr.reviewDecision || '').toUpperCase();
@@ -337,6 +357,7 @@ function snapshot({ label, repo, commissioned }) {
       status: stage.status,
       blocked: stage.blocked,
       terminal: stage.terminal,
+      group: groupForStage(stage),
       doneVideo,
       cost,
     };
@@ -361,6 +382,17 @@ function snapshot({ label, repo, commissioned }) {
 
   const blockedCount = runs.filter((r) => r.blocked).length;
 
+  // Fleet roll-up — counts by coarse group, total in-flight, total cost — for
+  // the multi-run overview header. Client-recomputable, but emitted here so the
+  // grouping is authoritative + documented in one place. (Additive; schema 1.)
+  const rollup = { building: 0, reviewing: 0, 'awaiting-merge': 0, blocked: 0, done: 0,
+    inFlight: runs.length, totalCost: 0, costKnown: false };
+  for (const r of runs) {
+    if (rollup[r.group] != null) rollup[r.group] += 1;
+    const tc = r.cost && r.cost.present ? r.cost.totalCost : null;
+    if (typeof tc === 'number' && Number.isFinite(tc)) { rollup.totalCost += tc; rollup.costKnown = true; }
+  }
+
   return {
     schema: 1,
     generatedAt: new Date().toISOString(),
@@ -369,11 +401,13 @@ function snapshot({ label, repo, commissioned }) {
     commissioned,
     ghOk,
     stageNames: STAGES,
+    groupNames: GROUPS,
     degraded: !commissioned || !ghOk
       ? (!commissioned ? 'uncommissioned — no .armada/config.json; no runs to show'
                        : 'gh query failed or unauthenticated; no runs to show')
       : null,
     runs,
+    rollup,
     summary: `runs ${runs.length} · blocked ${blockedCount}`,
   };
 }
