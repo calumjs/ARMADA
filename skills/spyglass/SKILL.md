@@ -429,6 +429,19 @@ Same posture as the chart (§5): an uncommissioned repo, an unauthenticated/fail
 issues/PRs all render a calm **"no runs to show"** empty state rather than crashing; the dashboard
 honours **`prefers-reduced-motion`** (drops the active-dot glow).
 
+### Version stamp + auto-reload — a new spyglass refreshes the tab itself
+
+The snapshot carries an **`appVersion`** stamp — a short content hash of the shipped
+`spyglass-run-app.html`, recomputed each snapshot (read-only, additive) — so a UI change ships a new
+value. The app captures the `appVersion` it **booted** with on first load and, on each poll, compares
+the fetched stamp to it; when it **changes**, the page **reloads itself** (a plain `location.reload()`,
+preserving the served URL) after a one-poll debounce so a mid-deploy snapshot can't thrash. This is the
+whole point for a **passive/streamed tab** (a YouTube/kiosk tab reached by a one-time `page.goto`, with
+no interaction) and the local watch tab: both pick up a newly-shipped dashboard with **no manual F5 or
+stream restart**. It's a **version-change** trigger only — an ordinary data poll never reloads — and it
+**degrades safely**: if `appVersion` is absent (an older snapshot) the app data-polls exactly as before
+and never reloads, so there is no reload loop.
+
 ## Bundled assets
 
 All rendering ships under the plugin and is referenced via `${CLAUDE_PLUGIN_ROOT}` (per the repo's

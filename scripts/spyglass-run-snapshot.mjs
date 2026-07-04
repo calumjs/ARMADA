@@ -65,8 +65,27 @@ import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { execFileSync, spawn } from 'child_process';
+import { createHash } from 'crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// A content stamp of the shipped dashboard app (spyglass-run-app.html) — a short
+// hash of its bytes, recomputed each snapshot. It changes whenever the UI's
+// HTML/CSS/JS changes, so an already-open tab (a passive/streamed kiosk tab or the
+// local watch tab) can notice a NEW spyglass version in the polled snapshot and
+// self-reload to pick it up — no manual F5 / stream restart (SKILL §6). Additive
+// and READ-ONLY. Falls back to null if the app file can't be read, in which case
+// the app omits the stamp and never reloads — exactly today's behaviour.
+function computeAppVersion() {
+  try {
+    return createHash('sha256')
+      .update(readFileSync(path.join(__dirname, 'spyglass-run-app.html')))
+      .digest('hex')
+      .slice(0, 12);
+  } catch {
+    return null;
+  }
+}
 
 // ARMADA's genuine voyage stages — each is OBSERVABLE from the armada:* labels
 // plus PR draft/CI/review sub-state (see stageForIssue / stageForPr). This is the
@@ -675,6 +694,7 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap }) {
 
   return {
     schema: 3,
+    appVersion: computeAppVersion(),   // content stamp of the shipped app, recomputed each snapshot (so a long-lived --watch producer re-stamps when the UI ships) → drives the tab's version self-reload (SKILL §6)
     generatedAt: new Date().toISOString(),
     repo: repo || 'unknown',
     triggerLabel: label,
