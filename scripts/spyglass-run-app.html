@@ -453,6 +453,41 @@
     .s-cost.accruing .cnum, .cost-status.est .pip { animation: none; }
   }
 
+  /* ---------- compact summary card (auto-expanded active build, #131) ----------
+     A concise expanded card for the run(s) currently BUILDING (armada:underway):
+     the current stage, live elapsed + accruing cost, and the issue/PR deep-links —
+     NOT the full pipeline / meta / ledger dump. Auto-expanded by default so the
+     active build reads as the most interesting thing on the board; still user-
+     collapsible. Shares the brass seam + flattened top of the full log card. */
+  .summary-card {
+    border: 1px solid var(--brass-dim); border-top: 0; border-radius: 0 0 12px 12px;
+    background: linear-gradient(180deg, var(--wood), #10202f);
+    padding: 11px 16px 13px;
+    display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 12px 22px; align-items: center;
+  }
+  .summary-card .sum-stage { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .summary-card .sum-glyph { font-size: 17px; line-height: 1; color: var(--building); flex: none; }
+  .summary-card .sum-stage-body { min-width: 0; }
+  .summary-card .sum-stage-name { font-family: var(--serif); font-size: 14px; color: var(--parch); font-weight: 600; }
+  .summary-card .sum-stage-cap { font-family: var(--mono); font-size: 11px; color: var(--ink-faint);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .summary-card .sum-facts { display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap; justify-content: flex-end; }
+  .summary-card .sum-fact { display: flex; flex-direction: column; gap: 2px; text-align: right; }
+  .summary-card .sum-fact .k { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
+  .summary-card .sum-fact .v { font-family: var(--mono); font-size: 13px; color: var(--ink); }
+  .summary-card .sum-fact .v.cost { color: var(--brass); }
+  .summary-card .sum-fact .v .tag { font-size: 8px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); margin-left: 4px; }
+  .summary-card .sum-links { display: inline-flex; gap: 12px; justify-content: flex-end; }
+  .summary-card .sum-links a { color: var(--brass-bright); text-decoration: none; }
+  .summary-card .sum-links a:hover { text-decoration: underline; }
+  .summary-card .sum-links a:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; border-radius: 3px; }
+  @media (max-width: 620px) {
+    .summary-card { grid-template-columns: 1fr; }
+    .summary-card .sum-facts { justify-content: flex-start; }
+    .summary-card .sum-fact { text-align: left; }
+    .summary-card .sum-links { justify-content: flex-start; }
+  }
+
   /* empty / degraded */
   .empty { text-align: center; color: var(--ink-dim); padding: 70px 20px; }
   .empty .glyph { font-size: 34px; opacity: .8; }
@@ -623,6 +658,7 @@ function shipSVG(color) {
 // ---- run identity + group fallback (mirror the driver) --------------------
 const runKey = (run) => "r:" + (run.issueNumber != null ? "i" + run.issueNumber : "p" + run.prNumber);
 const expanded = new Set();        // run keys the operator has opened — preserved across polls
+const userCollapsed = new Set();   // active-build keys the operator manually collapsed despite auto-expand (#131)
 let prevState = new Map();         // runKey -> { group, activeIndex, blocked } from the last render
 let prevShippedToday = null;       // last-rendered shipped-today count — drives the manifest ticker flourish (#127)
 let sortMode = "stage";
@@ -636,6 +672,21 @@ function groupOf(run) {
   if (i === 2 || i === 3) return "reviewing";
   if (i === 1) return "building";
   return "queued";
+}
+
+// A run actively being built (armada:underway → group "building") auto-expands a
+// compact summary card by default (#131), so the in-progress work reads as the most
+// interesting thing on the board. Only genuine in-flight builds — never a recent,
+// terminal, or blocked run.
+function isActiveBuild(run) {
+  return !run.recent && !run.terminal && !run.blocked && groupOf(run) === "building";
+}
+// Whether a run's card is open: an active build is open BY DEFAULT (unless the operator
+// has manually collapsed it); every other run opens only on an explicit manual expand.
+function isRunOpen(run) {
+  const key = runKey(run);
+  if (isActiveBuild(run)) return !userCollapsed.has(key);
+  return expanded.has(key);
 }
 
 // The voyage bar — one leg per real stage, a vessel marker on the active leg.
@@ -896,6 +947,62 @@ function renderLedger(run) {
   return block;
 }
 
+// ---- compact summary card (auto-expanded active build, #131) ---------------
+// A concise expanded card for a run currently BUILDING: the current stage (+ its
+// caption), live-ticking elapsed and accruing cost, and the issue/PR deep-links —
+// NOT the full pipeline / meta / ledger dump. Read-only; reuses costCell + the same
+// js-elapsed / js-estcost hooks so the 1s ticker keeps it live.
+function renderSummaryCard(run) {
+  const card = $("div", "summary-card");
+
+  // current stage — the active leg of the real armada:* voyage
+  const stageWrap = $("div", "sum-stage");
+  stageWrap.appendChild($("span", "sum-glyph", "⛵"));
+  const stageBody = $("div", "sum-stage-body");
+  const stages = run.stages || [];
+  const caps = run.stageCaptions || [];
+  const i = run.activeIndex;
+  stageBody.appendChild($("div", "sum-stage-name", stages[i] || run.status || "Building"));
+  if (caps[i]) stageBody.appendChild($("div", "sum-stage-cap", caps[i]));
+  stageWrap.appendChild(stageBody);
+  card.appendChild(stageWrap);
+
+  // facts: elapsed · live cost · issue/PR deep-links
+  const facts = $("div", "sum-facts");
+
+  const elFact = $("div", "sum-fact");
+  elFact.appendChild($("span", "k", "elapsed"));
+  const elV = $("span", "v js-elapsed");
+  if (run.startedAt) { elV.dataset.since = run.startedAt; elV.textContent = elapsedText(run.startedAt) || "—"; }
+  else elV.textContent = "—";
+  elFact.appendChild(elV);
+  facts.appendChild(elFact);
+
+  const cd = costCell(run);
+  const costFact = $("div", "sum-fact");
+  costFact.appendChild($("span", "k", "cost"));
+  const costV = $("span", "v cost");
+  const cnum = $("span", "cnum", cd.text);
+  if (cd.since) { cnum.classList.add("js-estcost"); cnum.dataset.since = cd.since; }
+  costV.appendChild(cnum);
+  if (cd.tag) costV.appendChild($("span", "tag", cd.tag));
+  if (cd.title) costV.title = cd.title;
+  costFact.appendChild(costV);
+  facts.appendChild(costFact);
+
+  const linkFact = $("div", "sum-fact");
+  linkFact.appendChild($("span", "k", "open"));
+  const links = $("span", "v sum-links");
+  if (run.issueUrl) links.appendChild(deepLink("", "#" + run.issueNumber, run.issueUrl, `open #${run.issueNumber} on GitHub`, false));
+  if (run.prUrl) links.appendChild(deepLink("", "PR #" + run.prNumber, run.prUrl, `open PR #${run.prNumber} on GitHub`, false));
+  if (!run.issueUrl && !run.prUrl) links.appendChild($("span", "naval", "n/a"));
+  linkFact.appendChild(links);
+  facts.appendChild(linkFact);
+
+  card.appendChild(facts);
+  return card;
+}
+
 function renderCard(run) {
   const card = $("div", "logcard");
   const body = $("div", "card-body");
@@ -909,15 +1016,23 @@ function renderCard(run) {
 // a run block = the voyage row + (when expanded) the full log card.
 function renderRun(run) {
   const key = runKey(run);
-  const isOpen = expanded.has(key);
+  const activeBuild = isActiveBuild(run);
+  const isOpen = isRunOpen(run);
   const block = $("div", "run" + (run.recent ? " recent" : "") + (run.blocked ? " blocked" : "") + (run.terminal ? " terminal" : "") + (isOpen ? " expanded" : ""));
   block.dataset.key = key;
   const row = renderRow(run, isOpen);
   const toggle = () => {
-    if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
+    // An active build is expanded by default (#131): a manual toggle records the
+    // operator's collapse / re-open in userCollapsed. Every other run toggles the
+    // usual expanded set. Either way the auto-expand default is never mutated away.
+    if (activeBuild) {
+      if (userCollapsed.has(key)) userCollapsed.delete(key); else userCollapsed.add(key);
+    } else {
+      if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
+    }
     const next = renderRun(run);
     block.replaceWith(next);
-    if (expanded.has(key)) { const s = next.querySelector(".voyage-row"); if (s) s.focus(); }
+    if (isRunOpen(run)) { const s = next.querySelector(".voyage-row"); if (s) s.focus(); }
   };
   // A click / key on an inner deep link (or copy/open button) acts on that control —
   // it must not also toggle the card (#127). Inner links already stopPropagation; this
@@ -928,7 +1043,9 @@ function renderRun(run) {
     if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); toggle(); }
   });
   block.appendChild(row);
-  if (isOpen) block.appendChild(renderCard(run));
+  // An active build shows the COMPACT summary card (#131); every other expanded run
+  // shows the full log card. Both preserve the read-only invariant (no writes).
+  if (isOpen) block.appendChild(activeBuild ? renderSummaryCard(run) : renderCard(run));
   return block;
 }
 
@@ -1291,6 +1408,7 @@ function render(state) {
   // from in-flight to the harbour — keep its expanded state across that hop).
   const live = new Set([...runs, ...recentRuns].map(runKey));
   for (const k of Array.from(expanded)) if (!live.has(k)) expanded.delete(k);
+  for (const k of Array.from(userCollapsed)) if (!live.has(k)) userCollapsed.delete(k);
 
   if (state && state.degraded) {
     document.getElementById("fleet").textContent = "";
