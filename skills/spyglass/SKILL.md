@@ -280,6 +280,12 @@ When the fleet is busy the dashboard opens on the **overview**, not a stack of f
   not a misleading `$0.00`) or **`accruing…`** when no rate is set; a recorded-but-partial figure reads
   **`$X`** tagged *so far*; only a reconciled run reads a plain **`$X`** (final). Legible with many
   concurrent runs (6+); a blocked run reads red. **Sort** by furthest-along / cost / age.
+- **Click through to GitHub (#127).** Each row's **number** links to its GitHub **issue** (or its **PR**
+  when there's no issue) and its **title** links to the **PR** when one exists (else the issue) — opened
+  in a **new tab** (`target=_blank`, `rel=noopener`). It's **read-only** (just deep links, no mutation),
+  keyboard-accessible (the links are natively focusable; **Enter** follows them), and following a link
+  never toggles the row's card — the rest of the row still expands. The **horizon** hulls and the
+  **recent-voyages** rows are click-through the same way.
 - **Expand on demand** — any voyage row **expands** into the full per-run **log card** below it and
   **collapses** again. It is **click + keyboard accessible** (each row is a `role="button"`,
   `tabindex="0"` with `aria-expanded`; **Enter**/**Space** toggles) and rows **expand independently**
@@ -330,10 +336,13 @@ matching the same ARMADA nautical theme.
   it landed* ("shipped 2h ago"), and the run's **final cost** from `out/costs/<run>.json` when present.
 - **The roll-up counts shipped-today.** The manifest bar shows a **shipped today** gauge and the lane
   header reads *"N in the harbour · M shipped today · last Kh"*. `rollup.shippedToday` counts
-  non-blocked terminal runs completed since local midnight.
+  non-blocked terminal runs completed since local midnight. The gauge is a **celebratory ticker** (#127):
+  when the count **rises** on a poll (a fresh landing), it **pops with a green flourish** for a moment
+  before settling — so a merge lands with a beat of fanfare. First paint is calm (nothing to compare).
 - **Live in-flight → harbour on merge.** On the existing poll, a run that merges **animates out** of the
-  in-flight lane and into the harbour, earning the **"just shipped ⚓" glow** there (the transition is
-  detected across both lanes), then **ages out** on a later poll. Expanded state is preserved across the
+  in-flight lane and into the harbour, earning the **"just shipped ⚓" glow** — plus a brief **celebratory
+  pennant** that rises off the row (#127) — there (the transition is detected across both lanes), then
+  **ages out** on a later poll. Expanded state is preserved across the
   hop. **Graceful empty states:** an idle fleet with recent arrivals shows the runs under a calm "no
   voyages under way" note; a truly empty board (no in-flight, no recent) shows **"an empty harbour"**.
 
