@@ -107,6 +107,13 @@ the review **must include a visual inspection of the actual rendered output**, n
    theme (light *and* dark where applicable). Compare against the intended design/mock if one exists.
 3. **File what you see.** A visual defect is a finding — same as a code finding — with the region /
    screenshot cited so it's actionable.
+4. **Tear down only the browser you launched — never a process-wide kill.** Close the exact instance
+   this review spawned: hold the child process/PID or the Playwright `browser`/`context` handle and
+   close *that*, or drive a dedicated `--user-data-dir` / isolated automation profile / headless
+   session and close it. **Never** `taskkill /IM msedge.exe`, `pkill chrome`, `killall chrome`, or
+   `Stop-Process -Name msedge` — a process-wide kill closes every browser window the operator has open
+   on a live desktop (their work, a live stream, other agents), not just the review's. If teardown
+   can't be scoped, prefer a fire-and-forget `file://` open with no teardown over a blanket kill.
 
 This is a hard requirement because the highest-value UI bugs — a CSS rule keyed on a class the JS never
 adds, text overflowing a fixed-width column — are **invisible in the diff** and only appear on screen. A
