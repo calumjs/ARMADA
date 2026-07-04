@@ -724,7 +724,7 @@ function deepLink(cls, text, url, titleText, withExt) {
 
 // ---- compact voyage row (default overview) --------------------------------
 function renderRow(run, isOpen) {
-  const num = "#" + (run.issueNumber ?? run.prNumber ?? "?");
+  const num = "#" + (run.number ?? run.issueNumber ?? run.prNumber ?? "?");
   const g = groupOf(run);
   const color = GROUP_COLOR[g] || "var(--building)";
   const row = $("div", "voyage-row");
@@ -838,7 +838,7 @@ function renderMeta(run) {
   const col = $("div", "meta");
   // issue / PR deep links
   const idV = $("span");
-  if (run.issueUrl) { const a = $("a", null, "#" + run.issueNumber); a.href = run.issueUrl; a.target = "_blank"; a.rel = "noopener"; a.addEventListener("click", (e) => e.stopPropagation()); idV.appendChild(a); }
+  if (run.issueUrl) { const a = $("a", null, "#" + (run.issueNumber ?? run.number)); a.href = run.issueUrl; a.target = "_blank"; a.rel = "noopener"; a.addEventListener("click", (e) => e.stopPropagation()); idV.appendChild(a); }
   else idV.appendChild($("span", "naval", run.prUrl ? "" : "n/a"));
   if (run.prUrl) { idV.appendChild(document.createTextNode("  ")); const p = $("a", null, "PR #" + run.prNumber); p.href = run.prUrl; p.target = "_blank"; p.rel = "noopener"; p.addEventListener("click", (e) => e.stopPropagation()); idV.appendChild(p); }
   col.appendChild(metaRow("issue / pr", idV));
@@ -993,7 +993,7 @@ function renderSummaryCard(run) {
   const linkFact = $("div", "sum-fact");
   linkFact.appendChild($("span", "k", "open"));
   const links = $("span", "v sum-links");
-  if (run.issueUrl) links.appendChild(deepLink("", "#" + run.issueNumber, run.issueUrl, `open #${run.issueNumber} on GitHub`, false));
+  if (run.issueUrl) { const n = run.issueNumber ?? run.number; links.appendChild(deepLink("", "#" + n, run.issueUrl, `open #${n} on GitHub`, false)); }
   if (run.prUrl) links.appendChild(deepLink("", "PR #" + run.prNumber, run.prUrl, `open PR #${run.prNumber} on GitHub`, false));
   if (!run.issueUrl && !run.prUrl) links.appendChild($("span", "naval", "n/a"));
   linkFact.appendChild(links);

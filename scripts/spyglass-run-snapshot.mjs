@@ -930,10 +930,10 @@ function buildScheduler({ runs, recentRuns, issues, prs, cap, schedState, repo }
   const nodeFromRun = (r, waiting, eligible, held, reasons, files) => ({
     key: r.issueNumber != null ? 'i' + r.issueNumber : 'p' + r.prNumber,
     unit: r.prNumber != null && r.issueNumber == null ? 'pr' : 'issue',
-    number: r.issueNumber ?? r.prNumber,
+    number: r.number ?? r.issueNumber ?? r.prNumber,
     issueNumber: r.issueNumber ?? null,
     prNumber: r.prNumber ?? null,
-    title: r.title || `#${r.issueNumber ?? r.prNumber}`,
+    title: r.title || `#${r.number ?? r.issueNumber ?? r.prNumber}`,
     url: r.prUrl || r.issueUrl || null,
     group: r.group, activeIndex: r.activeIndex,
     status: waiting ? (held ? 'Held' : 'Eligible') : (r.status || 'in flight'),
@@ -1195,6 +1195,17 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
     // Branch: prefer the PR's head; else the crows-nest run map (in-flight, pre-PR).
     const runRec = issueNumber != null ? runMap[String(issueNumber)] : null;
     const branch = (pr && pr.headRefName) || (runRec && runRec.branch) || null;
+    // The run's DISPLAY number, threaded onto the run object so every card header shows
+    // a real `#N` in EVERY state — not `#?` (issue #146). A queued/building run has no PR
+    // yet, so prefer the issue number, then the PR number; as a last resort (a pre-PR run
+    // whose issue wasn't in the fetch but whose crows-nest branch is `NNN-slug`) recover it
+    // from the leading number of the branch. `derivedIssueNumber` is that branch-recovered
+    // ISSUE number (only when we have neither an issue nor a PR), so the header can still
+    // deep-link to the issue. READ-ONLY: this only reads data already fetched.
+    const derivedIssueNumber = (issueNumber == null && prNumber == null && branch)
+      ? (() => { const m = String(branch).match(/^(\d{1,7})(?:[-_/]|$)/); return m ? Number(m[1]) : null; })()
+      : null;
+    const number = issueNumber ?? prNumber ?? derivedIssueNumber ?? null;
     const stage = recent
       ? recentOutcome({ issue, pr })
       : (pr ? stageForPr(pr) : stageForIssue(issue.labels));
@@ -1242,10 +1253,13 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
       ? (pr.mergeCommit.oid || pr.mergeCommit.sha || null) : null;
 
     return {
+      number,
       issueNumber,
       prNumber,
-      title: (issue && issue.title) || (pr && pr.title) || `#${issueNumber ?? prNumber}`,
-      issueUrl: issueNumber != null ? unitUrl('issue', issueNumber) : null,
+      title: (issue && issue.title) || (pr && pr.title) || `#${number ?? issueNumber ?? prNumber}`,
+      issueUrl: issueNumber != null
+        ? unitUrl('issue', issueNumber)
+        : (derivedIssueNumber != null ? unitUrl('issue', derivedIssueNumber) : null),
       prUrl: prNumber != null ? unitUrl('pr', prNumber) : null,
       branch,
       worktree,
