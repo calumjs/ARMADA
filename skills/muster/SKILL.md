@@ -98,16 +98,49 @@ a dead CSS class, a theme that only breaks on screen. When the PR touches a **us
 (an `*.html` view, CSS, a rendered dashboard/app, a template, or any change to how something *looks*),
 the review **must include a visual inspection of the actual rendered output**, not just the diff:
 
-1. **Render the change.** Serve/launch the affected view and open it in a headless browser
-   (Playwright/Chromium). Serve dashboards over a **localhost http server** — a `file://` open blocks
-   the app's `fetch` and renders blank (e.g. the spyglass driver). Drive it into the state the change
-   affects (populate the data path the PR touches).
-2. **Screenshot and actually look.** Capture the rendered view and inspect the changed region for
+1. **Render the change — under a hard timeout that can never wedge the review.** Serve/launch the
+   affected view and open it in a headless browser (Playwright/Chromium). Serve dashboards over a
+   **localhost http server** — a `file://` open blocks the app's `fetch` and renders blank (e.g. the
+   spyglass driver). Drive it into the state the change affects (populate the data path the PR
+   touches). The **entire render — browser launch + `goto`/navigation + screenshot — MUST run under
+   a hard timeout** so it can never hang the pipeline. On some hosts (seen repeatedly on win-arm64
+   with the system browser) the launch or `goto` hangs **indefinitely**; without a bound it wedges
+   the whole review — the agent goes silent for 10+ minutes and never reaches the merge gate. So
+   bound it, and prefer bounding **each stage** so a hang at any point is caught quickly:
+   - **Per-step Playwright timeouts.** Set them explicitly rather than relying on defaults: pass
+     `timeout` to `launch`/`launchPersistentContext`, a bounded `page.goto(url, { timeout: … })`,
+     and a bounded `page.screenshot({ timeout: … })` (and/or `page.setDefaultTimeout(…)` /
+     `page.setDefaultNavigationTimeout(…)`). Keep each step short (e.g. ~20–30s) so a stalled stage
+     fails fast instead of eating the whole budget.
+   - **A total wall-clock backstop (~60–90s) around the whole render**, because a hang can occur
+     *before* Playwright's own timers arm (e.g. the browser process never comes up). Wrap the render
+     in an outer timeout — `Promise.race` against a timer, an `AbortController` /
+     `AbortSignal.timeout`, or an OS `timeout(1)` wrapper around a render subprocess — so control
+     **always** returns even if the in-library timeouts don't fire.
+2. **On timeout or render failure, abandon the render cleanly and degrade — never hang.** If the hard
+   timeout fires (or the render throws), **do not retry-loop or wait it out**: abandon the render and
+   let the review continue to a **code-only verdict**.
+   - **Kill only the browser instance this render launched — scoped to its own PID / handle.** Hold
+     the child process PID or the Playwright `browser`/`context` handle from step 1 and kill/close
+     **exactly that** (`browser.close()`, or `process.kill(child.pid)` on the launched PID, or close
+     the isolated `--user-data-dir` session). A hung render is precisely where the temptation to
+     `taskkill /IM` is strongest — resist it: **never** a blanket kill (see step 5), because a live
+     desktop has the operator's own windows, a live stream, and other agents' browsers open, and a
+     process-wide kill takes all of them down.
+   - **Continue to a code-only verdict and record the render as `skipped (timed out)`.** The
+     conventions/correctness lens and the codex-rescue lens still run and gate the merge; only the
+     visual lens is dropped.
+   - **Name the degrade in the summary.** A timed-out/failed render **degrades the review to
+     code-lens-only**, and that degrade must be stated in the top-level summary (§3) — e.g. "visual
+     inspection skipped: render timed out after 90s on this host; reviewed code-only" — the same way
+     a missing second lens is called out in §1a. A degraded review is **incomplete, not a pass**: it
+     never silently swallows the skip, but it also **never blocks or wedges** the pipeline over it.
+3. **Screenshot and actually look.** Capture the rendered view and inspect the changed region for
    overlap, clipping, inconsistent spacing/alignment, broken wrap/responsive behaviour, and correct
    theme (light *and* dark where applicable). Compare against the intended design/mock if one exists.
-3. **File what you see.** A visual defect is a finding — same as a code finding — with the region /
+4. **File what you see.** A visual defect is a finding — same as a code finding — with the region /
    screenshot cited so it's actionable.
-4. **Tear down only the browser you launched — never a process-wide kill.** Close the exact instance
+5. **Tear down only the browser you launched — never a process-wide kill.** Close the exact instance
    this review spawned: hold the child process/PID or the Playwright `browser`/`context` handle and
    close *that*, or drive a dedicated `--user-data-dir` / isolated automation profile / headless
    session and close it. **Never** `taskkill /IM msedge.exe`, `pkill chrome`, `killall chrome`, or
