@@ -91,6 +91,28 @@ case doesn't arise, because the Workflow owns the top-level fan-out (see the cal
   environment, note that in the summary and run with the single lens rather than failing the whole
   muster — a one-lens review is degraded, not useless.
 
+### 1b. Visual inspection — REQUIRED for user-facing UI changes
+
+A diff review alone **cannot** catch a rendered-layout regression — overlapping text, broken spacing,
+a dead CSS class, a theme that only breaks on screen. When the PR touches a **user-facing UI surface**
+(an `*.html` view, CSS, a rendered dashboard/app, a template, or any change to how something *looks*),
+the review **must include a visual inspection of the actual rendered output**, not just the diff:
+
+1. **Render the change.** Serve/launch the affected view and open it in a headless browser
+   (Playwright/Chromium). Serve dashboards over a **localhost http server** — a `file://` open blocks
+   the app's `fetch` and renders blank (e.g. the spyglass driver). Drive it into the state the change
+   affects (populate the data path the PR touches).
+2. **Screenshot and actually look.** Capture the rendered view and inspect the changed region for
+   overlap, clipping, inconsistent spacing/alignment, broken wrap/responsive behaviour, and correct
+   theme (light *and* dark where applicable). Compare against the intended design/mock if one exists.
+3. **File what you see.** A visual defect is a finding — same as a code finding — with the region /
+   screenshot cited so it's actionable.
+
+This is a hard requirement because the highest-value UI bugs — a CSS rule keyed on a class the JS never
+adds, text overflowing a fixed-width column — are **invisible in the diff** and only appear on screen. A
+UI change that was never rendered during review is an **incomplete review**: say so in the summary rather
+than passing a diff-only read as complete.
+
 ### Per-finding schema (both lenses return this)
 
 Each reviewer returns a JSON array of findings; a finding is:
