@@ -1,2 +1,8 @@
 *.md text eol=lf
 *.mjs text eol=lf
+
+# Auto-resolve the recurring plugin.json version-bump collision: when two fleet PRs
+# both bump `version`, keep the HIGHER semver instead of raising a conflict. The named
+# driver is implemented by scripts/semver-higher-merge.mjs and must be registered once
+# per clone: `node scripts/setup-merge-driver.mjs` (see README "Releasing & versioning").
+.claude-plugin/plugin.json merge=semver-higher
