@@ -199,29 +199,76 @@ function pidAlive(pid) {
 // Acquire the watch lock in `outDir`. Returns { ok:true, lockPath, tookOver } on
 // success (fresh lock or stale-takeover), or { ok:false, holder, lockPath } when a
 // LIVE holder already owns it. Never throws for the caller's decision path.
+//
+// The acquire is ATOMIC: the lockfile is created with the exclusive `wx` flag, so
+// of two watchers racing for a FRESH lock exactly one create succeeds — the other
+// gets EEXIST and, seeing the live winner, refuses. (A plain existsSync-then-write
+// would let both through: a TOCTOU race.) A STALE lock (dead/corrupt holder) is
+// taken over by unlinking it and re-creating with `wx` ONCE; if a competing taker
+// wins that create first, our retry gets EEXIST and — seeing the live winner —
+// refuses, so the takeover race also resolves to exactly one winner.
 function acquireWatchLock(outDir) {
   mkdirSync(outDir, { recursive: true });
   const lockPath = path.join(outDir, LOCK_NAME);
-  let tookOver = null;
-  if (existsSync(lockPath)) {
-    let holder = null;
-    try { holder = JSON.parse(readFileSync(lockPath, 'utf8')); } catch { /* corrupt → stale */ }
-    const hpid = holder ? Number(holder.pid) : NaN;
-    if (Number.isInteger(hpid) && hpid !== process.pid && pidAlive(hpid)) {
-      return { ok: false, holder, lockPath };
-    }
-    // Dead holder / corrupt / our own leftover → stale; take it over. Note a real
-    // takeover (a different, now-dead pid) so the caller can log it.
-    if (holder && Number.isInteger(hpid) && hpid !== process.pid) tookOver = holder;
-  }
-  const data = {
+
+  const payload = () => JSON.stringify({
     pid: process.pid,
     startedAt: new Date().toISOString(),
     out: path.resolve(outDir),
-    host: os.hostname(),
+  }, null, 2);
+
+  // Atomic exclusive create. true → we now own it; false → it already existed
+  // (EEXIST). Any other error is a real fault and propagates.
+  const tryCreate = () => {
+    try { writeFileSync(lockPath, payload(), { flag: 'wx' }); return true; }
+    catch (e) { if (e && e.code === 'EEXIST') return false; throw e; }
   };
-  writeFileSync(lockPath, JSON.stringify(data, null, 2));
-  return { ok: true, lockPath, tookOver };
+  // Bounded synchronous sleep (no busy-spin) used only for the mid-write grace below.
+  const sleepMs = (ms) => {
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* SAB off → skip */ }
+  };
+  // Read the current holder. `wx` creates the file THEN writes its payload, so a
+  // racer that reads in that gap would see a 0-byte/parse-fail lock and wrongly
+  // judge a LIVE mid-write winner as stale. Give a brief grace: if the file is
+  // present but not yet parseable, re-read a few times before concluding it's stale.
+  // A genuinely corrupt/empty lock just costs this small grace, then reads as null.
+  const readHolder = () => {
+    for (let i = 0; i < 6; i++) {
+      try { return JSON.parse(readFileSync(lockPath, 'utf8')); } catch { /* absent/mid-write/corrupt */ }
+      if (!existsSync(lockPath)) return null;  // vanished → truly gone
+      sleepMs(5);
+    }
+    return null;
+  };
+  // A live foreign holder (a real pid, not ours, still running).
+  const liveForeign = (h) => {
+    const p = h ? Number(h.pid) : NaN;
+    return Number.isInteger(p) && p !== process.pid && pidAlive(p);
+  };
+
+  // 1) Try to win a fresh lock outright.
+  if (tryCreate()) return { ok: true, lockPath, tookOver: null };
+
+  // 2) It already existed. If a LIVE holder owns it, refuse (name the pid).
+  let holder = readHolder();
+  if (liveForeign(holder)) return { ok: false, holder, lockPath };
+
+  // 3) Stale (dead / corrupt / our own leftover). Take it over atomically: re-check
+  //    it hasn't just turned live (shrinks the window in which a fresh takeover could
+  //    be clobbered), unlink, then re-create with `wx` ONCE. `wx` is the arbiter — if
+  //    a competing taker created first, our create loses with EEXIST below.
+  const hpid = holder ? Number(holder.pid) : NaN;
+  const tookOver = (holder && Number.isInteger(hpid) && hpid !== process.pid) ? holder : null;
+  const before = readHolder();  // re-read immediately before unlink
+  if (liveForeign(before)) return { ok: false, holder: before, lockPath };
+  try { unlinkSync(lockPath); } catch { /* already removed by a competing taker — fine */ }
+  if (tryCreate()) return { ok: true, lockPath, tookOver };
+
+  // 4) Lost the takeover race — someone else created between our unlink and create.
+  //    Re-inspect the winner: refuse if live (the common case), else refuse
+  //    conservatively rather than risk two concurrent drivers.
+  holder = readHolder();
+  return { ok: false, holder, lockPath };
 }
 
 // Release the lock — but ONLY if it's still ours (guards against deleting a lock a
@@ -255,7 +302,9 @@ function installLockRelease(lockPath) {
 // warns LOUDLY (or, under --strict, refuses) on a mismatch. The served dir is
 // resolved: --served-root > SPYGLASS_SERVED_ROOT > spyglass.servedRoot > a
 // best-effort auto-detect of a running static server. When it can't be determined
-// the check stays silent — it never raises a false alarm. READ-ONLY.
+// the check stays silent. The auto-detect matches only unambiguous static servers,
+// but an UNRELATED static server running on the box CAN still trigger a warn — so
+// the mismatch is a loud warning by default; refusal (--strict) is opt-in. READ-ONLY.
 // ---------------------------------------------------------------------------
 
 // Normalise a path for comparison: absolute, symlinks resolved when possible,

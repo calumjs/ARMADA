@@ -14,7 +14,7 @@
 // Run: node scripts/spyglass-run-snapshot.test.mjs
 
 import { spawn, spawnSync } from 'child_process';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -126,6 +126,57 @@ test('releaseWatchLock: removes our lock; leaves a foreign one', () => {
     writeFileSync(lockPath, JSON.stringify({ pid: 2 ** 31 - 1, startedAt: 'x' }));
     releaseWatchLock(lockPath);
     assert(existsSync(lockPath), 'a foreign lock is left intact');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- atomic acquire: concurrent racers → exactly one winner ----------------
+// Two separate PROCESSES race to acquire the SAME lock at the same instant. The
+// old existsSync-then-write path let BOTH through (a TOCTOU race); the `wx`
+// exclusive create must let exactly ONE win. Each racer, once acquired, stays
+// alive briefly so the loser observes it as a LIVE holder and refuses.
+const SCRIPT_URL = pathToFileURL(SCRIPT).href;
+function spawnAcquirer(dir) {
+  const code =
+    `import(${JSON.stringify(SCRIPT_URL)}).then(async (m) => {` +
+    `  const r = m.acquireWatchLock(${JSON.stringify(dir)});` +
+    `  process.stdout.write(r.ok ? 'OK' : 'NO');` +
+    `  await new Promise((res) => setTimeout(res, 700));` +
+    `  process.exit(0);` +
+    `});`;
+  return spawn(process.execPath, ['-e', code], { stdio: ['ignore', 'pipe', 'ignore'] });
+}
+function collectStdout(child) {
+  return new Promise((resolve) => {
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('close', () => resolve(out.trim()));
+  });
+}
+async function raceAcquire(dir, n = 2) {
+  const kids = Array.from({ length: n }, () => spawnAcquirer(dir));
+  return Promise.all(kids.map(collectStdout));
+}
+
+await testAsync('acquireWatchLock: two racers on a FRESH lock → exactly one ok (atomic)', async () => {
+  const dir = tmpDir();
+  try {
+    const results = await raceAcquire(dir, 2);
+    const oks = results.filter((r) => r === 'OK').length;
+    assert(oks === 1, `exactly one racer must acquire a fresh lock, got ${oks} of [${results.join(',')}]`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+await testAsync('acquireWatchLock: two racers taking over the SAME stale lock → exactly one ok', async () => {
+  const dir = tmpDir();
+  try {
+    // Seed a stale lock (dead pid) — both racers see it as takeable, but only one
+    // may win the atomic unlink+wx-create; the other refuses on the live winner.
+    writeFileSync(path.join(dir, LOCK_NAME), JSON.stringify({
+      pid: 2 ** 31 - 1, startedAt: new Date().toISOString(), out: dir,
+    }));
+    const results = await raceAcquire(dir, 2);
+    const oks = results.filter((r) => r === 'OK').length;
+    assert(oks === 1, `exactly one racer must take over a stale lock, got ${oks} of [${results.join(',')}]`);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

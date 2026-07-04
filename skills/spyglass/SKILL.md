@@ -256,8 +256,9 @@ directory than the driver wrote to — nothing errors, the board just lies):
 - **Served-dir sanity check.** `--served-root <dir>` (or `SPYGLASS_SERVED_ROOT` / `spyglass.servedRoot`,
   or a conservative auto-detect of a running static server) names the directory actually served over
   HTTP. If `--out` is **not** that directory the driver **warns loudly** on startup, and **refuses**
-  under `--strict`. Auto-detect only recognises unambiguous static servers and never raises a false
-  alarm — when the served root can't be determined it stays silent.
+  under `--strict`. Auto-detect only recognises unambiguous static servers, and stays silent when the
+  served root can't be determined — but an **unrelated** static server on the box can still trip the
+  warn, so the mismatch is a loud warning by default and refusal (`--strict`) is opt-in.
 
 The lock file lives in the scratch/output dir, so both guardrails preserve the driver's read-only
 invariant (**never the tracked repo**).
