@@ -73,6 +73,15 @@ PR-track label and a comment — a PR must **never** be left on `armada:reviewin
 - `blocked` → `gh pr edit <n> --remove-label "armada:reviewing" --add-label "armada:blocked"`; comment
   the reason (blocking finding, red CI, no convergence, non-mergeable, branch protection unmet).
 
+**Out-of-band merges are reconciled elsewhere.** §3e only reaches `armada:merged` when the pipeline
+**itself** merged the PR. A fleet PR merged **by a human** (`gh pr merge`, the usual case since the
+self-approval classifier blocks the lookout from self-merging ARMADA's own fleet PRs) never runs this
+pipeline, so it's reconciled by the on-merge auto-reconcile —
+[SKILL.md §5.1](../SKILL.md#51-on-merge-auto-reconcile--a-fleet-pr-merged-out-of-band) /
+[close-the-loop.md §5f](close-the-loop.md#5f-on-merge-auto-reconcile--a-fleet-pr-merged-out-of-band) —
+which takes the PR to the same `armada:merged` terminal, closes its issue to `armada:shipped`, and
+rings the shipped bell exactly once.
+
 ## 3f. Report
 
 The PR track's dispatch is reported as part of the **unified schedule line** (SKILL.md §2e), alongside
