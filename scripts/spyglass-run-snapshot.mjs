@@ -824,6 +824,39 @@ function ciOf(pr) {
 // Accepts { models:[{model,in,out,cacheRead,cacheWrite,cost}], sessions,
 // subagents, codex, matchMode, unpriced:[], totalCost }. Missing → n/a.
 // ---------------------------------------------------------------------------
+// Aggregate normalizeCost's per-model rows into a compact per-run model breakdown
+// (#151). Sums tokens (in+out+cache) and priced cost per DISTINCT model, then adds
+// each model's token- and cost-share. Returns a sorted array (busiest model first)
+// or null when there are no rows. Shares are null when that whole dimension is
+// absent, so an unpriced-only or token-less file still lists which models ran.
+function buildModelUsage(models) {
+  if (!Array.isArray(models) || models.length === 0) return null;
+  const byModel = new Map();
+  for (const m of models) {
+    const key = m.model || '?';
+    let e = byModel.get(key);
+    if (!e) { e = { model: key, tokens: null, cost: null }; byModel.set(key, e); }
+    for (const k of ['in', 'out', 'cacheRead', 'cacheWrite']) {
+      if (typeof m[k] === 'number') e.tokens = (e.tokens ?? 0) + m[k];
+    }
+    if (typeof m.cost === 'number') e.cost = (e.cost ?? 0) + m.cost;
+  }
+  const rows = [...byModel.values()];
+  const totTok = rows.reduce((a, r) => a + (typeof r.tokens === 'number' ? r.tokens : 0), 0);
+  const totCost = rows.reduce((a, r) => a + (typeof r.cost === 'number' ? r.cost : 0), 0);
+  const anyTok = rows.some((r) => typeof r.tokens === 'number');
+  const anyCost = rows.some((r) => typeof r.cost === 'number');
+  for (const r of rows) {
+    r.tokenShare = (anyTok && totTok > 0 && typeof r.tokens === 'number') ? r.tokens / totTok : null;
+    r.costShare = (anyCost && totCost > 0 && typeof r.cost === 'number') ? r.cost / totCost : null;
+  }
+  rows.sort((a, b) =>
+    ((b.tokens ?? 0) - (a.tokens ?? 0)) ||
+    ((b.cost ?? 0) - (a.cost ?? 0)) ||
+    String(a.model).localeCompare(String(b.model)));
+  return rows;
+}
+
 function normalizeCost(cost) {
   if (!cost || !cost.data) return { present: false, pointer: cost ? cost.pointer : null };
   const d = cost.data;
@@ -871,10 +904,20 @@ function normalizeCost(cost) {
     cacheWrite: tCacheW,
     total: tokenTotal,
   } : null;
+  // Per-MODEL breakdown (#151) — WHICH models the run used and each model's share
+  // of the work, derived from the SAME per-model rows above (#155): each carries
+  // in/out/cache tokens + priced cost. Aggregate by model name (a run can accrue
+  // several rows for one model across sessions), then compute each model's token-
+  // and cost-share (fractions 0..1; null when that dimension has no data across
+  // any model). Sorted by the strongest available signal (tokens, then cost, then
+  // name). Null overall when there are no model rows → the dashboard degrades to
+  // no model chip. Read-only: a pure derivation of what normalizeCost already saw.
+  const modelUsage = buildModelUsage(models);
   return {
     present: true,
     pointer: cost.pointer,
     models,
+    modelUsage,
     tokens,
     sessions: num(d.sessions) ?? null,
     subagents: num(d.subagents) ?? null,
