@@ -111,6 +111,19 @@ function outDirOf(args) {
   return path.join(args.out || process.cwd(), 'out', 'costs');
 }
 
+// Read `budget.perRunUSD` from .armada/config.json (read-only), for the
+// quartermaster over-budget flag (#148). Returns a finite number or null. Never
+// throws — a missing/malformed config just means "no per-run budget".
+function readPerRunBudget(args) {
+  const p = path.join(args.out || process.cwd(), '.armada', 'config.json');
+  if (!existsSync(p)) return null;
+  try {
+    const cfg = JSON.parse(readFileSync(p, 'utf8'));
+    const v = cfg && cfg.budget ? cfg.budget.perRunUSD : null;
+    return typeof v === 'number' && Number.isFinite(v) ? v : (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
+  } catch { return null; }
+}
+
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : (Number.isFinite(Number(v)) && v !== '' && v != null ? Number(v) : null));
 const nz = (v) => num(v) || 0;
 
@@ -207,10 +220,24 @@ function record(args) {
   doc.final = !!args.final || !!doc.final;
   doc.updatedAt = new Date().toISOString();
 
+  // quartermaster hook (issue #148): flag a run that overran its per-run budget on
+  // its OWN post-mortem, so a governance overrun is recorded per run, not just in
+  // aggregate. Read-only w.r.t. config; stamps `overBudget` when a real total
+  // exceeds `budget.perRunUSD`. Absent/unset budget → cleared. Never fatal.
+  const perRunUSD = readPerRunBudget(args);
+  if (typeof perRunUSD === 'number' && Number.isFinite(perRunUSD) && typeof doc.totalCost === 'number') {
+    doc.overBudget = doc.totalCost > perRunUSD
+      ? { perRunUSD, totalCost: doc.totalCost, over: Number((doc.totalCost - perRunUSD).toFixed(4)) }
+      : false;
+  } else {
+    delete doc.overBudget;
+  }
+
   mkdirSync(dir, { recursive: true });
   writeFileSync(file, JSON.stringify(doc, null, 2));
   const rel = path.relative(process.cwd(), file).replace(/\\/g, '/');
-  console.log(`spyglass-cost: ${rel} · ${doc.models.length} model(s) · total ${doc.totalCost == null ? 'n/a' : '$' + doc.totalCost.toFixed(2)} · ${doc.final ? 'final' : 'accruing'}${doc.unpriced.length ? ' · unpriced ' + doc.unpriced.join(',') : ''}`);
+  const over = doc.overBudget ? ` · ⚠ OVER per-run budget $${perRunUSD} (by $${doc.overBudget.over.toFixed(2)})` : '';
+  console.log(`spyglass-cost: ${rel} · ${doc.models.length} model(s) · total ${doc.totalCost == null ? 'n/a' : '$' + doc.totalCost.toFixed(2)} · ${doc.final ? 'final' : 'accruing'}${doc.unpriced.length ? ' · unpriced ' + doc.unpriced.join(',') : ''}${over}`);
   return file;
 }
 
