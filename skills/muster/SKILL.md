@@ -113,20 +113,29 @@ the review **must include a visual inspection of the actual rendered output**, n
      `page.setDefaultNavigationTimeout(…)`). Keep each step short (e.g. ~20–30s) so a stalled stage
      fails fast instead of eating the whole budget.
    - **A total wall-clock backstop (~60–90s) around the whole render**, because a hang can occur
-     *before* Playwright's own timers arm (e.g. the browser process never comes up). Wrap the render
-     in an outer timeout — `Promise.race` against a timer, an `AbortController` /
-     `AbortSignal.timeout`, or an OS `timeout(1)` wrapper around a render subprocess — so control
-     **always** returns even if the in-library timeouts don't fire.
+     *before* Playwright's own timers arm (e.g. the browser process never comes up). The robust shape
+     is to **run the render in a dedicated child process / worker and wrap it in an OS wall-clock
+     timeout** (`timeout(1)` around a render subprocess, a spawned worker you can `kill`, or a job
+     object) so the backstop can actually terminate a hung native launch. An in-process race
+     (`Promise.race` against a timer, an `AbortController` / `AbortSignal.timeout`) does **not** by
+     itself cancel a stuck `launch`/`goto` — the losing Playwright call keeps running — so if you use
+     one it **must also kill the spawned render worker** on timeout, not merely resolve around it.
+     Either way control **always** returns *and the hung work is actually stopped*, even if the
+     in-library timeouts never fire.
 2. **On timeout or render failure, abandon the render cleanly and degrade — never hang.** If the hard
    timeout fires (or the render throws), **do not retry-loop or wait it out**: abandon the render and
    let the review continue to a **code-only verdict**.
    - **Kill only the browser instance this render launched — scoped to its own PID / handle.** Hold
      the child process PID or the Playwright `browser`/`context` handle from step 1 and kill/close
      **exactly that** (`browser.close()`, or `process.kill(child.pid)` on the launched PID, or close
-     the isolated `--user-data-dir` session). A hung render is precisely where the temptation to
-     `taskkill /IM` is strongest — resist it: **never** a blanket kill (see step 5), because a live
-     desktop has the operator's own windows, a live stream, and other agents' browsers open, and a
-     process-wide kill takes all of them down.
+     the isolated `--user-data-dir` session). In the worst failure — `launch` never returns, so there
+     is *no* browser handle or PID yet — the scoped target is the **render worker process (tree) you
+     spawned in step 1**: kill that one process/job object you own, never by image name. (This is why
+     the backstop runs the render in a dedicated killable child — it guarantees you always have a
+     scoped thing to kill even when Playwright hands you nothing.) A hung render is precisely where
+     the temptation to `taskkill /IM` is strongest — resist it: **never** a blanket kill (see
+     step 5), because a live desktop has the operator's own windows, a live stream, and other agents'
+     browsers open, and a process-wide kill takes all of them down.
    - **Continue to a code-only verdict and record the render as `skipped (timed out)`.** The
      conventions/correctness lens and the codex-rescue lens still run and gate the merge; only the
      visual lens is dropped.
