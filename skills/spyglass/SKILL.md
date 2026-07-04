@@ -242,6 +242,26 @@ It takes the **same flags** as the chart driver (`--label`, `--out`, `--repo`, `
 `--watch <seconds>`), plus the recent-voyages window (`--recent-hours <N>`, `--recent-cap <N>`); the
 default output dir is `<os-tmp>/armada-spyglass-run/<repo-slug>/`.
 
+#### Driver guardrails — keep a live board from silently freezing (#133)
+
+Two startup guardrails stop the failure mode where a dashboard quietly shows a **days-old** snapshot
+(several stale `--watch` drivers overwriting the same file, and the web server serving a **different**
+directory than the driver wrote to — nothing errors, the board just lies):
+
+- **Single-driver lock.** A `--watch` driver takes an exclusive lock (`.spyglass-run.lock`, holding
+  `pid` + `startedAt`) in its `--out` dir. A **second** watcher against the same `--out` **refuses to
+  start** and names the live pid; a holder whose pid is **dead** (a crashed driver's stale lock) is
+  **transparently taken over**; the lock is released on clean exit. A **one-shot** (non-`--watch`)
+  snapshot neither takes nor is blocked by the lock — it writes once and exits.
+- **Served-dir sanity check.** `--served-root <dir>` (or `SPYGLASS_SERVED_ROOT` / `spyglass.servedRoot`,
+  or a conservative auto-detect of a running static server) names the directory actually served over
+  HTTP. If `--out` is **not** that directory the driver **warns loudly** on startup, and **refuses**
+  under `--strict`. Auto-detect only recognises unambiguous static servers and never raises a false
+  alarm — when the served root can't be determined it stays silent.
+
+The lock file lives in the scratch/output dir, so both guardrails preserve the driver's read-only
+invariant (**never the tracked repo**).
+
 ### Read-only — enforced and documented
 
 The dashboard makes **zero mutations**. Every source it touches is a read:
