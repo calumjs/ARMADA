@@ -50,34 +50,59 @@ gh pr view <n> --json files --jq '.files[].path' # changed paths (for inline-com
 If the PR is **draft** or has no diff, stop early: there's nothing to muster yet. Report that and
 return an empty finding set rather than spawning reviewers on nothing.
 
-## 0b. Emit a liveness beat as you advance (so a long render isn't misread as stalled)
+## 0b. Emit a liveness beat as you advance (so the review lane populates + a long render isn't misread as stalled)
 
-When crows-nest runs you as a **background** review subagent, the lookout sees **nothing** until you
-return — and the §1b visual inspection is a **single long headless render** that freezes any
-output-file mtime while it works normally. That is exactly the false-stall trap #134 was chartered on.
-So, like shipwright (§0a of its SKILL), **emit a coarse liveness beat as you cross each phase** so the
-lookout can tell *working* from *wedged* without guessing on mtime — most importantly a
-`visual-inspection` beat **immediately before** you launch the render, so its generous phase-aware
-grace covers the whole (bounded, §1b) render:
+**Emit a coarse liveness beat as you cross each phase of the review — on every muster run, foreground
+or under crows-nest.** Like shipwright (§0a of its SKILL), you beat your phase so the fleet can *see*
+the review while it happens. Two things depend on it, and both go dark if you stay silent:
+
+1. **The live activity feed / review lane (#200).** The dashboard's live feed (`spyglass-run-app.html`,
+   `renderFeed`) only shows a run that carries a `progress.phase` from a liveness beat — and it streams
+   your latest `--note` as the on-stream ticker line. shipwright beats while building, so builds show;
+   if muster beats nothing, **a PR under review shows nothing on the feed and the whole review lane is
+   silent on-stream** (it had to be hand-patched live before this was chartered). Beating your phase is
+   what puts the run in the **review** lane with a live note — no hand-emitting.
+2. **Stall-detection (#134).** When crows-nest runs you as a **background** review subagent it sees
+   **nothing** until you return, and the §1b visual inspection is a **single long headless render** that
+   freezes any output-file mtime while it works normally — the exact false-stall trap #134 was chartered
+   on. A `visual-inspection` beat **immediately before** you launch the render lets its generous
+   phase-aware grace cover the whole (bounded, §1b) render, so the lookout reads *working*, not *wedged*.
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/liveness-beat.mjs" \
-  beat --run <branch|PR> --phase <reviewing|visual-inspection|posting> [--note "<what>"]
-# and when you finish (after returning your findings, §4):
+  beat --run <branch|PR> --phase <reviewing|visual-inspection|posting> [--note "<short, plain note>"]
+# and when the review completes (after returning your findings, §4):
 node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/liveness-beat.mjs" \
   done --run <branch|PR> --status reviewed --reason "<one line>"
 ```
 
-Beat `reviewing` when the two lenses fan out (§1), `visual-inspection` just before the §1b render,
-`posting` when you post the review (§3), then the terminal `done` marker after §4. Key `--run` by the
-PR's **branch** (else its number). Because you key by branch, the branch's **build** dispatch has
-usually already written a terminal marker; your **first beat re-arms** the run automatically (clears
-that marker, bumps the lifecycle), so your review — and especially the `visual-inspection` render —
-is classifiable as *working* / *wedged* again rather than short-circuiting to the build's `done`. You
-do nothing special; just beat your phase. Beats are **best-effort and side-channel** (they write only under
-`out/liveness/`, gitignored) — if the producer is missing or a beat fails, swallow it and carry on; a
-liveness write must **never** block, fail, or delay the review. The reader (crows-nest §2d *"Is an
-in-flight build actually stalled?"*) consumes these beats + the phase-aware grace to classify the run.
+Beat, in order:
+
+- `reviewing` **at the start of the review**, when the two lenses fan out (§1) — e.g. `--note "reviewing
+  the diff — two lenses"`.
+- a **refreshed `reviewing` beat** as you progress so the ticker note keeps moving — e.g. `--note
+  "running the two review lenses"`, then, as you merge their findings (§2), `--note "consolidating
+  findings"`. (Keep the phase `reviewing` for these note refreshes — the note is what changes; only
+  cross to a new phase when the *work* changes.)
+- `visual-inspection` **just before** the §1b render (for a user-facing UI change) — e.g. `--note
+  "rendering the UI to eyeball it"`.
+- `posting` when you post the review to the PR (§3) — e.g. `--note "posting the review"`.
+- the terminal **`done`** marker after §4, when the review completes (clean or with findings).
+
+**Notes are shown live on the stream ticker, so keep them short, plain-language and viewer-friendly**
+(≤ ~8 words, no jargon / issue-numbers / shorthand) — they narrate the review to an audience with zero
+context, the same discipline as shipwright's build notes.
+
+Key `--run` by the PR's **branch** (else its number) — the **same** key shipwright and crows-nest use,
+so the dashboard resolves your review onto the same run. Because you key by branch, the branch's
+**build** dispatch has usually already written a terminal marker; your **first beat re-arms** the run
+automatically (clears that marker, bumps the lifecycle), so your review — and especially the
+`visual-inspection` render — is classifiable as *working* / *wedged* again rather than short-circuiting
+to the build's `done`. You do nothing special; just beat your phase. Beats are **best-effort and
+side-channel** (they write only under `out/liveness/`, gitignored) — if the producer is missing or a
+beat fails, **swallow it and carry on**; a liveness write must **never** block, fail, or delay the
+review. The reader (crows-nest §2d *"Is an in-flight build actually stalled?"*) consumes these beats +
+the phase-aware grace to classify the run.
 
 Your beat lands in the **main** repo's `out/liveness/` even when you run inside a linked worktree: the
 producer resolves the main repo root itself (`git rev-parse --git-common-dir`), so the beat is visible to
