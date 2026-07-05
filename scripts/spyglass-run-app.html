@@ -1227,6 +1227,67 @@
   @media (max-width: 640px) {
     .feed-item .fi-note { font-size: 12px; }
   }
+
+  /* ---------- live code-diff panel (#211) — the actual CODE a build is writing ----
+     Rides above BOTH layouts (like the scoreboard / trends / feed), so it is visible in
+     the streamed KANBAN board view without any interaction. Where the feed shows a run's
+     phase NOTES, this shows the CODE: the bounded git diff the snapshot captured for each
+     in-flight BUILDING run (run.diff), rendered as filenames + hunks with added/removed
+     lines coloured green/red via CLASSES (never by injecting markup). Every diff line is
+     set via the $()/textContent helper — the diff is arbitrary code, so an <img onerror>
+     or </script> in a line is inert text, never parsed. Its own vertical scroll container
+     keeps a large diff from pushing the board; static under prefers-reduced-motion. */
+  .codediff { margin: 10px 0 2px; }
+  .cd-panel {
+    border: 1px solid var(--wood-edge); border-radius: 12px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(24,45,67,.72), rgba(10,29,48,.72));
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.03), 0 6px 18px rgba(3,10,18,.28);
+  }
+  .cd-head {
+    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+    border-bottom: 1px solid var(--line);
+    font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-dim);
+    background: rgba(10,20,32,.35);
+  }
+  .cd-head .live-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--building); flex: 0 0 auto;
+    box-shadow: 0 0 0 0 rgba(86,180,233,.55); animation: cd-pulse 2.4s ease-out infinite;
+  }
+  @keyframes cd-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(86,180,233,.5); }
+    70%  { box-shadow: 0 0 0 7px rgba(86,180,233,0); }
+    100% { box-shadow: 0 0 0 0 rgba(86,180,233,0); }
+  }
+  .cd-head .cd-count { margin-left: auto; color: var(--ink-faint); letter-spacing: .06em; text-transform: none; font-size: 11px; }
+  /* the OWN scroll container — a big diff scrolls here, never pushing the board/lanes. */
+  .cd-body { max-height: 300px; overflow-y: auto; overflow-x: auto; padding: 4px 0 6px; }
+  .cd-run { padding: 2px 0 4px; }
+  .cd-run + .cd-run { border-top: 1px dashed var(--line); margin-top: 2px; }
+  .cd-run-head {
+    display: flex; align-items: baseline; gap: 8px; padding: 5px 12px 3px;
+    position: sticky; top: 0; z-index: 1; background: rgba(10,20,32,.9);
+  }
+  .cd-run-head .cd-num { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--building); }
+  .cd-run-head .cd-branch { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cd-run-head .cd-tally { margin-left: auto; font-size: 11px; font-family: var(--mono); }
+  .cd-run-head .cd-tally .add { color: var(--done); }
+  .cd-run-head .cd-tally .del { color: var(--blocked); }
+  .cd-code { font-family: var(--mono); font-size: 11.5px; line-height: 1.5; padding: 0 0 2px; }
+  .cd-line { display: block; white-space: pre; padding: 0 12px; color: var(--ink-dim); }
+  .cd-line.cd-file {
+    color: var(--brass); font-weight: 600; padding: 4px 12px 2px; margin-top: 2px;
+    border-top: 1px solid rgba(198,168,106,.14); white-space: pre-wrap; word-break: break-all;
+  }
+  .cd-line.cd-hunk { color: var(--review); background: rgba(207,143,190,.06); }
+  .cd-line.cd-add { color: #bfe9d6; background: rgba(55,181,140,.13); }
+  .cd-line.cd-del { color: #f3c0b6; background: rgba(224,86,63,.13); }
+  .cd-line.cd-add::before { content: "+"; color: var(--done); }
+  .cd-line.cd-del::before { content: "-"; color: var(--blocked); }
+  .cd-line.cd-ctx::before { content: " "; }
+  .cd-trunc { padding: 4px 12px 2px; font-size: 11px; font-style: italic; color: var(--ink-faint); font-family: var(--serif); }
+  @media (prefers-reduced-motion: reduce) {
+    .cd-head .live-dot { animation: none; }
+  }
 </style>
 </head>
 <body>
@@ -1282,6 +1343,7 @@
         <div id="trends"></div>
         <div id="fleet"></div>
         <div id="feed"></div>
+        <div id="codediff"></div>
         <div id="board"></div>
         <div id="mergequeue"></div>
         <div class="runs" id="runs"></div>
@@ -2916,6 +2978,96 @@ function renderFeed(runs) {
   track.style.animationDuration = Math.max(14, Math.round((track.scrollWidth / 2) / speed)) + "s";
 }
 
+// ---- live code-diff panel (#211) ------------------------------------------
+// The actual CODE an in-flight build is writing, from the bounded git diff the snapshot
+// captured (run.diff). Rides above BOTH layouts (like the feed) so it shows in the streamed
+// KANBAN board with no interaction. Where the feed shows a run's phase NOTES, this shows
+// the CODE. Strictly a VIEW: it renders only what the snapshot already captured.
+//
+// XSS-CRITICAL: a diff line is arbitrary code. EVERY line's text is set via the
+// $()/textContent helper — NEVER innerHTML — and +/- colouring is by CLASS on the line
+// element, never by parsing or injecting markup. So an `<img onerror=…>` or `</script>`
+// in a diff line is inert text, never executed. Bounded by the client too (see the caps
+// below) on top of the server-side cap, with a truncation note.
+
+// Client-side render caps — a second belt on top of the server's bound, so a hand-crafted
+// or oversized run-state.json can't blow up the DOM. Kept a touch above the server caps.
+const CD_MAX_RUNS = 4;     // most building runs to show diffs for at once
+const CD_MAX_LINES = 500;  // most diff lines to render across a single run's diff
+
+// A run qualifies for the code-diff panel when it's an in-flight BUILDING run carrying a
+// non-empty diff side-channel. Recent / terminal / blocked runs, and diff-less runs, are
+// excluded — the snapshot only attaches run.diff to live building runs, so this mostly
+// re-checks shape and guards against a malformed snapshot.
+function diffEligible(run) {
+  if (!run || run.recent || run.terminal || run.blocked) return false;
+  if (groupOf(run) !== "building") return false;
+  const d = run.diff;
+  return !!(d && Array.isArray(d.lines) && d.lines.length);
+}
+
+// One building run's diff block: a sticky header (#num · branch · +add/-del) then the
+// bounded, typed code lines. Line text via textContent (XSS-safe); type → CSS class.
+function buildDiffRun(run) {
+  const d = run.diff || {};
+  const block = $("div", "cd-run");
+  const head = $("div", "cd-run-head");
+  head.appendChild($("span", "cd-num", "#" + (run.issueNumber ?? run.prNumber ?? "?")));
+  if (run.branch) head.appendChild($("span", "cd-branch", run.branch));
+  // +add / -del tally — numbers only, coloured by class.
+  const tally = $("span", "cd-tally");
+  if (typeof d.added === "number") tally.appendChild($("span", "add", "+" + d.added));
+  if (typeof d.removed === "number") { tally.appendChild(document.createTextNode(" ")); tally.appendChild($("span", "del", "-" + d.removed)); }
+  head.appendChild(tally);
+  block.appendChild(head);
+
+  const code = $("div", "cd-code");
+  // CLASS per line type; text ALWAYS via $()/textContent — never innerHTML.
+  const CLS = { file: "cd-file", hunk: "cd-hunk", add: "cd-add", del: "cd-del", ctx: "cd-ctx" };
+  let shown = 0;
+  let clientTruncated = false;
+  for (const ln of d.lines) {
+    if (shown >= CD_MAX_LINES) { clientTruncated = true; break; }
+    const cls = "cd-line " + (CLS[ln && ln.t] || "cd-ctx");
+    // ln.text is untrusted code — $(...,...,txt) sets it via textContent, so any markup
+    // in it (an <img onerror>, a </script>) renders as literal text and never executes.
+    code.appendChild($("span", cls, ln && ln.text != null ? String(ln.text) : ""));
+    shown++;
+  }
+  block.appendChild(code);
+
+  // Truncation note — server-side (files/lines capped at capture) OR the client cap above.
+  const parts = [];
+  if (d.moreFiles > 0) parts.push("+" + d.moreFiles + " more file" + (d.moreFiles === 1 ? "" : "s"));
+  if (d.truncated || clientTruncated) parts.push("diff truncated");
+  if (parts.length) block.appendChild($("div", "cd-trunc", "… " + parts.join(" · ")));
+  return block;
+}
+
+// Render (or hide) the live code-diff panel for the whole fleet. Passed the FULL run set
+// (like the feed) so it's independent of the stage filter. Hides entirely when no building
+// run carries a diff (clean degrade — no error). READ-ONLY.
+function renderCodeDiff(runs) {
+  const wrap = document.getElementById("codediff");
+  wrap.textContent = "";
+  const items = (runs || []).filter(diffEligible)
+    .sort((a, b) => (a.issueNumber ?? a.prNumber ?? 0) - (b.issueNumber ?? b.prNumber ?? 0))
+    .slice(0, CD_MAX_RUNS);
+  if (!items.length) return;   // no building diff → the panel is simply absent (clean degrade)
+
+  const panel = $("div", "cd-panel");
+  const head = $("div", "cd-head");
+  head.appendChild($("span", "live-dot"));
+  head.appendChild(document.createTextNode("live code"));
+  head.appendChild($("span", "cd-count", items.length + (items.length === 1 ? " build" : " builds")));
+  panel.appendChild(head);
+
+  const body = $("div", "cd-body");
+  for (const r of items) body.appendChild(buildDiffRun(r));
+  panel.appendChild(body);
+  wrap.appendChild(panel);
+}
+
 // ---- fleet-busyness ambient tempo (#179) ----------------------------------
 // Translate the live fleet state into the board's ambient "visual tempo": how fast and
 // how bright the background sea-glow breathes. Deterministic — a pure function of the
@@ -3742,6 +3894,7 @@ function render(state) {
     document.getElementById("trends").textContent = "";
     document.getElementById("fleet").textContent = "";
     document.getElementById("feed").textContent = "";
+    document.getElementById("codediff").textContent = "";
     document.getElementById("gittree").textContent = "";
     document.getElementById("board").textContent = "";
     document.getElementById("horizon").textContent = "";
@@ -3767,6 +3920,7 @@ function render(state) {
     document.getElementById("trends").textContent = "";
     document.getElementById("fleet").textContent = "";
     document.getElementById("feed").textContent = "";
+    document.getElementById("codediff").textContent = "";
     document.getElementById("gittree").textContent = "";
     document.getElementById("board").textContent = "";
     document.getElementById("horizon").textContent = "";
@@ -3791,6 +3945,7 @@ function render(state) {
   renderTrends(state);        // day-bucketed trend sparklines — above BOTH layouts (#202)
   renderFleet(state, runs);   // the manifest bar rides above BOTH layouts
   renderFeed(runs);           // the live activity ticker — fleet-wide, above BOTH layouts (#186)
+  renderCodeDiff(runs);       // the live code-diff panel — the CODE a build is writing, above BOTH layouts (#211)
   renderWake(state, recentRuns);   // the commit-graph of landed runs, also above BOTH layouts (#176)
 
   // Transitions across BOTH lanes, computed once regardless of layout so the chime and
