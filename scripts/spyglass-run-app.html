@@ -117,6 +117,15 @@
     border: 1px solid var(--wood-edge); border-radius: 999px; padding: 4px 8px; cursor: pointer;
   }
   .sortsel:hover { border-color: var(--brass); }
+  /* filter control (#164) — narrow the board by stage/state. Reuses the .sortsel
+     pill; a brass "filtering" accent + a small dot signal when a filter is active,
+     so it's obvious the view is narrowed and how to clear it. Native <select> so
+     it's keyboard-accessible for free. */
+  .filtersel.filtering { border-color: var(--brass); color: var(--brass-bright); background: #1a1608; }
+  .filter-wrap { display: inline-flex; align-items: center; gap: 6px; }
+  .filter-wrap .fdot { width: 7px; height: 7px; border-radius: 50%; background: var(--brass-bright);
+    box-shadow: 0 0 6px -1px var(--brass-bright); display: none; }
+  .filter-wrap.on .fdot { display: inline-block; }
   /* layout toggle (#163) — list ⇄ KANBAN board; a visible segmented control */
   .viewseg { display: inline-flex; border: 1px solid var(--wood-edge); border-radius: 999px;
     overflow: hidden; background: var(--chip); }
@@ -168,6 +177,14 @@
   .gauge.done .n { color: var(--done); }
   .gauge.blocked .n { color: var(--blocked); }
   .gauge.blocked:not(.zero) { background: #1c0f0b; }
+  /* clickable gauges as filter shortcuts (#164) — click a state's gauge to narrow
+     the board to it (click again to clear). Keyboard-accessible (they're real
+     buttons); the active filter's gauge shows a brass underline + ring. */
+  .gauge.clickable { cursor: pointer; border: 0; background: transparent; text-align: left;
+    font: inherit; position: relative; transition: box-shadow .15s ease; }
+  .gauge.clickable:hover { box-shadow: inset 0 0 0 1px var(--wood-edge-2); }
+  .gauge.clickable:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
+  .gauge.clickable[aria-pressed="true"] { box-shadow: inset 0 -2px 0 0 var(--brass-bright), inset 0 0 0 1px var(--brass-dim); }
   /* the "N shipped today" ticker (#127): a celebratory flourish when the count rises —
      the gauge pops + gains a green glow for a moment, then settles back. */
   .gauge.shipped-today { transition: box-shadow .5s ease, background .5s ease; }
@@ -286,7 +303,12 @@
        up cleanly across both lanes (#121). The time column is fixed (not max-content)
        and wide enough for the longest completed-voyage stamp ("shipped 45m 06s ago"),
        so it never drifts row-to-row and the recent lane aligns with the in-flight rows. */
-    grid-template-columns: 30px 60px minmax(0,1fr) 150px 96px 92px 96px 140px 14px;
+    /* The cost column is wide enough (#172) to CONTAIN "$X.XX so far · N.NM tok" — with
+       the token suffix (#149) the figure runs ~130px, and a narrow column let it overflow
+       LEFT (justify-content:flex-end) across the gap into the status column, drawing the
+       cost text over the slim progress bar (#156). Sizing the column to fit the figure keeps
+       cost and progress in separate, non-overlapping regions at every width. */
+    grid-template-columns: 30px 60px minmax(0,1fr) 150px 96px 140px 96px 140px 14px;
     padding: 11px 15px;
     background: linear-gradient(180deg, var(--wood-2), var(--wood));
     border: 1px solid var(--wood-edge); border-radius: 12px;
@@ -388,12 +410,12 @@
   /* coarse progress estimate (#156): a slim bar + % under the status word, on
      in-flight (building/reviewing) cards only. Honest — a phase-derived estimate. */
   .s-prog { display: inline-flex; align-items: center; gap: 6px; width: 100%; justify-content: flex-end; }
-  .s-prog-track { position: relative; height: 4px; width: 64px; border-radius: 2px;
+  .s-prog-track { position: relative; height: 4px; width: 56px; border-radius: 2px;
     background: #22384f; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); }
   .s-prog-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px;
     background: linear-gradient(90deg, var(--brass-dim), var(--brass-bright)); transition: width .6s ease; }
   .s-prog-pct { font-family: var(--mono); font-size: 10.5px; font-weight: 650;
-    color: var(--brass); min-width: 30px; text-align: right; letter-spacing: 0; white-space: nowrap; }
+    color: var(--brass); min-width: 28px; text-align: right; letter-spacing: 0; white-space: nowrap; }
   @media (prefers-reduced-motion: reduce) { .s-prog-fill { transition: none; } }
   .s-cost { color: var(--ink-dim); font-family: var(--mono); font-size: 13px;
     display: inline-flex; align-items: baseline; gap: 4px; justify-content: flex-end; }
@@ -773,6 +795,57 @@
     border-radius: 999px; padding: 1px 6px; flex: none; }
   .gc-title { color: var(--parch); font-weight: 600; font-size: 12px; margin-top: 3px; line-height: 1.25;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---------- focused detail panel (#164) — click a board card to expand ----------
+     The KANBAN cards are too narrow to expand inline, so a click opens the run's full
+     detail (pipeline / worktree / branch / per-model cost table / logbook video / review
+     state) in a focused modal panel over the board. It REUSES renderCard(run), so it shows
+     exactly the same detail the list view expands inline — nothing new to keep in sync.
+     Keyboard-accessible: role=dialog, focus moves in on open and restores on close, Escape
+     or a backdrop click closes, Tab is trapped inside. READ-ONLY like everything else. */
+  .detail-overlay {
+    position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-start;
+    justify-content: center; padding: 40px 18px; overflow-y: auto;
+    background: rgba(4, 10, 17, .68); backdrop-filter: blur(2px);
+    animation: overlay-in .16s ease-out;
+  }
+  .detail-overlay[hidden] { display: none; }
+  @keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
+  .detail-panel {
+    width: 100%; max-width: 720px; margin: auto 0;
+    background: linear-gradient(180deg, var(--wood-2), var(--wood));
+    border: 1px solid var(--brass-dim); border-radius: 14px;
+    box-shadow: 0 18px 60px rgba(0,0,0,.6), inset 0 1px 0 rgba(198,168,106,.1);
+    animation: panel-in .18s ease-out;
+  }
+  @keyframes panel-in { from { opacity: 0; transform: translateY(10px) scale(.99); } to { opacity: 1; transform: none; } }
+  .detail-panel.blocked { border-color: #532a20; }
+  .detail-head {
+    display: flex; align-items: center; gap: 11px; padding: 13px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .detail-head .dh-ship { width: 26px; height: 20px; flex: none; display: inline-flex; }
+  .detail-head .dh-ship svg { width: 100%; height: 100%; }
+  .detail-head .dh-num { color: var(--brass); font-family: var(--mono); font-weight: 650; font-size: 13px;
+    text-decoration: none; flex: none; }
+  a.detail-head .dh-num:hover { text-decoration: underline; }
+  .detail-head .dh-title { color: var(--parch); font-weight: 600; font-size: 14.5px; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+  .detail-head .dh-status { font-size: 11.5px; font-weight: 600; white-space: nowrap; flex: none; }
+  .detail-close {
+    font: inherit; font-size: 18px; line-height: 1; color: var(--ink-dim); background: var(--chip);
+    border: 1px solid var(--wood-edge); border-radius: 999px; width: 30px; height: 30px; flex: none;
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .detail-close:hover { border-color: var(--brass); color: var(--parch); }
+  .detail-close:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+  /* The reused log card sits flush inside the panel (drop its own top border/radius). */
+  .detail-content > .logcard, .detail-content > .summary-card {
+    border: 0; border-radius: 0 0 14px 14px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .detail-overlay, .detail-panel { animation: none; }
+  }
 </style>
 </head>
 <body>
@@ -795,6 +868,18 @@
             <option value="cost">by cost</option>
             <option value="age">by age</option>
           </select>
+          <span class="filter-wrap" id="filter-wrap">
+            <span class="fdot" aria-hidden="true"></span>
+            <select class="sortsel filtersel" id="filter" title="Narrow the fleet by stage / state" aria-label="Filter runs by stage or state">
+              <option value="all">all stages</option>
+              <option value="queued">queued only</option>
+              <option value="building">building only</option>
+              <option value="reviewing">in review only</option>
+              <option value="awaiting-merge">awaiting merge only</option>
+              <option value="done">done only</option>
+              <option value="blocked">blocked only</option>
+            </select>
+          </span>
           <button class="btn-ghost" id="chime" title="Foghorn chime on ship / block — off by default" aria-pressed="false">
             <span aria-hidden="true">🔇</span><span class="lbl">foghorn</span>
           </button>
@@ -819,6 +904,19 @@
       <aside class="side">
         <div id="gittree"></div>
       </aside>
+    </div>
+  </div>
+  <!-- focused detail panel (#164): the KANBAN cards open their full detail here, over
+       the board. Populated on open by renderCard(run); hidden by default. Read-only. -->
+  <div class="detail-overlay" id="detailOverlay" hidden>
+    <div class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detail-title" tabindex="-1">
+      <div class="detail-head">
+        <span class="dh-ship" id="detail-ship" aria-hidden="true"></span>
+        <span class="dh-title" id="detail-title">…</span>
+        <span class="dh-status" id="detail-status"></span>
+        <button class="detail-close" id="detailClose" type="button" aria-label="Close detail" title="Close (Esc)">×</button>
+      </div>
+      <div class="detail-content" id="detailContent"></div>
     </div>
   </div>
 <script>
@@ -1030,6 +1128,28 @@ let sortMode = "stage";
 let viewMode = "list";
 try { const v = localStorage.getItem("spyglass:viewMode"); if (v === "board" || v === "list") viewMode = v; } catch { /* storage blocked — default list */ }
 
+// The stage/state FILTER the operator has chosen (#164). "all" (default) shows every
+// run; otherwise the board is narrowed to a single coarse GROUP — queued / building /
+// reviewing / awaiting-merge / done — or the blocked overlay. Persisted in localStorage
+// (like viewMode) so the choice survives BOTH the --watch data refresh (a re-render) AND
+// the appVersion auto-reload (a full page reload). A view preference — never a mutation.
+const FILTERS = ["all", "queued", "building", "reviewing", "awaiting-merge", "done", "blocked"];
+let filterMode = "all";
+try { const f = localStorage.getItem("spyglass:filter"); if (FILTERS.includes(f)) filterMode = f; } catch { /* storage blocked — default all */ }
+// Does a run pass the active filter? "all" → everything; "blocked" → the blocked overlay
+// (any run flagged blocked, whatever lane it approximates); else the run's coarse group.
+function matchesFilter(run) {
+  if (filterMode === "all") return true;
+  if (filterMode === "blocked") return !!run.blocked;
+  if (run.blocked) return false;              // a blocked run only shows under the "blocked" filter
+  return groupOf(run) === filterMode;
+}
+// The run whose focused detail panel is OPEN (#164), by runKey — a board-card selection.
+// A module var (not localStorage) so an open panel survives the --watch re-render but a
+// fresh page load starts closed. null when nothing is open.
+let selectedKey = null;
+let lastFocusedEl = null;   // element to restore focus to when the panel closes
+
 function groupOf(run) {
   if (run.group) return run.group;
   if (run.blocked) return "blocked";
@@ -1048,11 +1168,25 @@ function groupOf(run) {
 function isActiveBuild(run) {
   return !run.recent && !run.terminal && !run.blocked && groupOf(run) === "building";
 }
-// Whether a run's card is open: an active build is open BY DEFAULT (unless the operator
-// has manually collapsed it); every other run opens only on an explicit manual expand.
+// A run at the IN-REVIEW stage auto-expands its summary card too (#172) — the same
+// reviewer-facing affordance an active build gets (#131), so a reviewer sees the in-review
+// run's panel open without a click. Only a genuine in-flight in-review run (never recent,
+// terminal, or blocked), matched by the real "In review" stage at the active leg — not the
+// whole "reviewing" group (which also covers the earlier "PR opened" stage).
+function isInReview(run) {
+  return !run.recent && !run.terminal && !run.blocked
+    && groupOf(run) === "reviewing"
+    && (run.stages || [])[run.activeIndex] === "In review";
+}
+// A run whose card auto-expands by default: an active build (#131) or an in-review run (#172).
+// These share the summary-card affordance and the userCollapsed manual-collapse override.
+function autoExpands(run) { return isActiveBuild(run) || isInReview(run); }
+// Whether a run's card is open: an auto-expanding run (active build / in-review) is open BY
+// DEFAULT (unless the operator has manually collapsed it); every other run opens only on an
+// explicit manual expand.
 function isRunOpen(run) {
   const key = runKey(run);
-  if (isActiveBuild(run)) return !userCollapsed.has(key);
+  if (autoExpands(run)) return !userCollapsed.has(key);
   return expanded.has(key);
 }
 
@@ -1511,7 +1645,7 @@ function renderCard(run) {
 // a run block = the voyage row + (when expanded) the full log card.
 function renderRun(run) {
   const key = runKey(run);
-  const activeBuild = isActiveBuild(run);
+  const auto = autoExpands(run);   // active build (#131) OR in-review (#172) — auto-expanded
   const isOpen = isRunOpen(run);
   // The run's real armada:* GROUP rides as a `g-<group>` class so the CSS can key
   // the state-specific ambient animations off it (#150) — building shimmer, awaiting
@@ -1520,10 +1654,10 @@ function renderRun(run) {
   block.dataset.key = key;
   const row = renderRow(run, isOpen);
   const toggle = () => {
-    // An active build is expanded by default (#131): a manual toggle records the
-    // operator's collapse / re-open in userCollapsed. Every other run toggles the
-    // usual expanded set. Either way the auto-expand default is never mutated away.
-    if (activeBuild) {
+    // An auto-expanding run (active build #131 / in-review #172) is open by default: a manual
+    // toggle records the operator's collapse / re-open in userCollapsed. Every other run toggles
+    // the usual expanded set. Either way the auto-expand default is never mutated away.
+    if (auto) {
       if (userCollapsed.has(key)) userCollapsed.delete(key); else userCollapsed.add(key);
     } else {
       if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
@@ -1541,9 +1675,10 @@ function renderRun(run) {
     if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); toggle(); }
   });
   block.appendChild(row);
-  // An active build shows the COMPACT summary card (#131); every other expanded run
-  // shows the full log card. Both preserve the read-only invariant (no writes).
-  if (isOpen) block.appendChild(activeBuild ? renderSummaryCard(run) : renderCard(run));
+  // An auto-expanding run (active build #131 / in-review #172) shows the COMPACT summary
+  // card; every other expanded run shows the full log card. Both preserve the read-only
+  // invariant (no writes).
+  if (isOpen) block.appendChild(auto ? renderSummaryCard(run) : renderCard(run));
   return block;
 }
 
@@ -1558,7 +1693,21 @@ function renderKCard(run) {
   const num = "#" + (run.issueNumber ?? run.prNumber ?? "?");
   const card = $("div", "kcard g-" + g + (run.blocked ? " blocked" : "") + (run.recent ? " recent" : "") + (run.terminal ? " terminal" : ""));
   card.style.setProperty("--k", color);
-  card.dataset.key = runKey(run);   // so the "just shipped" flourish can target a board card too
+  const key = runKey(run);
+  card.dataset.key = key;           // so the "just shipped" flourish can target a board card too
+  // Click a board card → open its full detail in the focused panel (#164). The card is a
+  // real button for the keyboard (Enter/Space); inner deep links still act on themselves
+  // (they stopPropagation), so following a GitHub link never also opens the panel.
+  card.setAttribute("role", "button");
+  card.setAttribute("tabindex", "0");
+  card.setAttribute("aria-expanded", selectedKey === key ? "true" : "false");
+  card.setAttribute("aria-label", `#${run.issueNumber ?? run.prNumber ?? "?"} ${run.title || ""} — ${run.blocked ? "Blocked" : (run.status || "")} — open detail`);
+  card.style.cursor = "pointer";
+  card.addEventListener("click", (e) => { if (e.target.closest("a, button")) return; openDetailPanel(run); });
+  card.addEventListener("keydown", (e) => {
+    if (e.target.closest("a, button")) return;
+    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); openDetailPanel(run); }
+  });
   const head = $("div", "kc-head");
   const ship = $("span", "kc-ship" + (run.blocked || run.terminal ? "" : " sailing"));
   ship.innerHTML = shipSVG(color);
@@ -1638,6 +1787,93 @@ function renderBoard(state, runs, recentRuns) {
   boardEl.appendChild(board);
 }
 
+// ---- focused detail panel (#164) — a board card's full detail, in a modal ----
+// Reuses renderCard(run) so the panel shows exactly the same detail the list view
+// expands inline (pipeline, branch/worktree, per-model cost table, logbook video,
+// review state). Keyboard-accessible and read-only. The open selection (selectedKey)
+// is a module var, so it survives the --watch re-render (refreshDetailPanel re-fills
+// it with fresh data each poll) but a fresh page load starts closed.
+function runByKey(key) {
+  if (!lastState) return null;
+  for (const r of [...(lastState.runs || []), ...(lastState.recentRuns || [])]) {
+    if (runKey(r) === key) return r;
+  }
+  return null;
+}
+function fillDetailPanel(run) {
+  const g = groupOf(run);
+  const color = GROUP_COLOR[g] || "var(--building)";
+  const num = "#" + (run.issueNumber ?? run.prNumber ?? "?");
+  const panel = document.querySelector("#detailOverlay .detail-panel");
+  panel.classList.toggle("blocked", !!run.blocked);
+  document.getElementById("detail-ship").innerHTML = shipSVG(color);
+  const titleEl = document.getElementById("detail-title");
+  titleEl.textContent = num + " · " + (run.title || "");
+  const st = document.getElementById("detail-status");
+  st.textContent = run.blocked ? "Blocked" : (run.status || "");
+  st.style.color = color;
+  const content = document.getElementById("detailContent");
+  content.textContent = "";
+  content.appendChild(renderCard(run));   // the full log card — same detail as the list
+}
+function openDetailPanel(run) {
+  selectedKey = runKey(run);
+  lastFocusedEl = document.activeElement;
+  fillDetailPanel(run);
+  const overlay = document.getElementById("detailOverlay");
+  overlay.hidden = false;
+  // move focus into the dialog for keyboard users
+  document.querySelector("#detailOverlay .detail-panel").focus();
+  // reflect open state on the originating card, if it's still around
+  const card = document.querySelector(`.kcard[data-key="${CSS.escape(selectedKey)}"]`);
+  if (card) card.setAttribute("aria-expanded", "true");
+}
+function closeDetailPanel() {
+  const overlay = document.getElementById("detailOverlay");
+  if (overlay.hidden) return;
+  overlay.hidden = true;
+  const key = selectedKey;
+  selectedKey = null;
+  const card = key && document.querySelector(`.kcard[data-key="${CSS.escape(key)}"]`);
+  if (card) card.setAttribute("aria-expanded", "false");
+  // restore focus to the card that opened the panel (else the close button's blur)
+  if (lastFocusedEl && document.contains(lastFocusedEl)) lastFocusedEl.focus();
+  else if (card) card.focus();
+  lastFocusedEl = null;
+}
+// Called each render: keep an open panel in sync with fresh data, or close it if its
+// run has left the fleet / the operator switched to the list view.
+function refreshDetailPanel() {
+  if (!selectedKey) return;
+  if (viewMode !== "board") { closeDetailPanel(); return; }
+  const run = runByKey(selectedKey);
+  if (!run) { closeDetailPanel(); return; }
+  // The open panel must honour the ACTIVE FILTER (#164): if the operator narrows the board
+  // so the open run no longer shows — or the run changes stage across a --watch poll so it
+  // no longer matches the filter — its board card is gone, so close the panel rather than
+  // leave a modal floating over a board that no longer holds it (the intent setFilterMode notes).
+  if (!matchesFilter(run)) { closeDetailPanel(); return; }
+  fillDetailPanel(run);
+}
+// wire the close affordances once: the × button, a backdrop click, and Escape. A tiny
+// focus trap keeps Tab inside the open dialog.
+document.getElementById("detailClose").addEventListener("click", closeDetailPanel);
+document.getElementById("detailOverlay").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeDetailPanel();   // click on the backdrop, not the panel
+});
+document.addEventListener("keydown", (e) => {
+  const overlay = document.getElementById("detailOverlay");
+  if (overlay.hidden) return;
+  if (e.key === "Escape") { e.preventDefault(); closeDetailPanel(); return; }
+  if (e.key === "Tab") {
+    const focusables = overlay.querySelectorAll('a[href], button:not([disabled]), video, [tabindex]:not([tabindex="-1"])');
+    if (!focusables.length) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+});
+
 // ---- manifest (fleet totals) bar ------------------------------------------
 function renderFleet(state, runs) {
   const wrap = document.getElementById("fleet");
@@ -1658,9 +1894,16 @@ function renderFleet(state, runs) {
   const gauges = $("div", "gauges");
   for (const [key, label] of GAUGES) {
     const n = counts[key] || 0;
-    const g = $("div", "gauge " + key + (n === 0 ? " zero" : ""));
+    // Each gauge doubles as a filter shortcut (#164): click to narrow the board to that
+    // state, click again (or pick the active one) to clear. A real <button> for the keyboard.
+    const active = filterMode === key;
+    const g = $("button", "gauge clickable " + key + (n === 0 ? " zero" : ""));
+    g.type = "button";
+    g.setAttribute("aria-pressed", active ? "true" : "false");
+    g.title = active ? "Clear the filter" : `Show only ${label} runs`;
     g.appendChild($("span", "n", String(n)));
     g.appendChild($("span", "lbl", label));
+    g.addEventListener("click", () => setFilterMode(active ? "all" : key));
     gauges.appendChild(g);
   }
   bar.appendChild(gauges);
@@ -1778,6 +2021,26 @@ for (const id of ["view-list", "view-board"]) {
 // set until the first poll; the first render() itself honours viewMode).
 document.getElementById("view-list").setAttribute("aria-pressed", viewMode === "list" ? "true" : "false");
 document.getElementById("view-board").setAttribute("aria-pressed", viewMode === "board" ? "true" : "false");
+
+// stage/state filter (#164) — narrow the board, persist, and re-render in place. The choice
+// survives the --watch data refresh (JS state) and the appVersion reload (localStorage). Two
+// ways in: this <select> and the clickable manifest gauges — both route through setFilterMode.
+function reflectFilterUI() {
+  const sel = document.getElementById("filter");
+  if (sel.value !== filterMode) sel.value = filterMode;
+  const on = filterMode !== "all";
+  sel.classList.toggle("filtering", on);
+  document.getElementById("filter-wrap").classList.toggle("on", on);
+}
+function setFilterMode(mode) {
+  filterMode = FILTERS.includes(mode) ? mode : "all";
+  try { localStorage.setItem("spyglass:filter", filterMode); } catch { /* storage blocked — session-only */ }
+  reflectFilterUI();
+  // A narrowed view may hide the run whose detail panel is open — refresh/close it too.
+  if (lastState) render(lastState);
+}
+document.getElementById("filter").addEventListener("change", (e) => setFilterMode(e.target.value));
+reflectFilterUI();
 // Re-lay the horizon graph's SVG edges when the viewport reflows (debounced).
 let resizeT = null;
 window.addEventListener("resize", () => {
@@ -2170,8 +2433,15 @@ function render(state) {
   wrap.textContent = "";
   const runs = (state && state.runs) || [];
   const recentRuns = (state && state.recentRuns) || [];
+  // The active stage/state filter (#164) narrows what the lanes render. The manifest
+  // gauges + transition detection stay on the FULL sets, so the operator still sees the
+  // whole fleet's counts (and can click a gauge to filter) and flourishes fire regardless.
+  const filtering = filterMode !== "all";
+  const fRuns = runs.filter(matchesFilter);
+  const fRecent = recentRuns.filter(matchesFilter);
   const stamp = state && state.generatedAt ? new Date(state.generatedAt).toLocaleTimeString() : "";
-  sub.textContent = `${esc(state && state.repo)} · ${runs.length} run(s) · ${esc((state && state.summary) || "")}${stamp ? " · charted " + stamp : ""}`;
+  const filterNote = filtering ? ` · filtered: ${filterMode}` : "";
+  sub.textContent = `${esc(state && state.repo)} · ${runs.length} run(s) · ${esc((state && state.summary) || "")}${filterNote}${stamp ? " · charted " + stamp : ""}`;
 
   setWeather(runs);
 
@@ -2193,6 +2463,10 @@ function render(state) {
     e.appendChild($("div", "big", "no runs to chart"));
     e.appendChild($("div", "sub", esc(state.degraded)));
     wrap.appendChild(e);
+    // The data vanished (degraded snapshot) and the board is now cleared — an open detail
+    // panel would keep showing stale content over nothing, so close it here too (#164). This
+    // early return precedes the usual refreshDetailPanel() call below, so do it explicitly.
+    closeDetailPanel();
     prevState = new Map();
     return;
   }
@@ -2208,6 +2482,9 @@ function render(state) {
     e.appendChild($("div", "big", "an empty harbour"));
     e.appendChild($("div", "sub", "The fleet is idle — no armed issues, open PRs, or recent voyages."));
     wrap.appendChild(e);
+    // No runs left to chart — the board is cleared, so an open detail panel has nothing
+    // behind it; close it here too (this early return precedes refreshDetailPanel() below) (#164).
+    closeDetailPanel();
     prevState = new Map();
     return;
   }
@@ -2223,32 +2500,46 @@ function render(state) {
   if (viewMode === "board") {
     // KANBAN board (#163) is the single per-run surface — the in-flight list, harbour,
     // merge queue and horizon lanes are hidden so runs aren't double-listed. The board
-    // itself carries in-flight AND recent runs, grouped into their real stage lanes.
+    // itself carries in-flight AND recent runs, grouped into their real stage lanes. Under
+    // an active filter (#164) only matching cards populate; every lane still renders
+    // (labelled), so the board is visibly narrowed to the chosen stage/state.
     mergeEl.textContent = "";
     document.getElementById("horizon").textContent = "";
     harbourEl.textContent = "";
     wrap.textContent = "";
-    renderBoard(state, runs, recentRuns);
+    renderBoard(state, fRuns, fRecent);
   } else {
     boardEl.textContent = "";
+    // Under a filter, the contextual lanes only make sense for their own state: the horizon
+    // is the QUEUED/waiting graph, the merge queue is AWAITING-MERGE PRs — hide each when the
+    // filter excludes it, so "building only" (say) doesn't leave an unrelated lane on screen.
+    const showHorizon = !filtering || filterMode === "queued";
+    const showMergeQueue = !filtering || filterMode === "awaiting-merge";
     // The ready-to-merge lane (#140) — reviewed-clean, mergeable, unmerged PRs awaiting a
     // human merge, surfaced prominently (they also stay in the voyage list below).
-    renderMergeQueue(state);
+    if (showMergeQueue) renderMergeQueue(state); else mergeEl.textContent = "";
     // The horizon — the waiting-runs dependency graph (#111). Queued/held runs render
     // here as a graph, so pull them OUT of the in-flight voyage list below to avoid
     // double-listing them (only when the scheduler actually surfaces them as waiting).
-    renderHorizon(state);
+    if (showHorizon) renderHorizon(state); else document.getElementById("horizon").textContent = "";
     const sched = state && state.scheduler;
-    const waitingNums = new Set(((sched && sched.nodes) || []).filter((n) => n.waiting).map((n) => n.number));
-    const flightRuns = runs.filter((r) => !(r.issueNumber != null && waitingNums.has(r.issueNumber) && groupOf(r) === "queued"));
+    const waitingNums = showHorizon
+      ? new Set(((sched && sched.nodes) || []).filter((n) => n.waiting).map((n) => n.number))
+      : new Set();
+    const flightRuns = fRuns.filter((r) => !(r.issueNumber != null && waitingNums.has(r.issueNumber) && groupOf(r) === "queued"));
     if (flightRuns.length) {
       for (const run of sortRuns(flightRuns)) wrap.appendChild(renderRun(run));
-    } else if (!waitingNums.size) {
+    } else if (filtering && !fRecent.length && !(showHorizon && waitingNums.size)) {
+      // A filter is on and nothing under way, waiting, or in the harbour matches it.
+      wrap.appendChild($("div", "lane-note", `No ${filterMode} voyages right now — clear the filter to see the whole fleet.`));
+    } else if (!filtering && !waitingNums.size) {
       // Nothing under way and nothing waiting, but the harbour has recent arrivals.
       wrap.appendChild($("div", "lane-note", "No voyages under way — the fleet is idle. Recent arrivals below."));
     }
-    renderHarbour(state, recentRuns);
+    renderHarbour(state, fRecent);
   }
+  // keep any open board-detail panel in sync with the fresh data (or close it) (#164)
+  refreshDetailPanel();
 
   // flourish + optional chime for ship/block transitions (either lane, either layout)
   for (const ev of events) {
