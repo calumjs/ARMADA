@@ -31,7 +31,7 @@ step and plans with the grain of the repo.
 
 > **Consult-before-acting.** The pattern cartographer establishes — *read the accumulated map before
 > you act, write back what you learned after* — is the shape future ships should adopt. shipwright is
-> the first consumer (its Research step, §6); [`muster`](../muster/SKILL.md) is the second — it reads
+> the first consumer (its Research step, §2); [`muster`](../muster/SKILL.md) is the second — it reads
 > the same cartography before reviewing (muster §0c) so a diff that **reintroduces a known pitfall**
 > gets flagged, closing the consult-before-acting loop on the review side too.
 
