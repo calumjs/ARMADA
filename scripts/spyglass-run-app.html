@@ -63,7 +63,48 @@
     background-attachment: fixed;
     min-height: 100vh;
   }
-  .page { max-width: 1200px; margin: 0 auto; padding: 0 18px 72px; }
+  .page { max-width: 1200px; margin: 0 auto; padding: 0 18px 72px; position: relative; z-index: 1; }
+
+  /* ---------- fleet-busyness ambient "visual tempo" (#179) ----------
+     An ever-present, board-wide sense of life whose tempo + intensity track the fleet's
+     live busyness: a slow, faint sea-glow that breathes across the whole viewport when the
+     fleet is idle, growing quicker and more present as more runs go in flight. It is a
+     single fixed, inert (pointer-events:none), GPU-composited layer BEHIND all content
+     (z-index:0; .page sits at z-index:1). Everything reactive is driven by three CSS custom
+     properties set once per render from the busyness signal (setAmbientTempo()):
+       --amb-tempo : the breathe animation-duration (slow when calm, quick when busy)
+       --amb-peak  : the glow's peak alpha (faint when calm, livelier when busy)
+       --amb-hue   : sea-blue normally, shifting warm toward the storm tone when runs block
+     Deterministic: the values are a pure function of the live counts — no per-frame
+     Math.random churn — and the per-frame work is a composited opacity+scale the browser
+     runs on its own. Under prefers-reduced-motion it is pinned to a faint STATIC tint with
+     no motion at all (a true no-op), below. READ-ONLY — a pure ambient view. */
+  :root { --amb-tempo: 15s; --amb-peak: 0.05; --amb-hue: 205; }
+  .ambient {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
+    contain: strict;
+  }
+  .ambient::before {
+    content: ""; position: absolute; inset: -12%;
+    background: radial-gradient(1100px 720px at 50% 40%,
+      hsla(var(--amb-hue), 72%, 56%, var(--amb-peak)),
+      hsla(var(--amb-hue), 72%, 56%, 0) 62%);
+    transform-origin: 50% 42%;
+    will-change: opacity, transform;
+    animation: ambient-breathe var(--amb-tempo) ease-in-out infinite;
+  }
+  /* the breathe: peak alpha lives in --amb-peak (baked into the gradient); this pulses the
+     layer's own opacity + a gentle scale so it reads as living background MOTION, not a
+     static wash. Trough is a fraction of peak, so busier => both quicker AND brighter. */
+  @keyframes ambient-breathe {
+    0%, 100% { opacity: .34; transform: scale(1); }
+    50%      { opacity: 1;   transform: scale(1.06); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    /* no-op the motion: a faint, unchanging tint (no breathe, no scale). The busyness
+       intensity (--amb-peak) still gently colours the board, but nothing moves. */
+    .ambient::before { animation: none; opacity: .55; will-change: auto; }
+  }
 
   /* two-column body (#176): the main fleet surface + a narrow, sticky right-hand column
      holding the git commit-tree of shipped/merged runs. The tree lives on the SIDE (its
@@ -955,6 +996,9 @@
 </style>
 </head>
 <body>
+  <!-- fleet-busyness ambient tempo layer (#179): inert, behind all content; its tempo +
+       intensity are driven by CSS vars set from the live busyness signal each render. -->
+  <div class="ambient" aria-hidden="true"></div>
   <div class="page">
     <div class="masthead">
       <div class="brandrow">
@@ -2150,6 +2194,45 @@ function renderFleet(state, runs) {
   wrap.appendChild(bar);
 }
 
+// ---- fleet-busyness ambient tempo (#179) ----------------------------------
+// Translate the live fleet state into the board's ambient "visual tempo": how fast and
+// how bright the background sea-glow breathes. Deterministic — a pure function of the
+// current counts (no Math.random, no per-frame churn) — it sets three CSS custom
+// properties the composited .ambient layer animates off. Idle fleet => slow + faint;
+// busy fleet => quicker + livelier, but always tasteful. Called each render (READ-ONLY).
+let lastAmb = {};
+function setAmbientTempo(runs) {
+  const root = document.documentElement;
+  // The busyness signal comes from the LIVE fleet only (never terminal/recent runs).
+  const active = runs.filter((r) => !r.terminal && !r.recent);
+  const inFlight = active.length;
+  const blocked = active.filter((r) => r.blocked).length;
+  const building = active.filter((r) => !r.blocked && groupOf(r) === "building").length;
+  const reviewing = active.filter((r) => !r.blocked && groupOf(r) === "reviewing").length;
+  // Weighted busyness: every in-flight run counts; blocked runs add urgency; active
+  // build/review work adds a little extra liveliness. Saturating so a huge fleet doesn't
+  // run away — ~63% "busy" at raw≈6, asymptotic to fully busy.
+  const raw = inFlight + blocked * 0.8 + building * 0.35 + reviewing * 0.35;
+  const norm = 1 - Math.exp(-raw / 6);                 // 0 (idle) → ~1 (very busy)
+  const tempo = 15 - norm * 10.5;                       // 15s calm → ~4.5s busy
+  const peak = 0.04 + norm * 0.12;                      // 0.04 faint → 0.16 livelier
+  // Hue: sea-blue (205) normally; when runs are blocked, shift warm toward the storm
+  // amber/red in proportion to how much of the fleet is blocked — reinforcing the weather.
+  const blockShare = inFlight ? Math.min(1, blocked / inFlight) : 0;
+  const hue = blocked > 0 ? Math.round(205 - blockShare * 188) : 205;
+  // Quantise + only write when a bucket changes, so an unchanged poll never restarts the
+  // running animation (retiming animation-duration mid-flight would cause a visible jump).
+  const q = {
+    tempo: (Math.round(tempo * 2) / 2).toFixed(1) + "s",
+    peak: (Math.round(peak * 100) / 100).toFixed(2),
+    hue: String(Math.round(hue / 5) * 5),
+  };
+  if (q.tempo !== lastAmb.tempo) root.style.setProperty("--amb-tempo", q.tempo);
+  if (q.peak !== lastAmb.peak) root.style.setProperty("--amb-peak", q.peak);
+  if (q.hue !== lastAmb.hue) root.style.setProperty("--amb-hue", q.hue);
+  lastAmb = q;
+}
+
 function setWeather(runs) {
   const el = document.getElementById("weather");
   const blocked = runs.filter((r) => r.blocked).length;
@@ -2664,6 +2747,7 @@ function render(state) {
   sub.textContent = `${esc(state && state.repo)} · ${runs.length} run(s) · ${esc((state && state.summary) || "")}${filterNote}${stamp ? " · charted " + stamp : ""}`;
 
   setWeather(runs);
+  setAmbientTempo(runs);   // ambient "visual tempo" scales with live fleet busyness (#179)
 
   // prune expand state for runs that have left BOTH lanes (a run merging moves
   // from in-flight to the harbour — keep its expanded state across that hop).
