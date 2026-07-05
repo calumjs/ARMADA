@@ -292,6 +292,42 @@
   .score .caveat { font-size: 9.5px; color: var(--ink-faint); letter-spacing: .02em; line-height: 1.1; }
   @media (max-width: 640px) { .score { min-width: 45%; flex-basis: 45%; } }
 
+  /* ---------- trend sparklines (#202): a slim strip of day-bucketed trends -----
+     Rides above BOTH layouts (like the scoreboard) — a compact row of one small
+     sparkline per metric (shipped/day, spend/day, time to ship, tokens/day) with a
+     current value + label. Wood+brass idiom; each metric a colour-blind-safe hue. */
+  .trends {
+    display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; margin: 10px 0;
+    background: linear-gradient(180deg, var(--wood-2), var(--wood));
+    border: 1px solid var(--wood-edge); border-radius: 12px; overflow: hidden;
+    box-shadow: inset 0 1px 0 rgba(198,168,106,.08), 0 6px 18px rgba(0,0,0,.35);
+  }
+  .trends.tr-in { animation: trFade .5s ease both; }
+  @keyframes trFade { from { opacity: 0; } to { opacity: 1; } }
+  .trends .tr-lede {
+    display: flex; flex-direction: column; justify-content: center; gap: 1px;
+    padding: 8px 16px; border-right: 1px solid var(--line); min-width: 104px;
+  }
+  .trends .tr-lede .k { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--brass); }
+  .trends .tr-lede .sub { font-size: 11px; color: var(--ink-faint); font-family: var(--serif); font-style: italic; }
+  .trend {
+    display: flex; flex-direction: column; justify-content: center; gap: 4px;
+    padding: 8px 14px; min-width: 138px; flex: 1 1 0; border-right: 1px solid var(--line);
+  }
+  .trend:last-child { border-right: 0; }
+  .trend .th { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .trend .tk { font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-faint); }
+  .trend .tv { font-family: var(--mono); font-size: 15px; font-weight: 650; color: var(--brass-bright); line-height: 1; white-space: nowrap; }
+  .trend .tv.dim { color: var(--ink-faint); }
+  .trend .tspark { display: block; width: 100%; height: 26px; }
+  .trend .tspark .tspark-fill { opacity: .16; stroke: none; }
+  .trend .tspark .tspark-line { fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .trend .tspark .tspark-dot { stroke: var(--wood); stroke-width: 1.5; }
+  .trend .tnodata { height: 26px; display: flex; align-items: center; font-size: 11px;
+    color: var(--ink-faint); font-family: var(--serif); font-style: italic; }
+  @media (max-width: 640px) { .trend { min-width: 45%; flex-basis: 45%; } }
+  @media (prefers-reduced-motion: reduce) { .trends.tr-in { animation: none; } }
+
   /* ---------- the horizon: waiting-runs dependency graph (#111) ---------- */
   .horizon { margin: 4px 0 22px; }
   .horizon .lane-head { margin: 8px 2px 10px; }
@@ -1243,6 +1279,7 @@
     <div class="layout">
       <div class="main">
         <div id="scoreboard"></div>
+        <div id="trends"></div>
         <div id="fleet"></div>
         <div id="feed"></div>
         <div id="board"></div>
@@ -2530,11 +2567,191 @@ function renderScoreboard(state) {
   wrap.appendChild(bar);
 }
 
+// ---- trend sparklines (#202) ----------------------------------------------
+// PURE: fold an array of shipped-run records (the voyage-log archive shape — each
+// carries completedAt / startedAt / cost.totalCost / cost.tokens.total) into N
+// per-LOCAL-DAY buckets, oldest→newest, and derive a {series, current, any} triple
+// per metric. No DOM / storage — exported for a Node unit test. Every figure degrades
+// safely: a day with no data is `null` in the series (a gap, not a misleading 0) for
+// spend/timeToShip/tokens; shipped counts a real 0 for a quiet day. `current` is the
+// most-recent day carrying a value (today if present, else the latest known), or null.
+function computeTrends(records, nowMs, days) {
+  const now = (typeof nowMs === "number" && Number.isFinite(nowMs)) ? nowMs : Date.now();
+  const N = (typeof days === "number" && Number.isFinite(days) && days > 0) ? Math.floor(days) : 14;
+  const list = Array.isArray(records) ? records : [];
+  const parseMs = (iso) => { const t = Date.parse(iso == null ? "" : iso); return Number.isFinite(t) ? t : null; };
+  const dayStartOf = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+
+  // N local-day buckets ending today. Build the day-starts by decrementing the DATE
+  // (DST-safe — never ms arithmetic), and map each day-start → its bucket index.
+  const buckets = [];
+  const idxByDay = new Map();
+  const todayStart = dayStartOf(now);
+  for (let i = 0; i < N; i++) {
+    const d = new Date(todayStart); d.setDate(d.getDate() - (N - 1 - i));
+    const ds = d.getTime();
+    buckets.push({ dayStart: ds, shipped: 0, spend: 0, spendKnown: false, durSum: 0, durN: 0, tokens: 0, tokensKnown: false });
+    idxByDay.set(ds, i);
+  }
+
+  for (const rec of list) {
+    if (!rec) continue;
+    const e = parseMs(rec.completedAt);
+    if (e == null) continue;
+    const idx = idxByDay.get(dayStartOf(e));
+    if (idx === undefined) continue;   // outside the window
+    const b = buckets[idx];
+    b.shipped += 1;
+    const c = rec.cost || {};
+    const tc = (c.present && typeof c.totalCost === "number" && Number.isFinite(c.totalCost) && c.totalCost > 0) ? c.totalCost : null;
+    if (tc != null) { b.spend += tc; b.spendKnown = true; }
+    const s = parseMs(rec.startedAt);
+    if (s != null && e >= s) { b.durSum += (e - s); b.durN += 1; }
+    const tok = c.tokens && typeof c.tokens.total === "number" && Number.isFinite(c.tokens.total) && c.tokens.total > 0 ? c.tokens.total : null;
+    if (tok != null) { b.tokens += tok; b.tokensKnown = true; }
+  }
+
+  // From a per-day series, take the most-recent non-null as the "current" value.
+  const latest = (series) => { for (let i = series.length - 1; i >= 0; i--) if (series[i] != null) return series[i]; return null; };
+  const seriesOf = (pick) => buckets.map(pick);
+  const shipped = seriesOf((b) => b.shipped);                                  // real 0 on quiet days
+  const spend = seriesOf((b) => (b.spendKnown ? b.spend : null));
+  const timeToShip = seriesOf((b) => (b.durN > 0 ? b.durSum / b.durN : null));  // mean lead time that day
+  const tokens = seriesOf((b) => (b.tokensKnown ? b.tokens : null));
+  const anyShipped = shipped.some((v) => v > 0);
+
+  return {
+    days: N,
+    dayStarts: buckets.map((b) => b.dayStart),
+    anyShipped,
+    shipped:     { series: shipped,     current: shipped[shipped.length - 1], any: anyShipped },
+    spend:       { series: spend,       current: latest(spend),       any: spend.some((v) => v != null) },
+    timeToShip:  { series: timeToShip,  current: latest(timeToShip),  any: timeToShip.some((v) => v != null) },
+    tokens:      { series: tokens,      current: latest(tokens),      any: tokens.some((v) => v != null) },
+  };
+}
+
+// Build a compact sparkline as an inline SVG element (no external libs; XSS-safe —
+// pure element/attribute construction, never innerHTML). Draws a faint area fill + a
+// thin line across the non-null points, and a small end-dot on the last known value.
+// Nulls break the line into segments (a gap, not a fake 0). `color` is a CSS colour
+// (a palette var). Static — no animation — so it honours prefers-reduced-motion. A
+// series with < 2 known points, or all-equal (flat), still renders a legible mark.
+function buildSparkline(series, color, ariaLabel) {
+  const W = 120, H = 26, PAD = 3;
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("class", "tspark");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("role", "img");
+  if (ariaLabel) svg.setAttribute("aria-label", ariaLabel);
+
+  const vals = Array.isArray(series) ? series : [];
+  const known = vals.filter((v) => typeof v === "number" && Number.isFinite(v));
+  if (!known.length) return svg;   // nothing to draw — the caller shows "—"
+
+  let lo = Math.min(...known), hi = Math.max(...known);
+  if (!(hi > lo)) { hi = lo + 1; lo = lo - 1; }   // flat series → a mid-height line
+  const n = vals.length;
+  const x = (i) => (n <= 1 ? W / 2 : PAD + (i * (W - 2 * PAD)) / (n - 1));
+  const y = (v) => H - PAD - ((v - lo) / (hi - lo)) * (H - 2 * PAD);
+
+  // Contiguous non-null runs → line segments; collect points for the fill baseline.
+  let seg = [], lastI = -1, lastV = null;
+  const flush = () => {
+    if (seg.length >= 2) {
+      const line = document.createElementNS(SVGNS, "path");
+      line.setAttribute("class", "tspark-line");
+      line.setAttribute("d", seg.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" "));
+      line.style.stroke = color;
+      svg.appendChild(line);
+      const fill = document.createElementNS(SVGNS, "path");
+      fill.setAttribute("class", "tspark-fill");
+      const d = "M" + seg[0][0].toFixed(1) + " " + (H - PAD).toFixed(1) + " "
+        + seg.map((p) => "L" + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ")
+        + " L" + seg[seg.length - 1][0].toFixed(1) + " " + (H - PAD).toFixed(1) + " Z";
+      fill.setAttribute("d", d);
+      fill.style.fill = color;
+      svg.appendChild(fill);
+    } else if (seg.length === 1) {
+      const dot = document.createElementNS(SVGNS, "circle");   // lone point → a dot so it's visible
+      dot.setAttribute("cx", seg[0][0].toFixed(1)); dot.setAttribute("cy", seg[0][1].toFixed(1));
+      dot.setAttribute("r", "2"); dot.style.fill = color;
+      svg.appendChild(dot);
+    }
+    seg = [];
+  };
+  for (let i = 0; i < n; i++) {
+    const v = vals[i];
+    if (typeof v === "number" && Number.isFinite(v)) { seg.push([x(i), y(v)]); lastI = i; lastV = v; }
+    else flush();
+  }
+  flush();
+  // end-dot on the last known value
+  if (lastI >= 0) {
+    const dot = document.createElementNS(SVGNS, "circle");
+    dot.setAttribute("class", "tspark-dot");
+    dot.setAttribute("cx", x(lastI).toFixed(1)); dot.setAttribute("cy", y(lastV).toFixed(1));
+    dot.setAttribute("r", "2.4"); dot.style.fill = color;
+    svg.appendChild(dot);
+  }
+  return svg;
+}
+
+// Render the trend-sparklines strip from the persistent voyage archive (folded with
+// this snapshot's landed runs, exactly like the voyage log — but WITHOUT re-saving;
+// renderVoyageLog owns persistence). Cleared to an empty strip when there's no state
+// or no shipped history yet. Rides above BOTH layouts — wired into render() in the
+// same places as the scoreboard, so it shows on the KANBAN board (the streamed default).
+function renderTrends(state) {
+  const wrap = document.getElementById("trends");
+  if (!wrap) return;
+  wrap.textContent = "";
+  if (!state) return;
+  const recentRuns = (state && Array.isArray(state.recentRuns)) ? state.recentRuns : [];
+  const archive = mergeVoyageArchive(loadVoyageArchive(), recentRuns, new Date().toISOString());
+  const records = Object.values(archive);
+  const t = computeTrends(records, Date.now(), 14);
+  if (!t.anyShipped) return;   // no shipped history yet — the strip stays absent (clean degrade)
+
+  const bar = $("div", "trends");
+  const lede = $("div", "tr-lede");
+  lede.appendChild($("div", "k", "trends"));
+  lede.appendChild($("div", "sub", `last ${t.days} days`));
+  bar.appendChild(lede);
+
+  // metric | label | colour (colour-blind-safe palette hue) | value formatter | aria unit
+  const metrics = [
+    { m: t.shipped,    label: "shipped/day",  color: "var(--done)",     fmt: (v) => (Number.isFinite(v) ? String(v) : null),          unit: "features shipped per day" },
+    { m: t.spend,      label: "spend/day",    color: "var(--awaiting)", fmt: (v) => money(v),                                          unit: "spend per day" },
+    { m: t.timeToShip, label: "time to ship", color: "var(--building)", fmt: (v) => durText(v),                                        unit: "average time to ship per day" },
+    { m: t.tokens,     label: "tokens/day",   color: "var(--review)",   fmt: (v) => (compactTok(v) != null ? compactTok(v) + " tok" : null), unit: "tokens per day" },
+  ];
+
+  for (const spec of metrics) {
+    const cell = $("div", "trend");
+    const head = $("div", "th");
+    head.appendChild($("div", "tk", spec.label));
+    const valText = spec.m.any && spec.m.current != null ? spec.fmt(spec.m.current) : null;
+    const present = valText != null && valText !== "—";
+    head.appendChild($("div", "tv" + (present ? "" : " dim"), present ? valText : "—"));
+    cell.appendChild(head);
+    if (spec.m.any) {
+      const aria = `${spec.unit} over the last ${t.days} days${present ? `, currently ${valText}` : ""}`;
+      cell.appendChild(buildSparkline(spec.m.series, spec.color, aria));
+    } else {
+      cell.appendChild($("div", "tnodata", "no data yet"));
+    }
+    bar.appendChild(cell);
+  }
+  wrap.appendChild(bar);
+}
+
 // Expose the pure metric fns for Node unit tests without a DOM (harmless in the browser).
 // The voyage-log fold + row-derivation are pure (no DOM / storage) and function-hoisted,
 // so they're referenceable here even though defined further down (#194).
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { computeScoreboard, durText, mergeVoyageArchive, voyageRowFields, voyageRecordFromRun, costRichness, voyageMs };
+  module.exports = { computeScoreboard, computeTrends, durText, mergeVoyageArchive, voyageRowFields, voyageRecordFromRun, costRichness, voyageMs };
 }
 
 // ---- manifest (fleet totals) bar ------------------------------------------
@@ -3522,6 +3739,7 @@ function render(state) {
 
   if (state && state.degraded) {
     document.getElementById("scoreboard").textContent = "";
+    document.getElementById("trends").textContent = "";
     document.getElementById("fleet").textContent = "";
     document.getElementById("feed").textContent = "";
     document.getElementById("gittree").textContent = "";
@@ -3546,6 +3764,7 @@ function render(state) {
   }
   if (!runs.length && !recentRuns.length) {
     document.getElementById("scoreboard").textContent = "";
+    document.getElementById("trends").textContent = "";
     document.getElementById("fleet").textContent = "";
     document.getElementById("feed").textContent = "";
     document.getElementById("gittree").textContent = "";
@@ -3569,6 +3788,7 @@ function render(state) {
   }
 
   renderScoreboard(state);    // today's scoreboard banner — rides at the very top (#193)
+  renderTrends(state);        // day-bucketed trend sparklines — above BOTH layouts (#202)
   renderFleet(state, runs);   // the manifest bar rides above BOTH layouts
   renderFeed(runs);           // the live activity ticker — fleet-wide, above BOTH layouts (#186)
   renderWake(state, recentRuns);   // the commit-graph of landed runs, also above BOTH layouts (#176)
