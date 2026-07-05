@@ -663,6 +663,66 @@
   .run.recent.expanded > .voyage-row { border-color: var(--brass-dim); }
   .s-when { color: var(--ink-faint); font-family: var(--mono); font-size: 12px; text-align: right; white-space: nowrap; }
 
+  /* ---------- voyage log — scrollable archive of every shipped run (#194) ----------
+     The board is live-only: finished runs age out of the recent-voyages window and are
+     lost. The voyage log is a PERSISTENT, scrollable archive of past shipped runs, each
+     showing issue/PR + title, cost + token total, model split (%), cycle time
+     (dispatch→merge) and the landing timestamp. It ACCUMULATES client-side into
+     localStorage keyed by run id, so a run survives beyond the live board window / a
+     snapshot refresh / a full page reload. A self-contained panel with its own scroll
+     (max-height + overflow-y:auto) so it never disrupts the live lanes, in the same
+     wood+brass idiom as the recent-voyages harbour. READ-ONLY — a view of what shipped. */
+  .voyagelog { margin: 26px 0 12px; }
+  .voyagelog .vlog-head .lane-sub .count { color: var(--brass-bright); font-weight: 650; }
+  .voyagelog .vlog-head .lane-sub .archived { color: var(--ink-faint); }
+  .vlog-scroll {
+    max-height: 420px; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin;
+    border: 1px solid var(--wood-edge); border-radius: 12px;
+    background: linear-gradient(180deg, #12222f, #0e1c29);
+    box-shadow: inset 0 1px 0 rgba(198,168,106,.06), 0 6px 18px rgba(0,0,0,.3);
+  }
+  .vlog-row {
+    display: grid; align-items: center; gap: 12px;
+    grid-template-columns: 76px minmax(0,1fr) 92px 84px minmax(130px,1fr) 92px 122px;
+    padding: 10px 14px; border-bottom: 1px solid var(--line);
+  }
+  .vlog-row:last-child { border-bottom: 0; }
+  .vlog-row:hover { background: rgba(198,168,106,.045); }
+  .vlog-outcome {
+    font-size: 9.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; text-align: center;
+    justify-self: start; white-space: nowrap;
+  }
+  .vlog-outcome.shipped { color: var(--done); }
+  .vlog-outcome.merged { color: var(--brass); }
+  .vlog-id { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
+  .vlog-num { color: var(--brass); font-family: var(--mono); font-weight: 650; font-size: 12.5px;
+    text-decoration: none; white-space: nowrap; flex: none; }
+  a.vlog-num:hover { color: var(--brass-bright); text-decoration: underline; }
+  a.vlog-num:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; border-radius: 3px; }
+  .vlog-title { color: var(--parch); font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; min-width: 0; text-decoration: none; }
+  a.vlog-title:hover { color: var(--parch); text-decoration: underline; }
+  a.vlog-title:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; border-radius: 3px; }
+  .vlog-cost { font-family: var(--mono); font-size: 12.5px; color: var(--brass-bright); text-align: right; white-space: nowrap; }
+  .vlog-cost.na { color: var(--ink-faint); }
+  .vlog-tok { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); text-align: right; white-space: nowrap; }
+  .vlog-tok.na { color: var(--ink-faint); }
+  .vlog-models { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .vlog-model-bar { display: flex; width: 100%; height: 7px; border-radius: 999px; overflow: hidden;
+    border: 1px solid var(--wood-edge); background: var(--wood-2); }
+  .vlog-model-bar .seg { height: 100%; min-width: 2px; }
+  .vlog-model-text { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vlog-model-text.na { color: var(--ink-faint); }
+  .vlog-cycle { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); text-align: right; white-space: nowrap; }
+  .vlog-cycle.na { color: var(--ink-faint); }
+  .vlog-when { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); text-align: right; white-space: nowrap; }
+  @media (max-width: 900px) {
+    .vlog-row { grid-template-columns: 70px minmax(0,1fr) 84px 110px; }
+    .vlog-row .vlog-tok, .vlog-row .vlog-models, .vlog-row .vlog-cycle { display: none; }
+  }
+
   /* ---------- expanded log card ---------- */
   .logcard {
     border: 1px solid var(--brass-dim); border-top: 0; border-radius: 0 0 12px 12px;
@@ -1190,6 +1250,7 @@
         <div class="runs" id="runs"></div>
         <div id="horizon"></div>
         <div id="harbour"></div>
+        <div id="voyagelog"></div>
       </div>
       <aside class="side">
         <div id="gittree"></div>
@@ -2468,8 +2529,12 @@ function renderScoreboard(state) {
   wrap.appendChild(bar);
 }
 
-// Expose the pure metric fn for a Node unit test without a DOM (harmless in the browser).
-if (typeof module !== "undefined" && module.exports) { module.exports = { computeScoreboard, durText }; }
+// Expose the pure metric fns for Node unit tests without a DOM (harmless in the browser).
+// The voyage-log fold + row-derivation are pure (no DOM / storage) and function-hoisted,
+// so they're referenceable here even though defined further down (#194).
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { computeScoreboard, durText, mergeVoyageArchive, voyageRowFields, voyageRecordFromRun, costRichness, voyageMs };
+}
 
 // ---- manifest (fleet totals) bar ------------------------------------------
 function renderFleet(state, runs) {
@@ -2879,6 +2944,263 @@ function renderHarbour(state, recentRuns) {
   for (const run of recentRuns) wrap.appendChild(renderRun(run));
 }
 
+// ---- voyage log — a persistent, scrollable archive of shipped runs (#194) --
+// The recent-voyages harbour above is bounded (recentCap runs, a recentWindowHours
+// time window): a run that ships then ages out of that window is LOST from the board.
+// The voyage log is the durable counterpart — it ACCUMULATES every shipped run into
+// localStorage keyed by run id, so a completed voyage survives the live board window,
+// a --watch snapshot refresh, AND a full page reload. Each poll we fold the current
+// snapshot's landed runs into the archive (newer data wins, richer cost never lost),
+// bound it, and re-render newest-first. Strictly a VIEW — it reads the same snapshot
+// the board already reads and mutates nothing on the fleet; the only thing it writes
+// is the browser's own localStorage.
+const VOYAGE_LOG_KEY = "spyglass:voyageLog";   // localStorage key for the accumulated archive
+const VOYAGE_LOG_CAP = 250;                    // bound the archive (newest kept) so storage can't grow unbounded
+
+// Load the accumulated archive map (key → record). Degrades to {} on any storage /
+// parse failure (private mode, quota, corrupt value) so the panel never throws.
+function loadVoyageArchive() {
+  try {
+    const raw = localStorage.getItem(VOYAGE_LOG_KEY);
+    if (!raw) return {};
+    const data = JSON.parse(raw);
+    return (data && typeof data === "object" && !Array.isArray(data)) ? data : {};
+  } catch { return {}; }
+}
+function saveVoyageArchive(map) {
+  try { localStorage.setItem(VOYAGE_LOG_KEY, JSON.stringify(map)); }
+  catch { /* storage blocked / over quota — the panel still renders this session's map */ }
+}
+
+// The completion instant used to sort + bound the archive: the merge/close timestamp,
+// else the archive time (when it was first captured), else 0 (oldest).
+function voyageMs(rec) {
+  const c = Date.parse((rec && rec.completedAt) || "");
+  if (Number.isFinite(c)) return c;
+  const a = Date.parse((rec && rec.archivedAt) || "");
+  return Number.isFinite(a) ? a : 0;
+}
+
+// How much a cost object carries — used to keep the RICHER cost when the same run is
+// folded in again (a later snapshot might carry the finalised figure, or a degraded
+// one might briefly lose it; we never downgrade a run's recorded cost).
+function costRichness(c) {
+  if (!c) return 0;
+  let s = 0;
+  if (c.present) s += 1;
+  if (typeof c.totalCost === "number" && Number.isFinite(c.totalCost)) s += 2;
+  if (Array.isArray(c.modelUsage) && c.modelUsage.length) s += 1;
+  if (c.tokens && typeof c.tokens.total === "number") s += 1;
+  return s;
+}
+
+// Build a compact, self-contained archive record from a snapshot recentRun. Only the
+// fields the log needs are kept (small + stable in storage), each degrading to null.
+function voyageRecordFromRun(run, nowIso) {
+  const c = (run && run.cost) || {};
+  const numOrNull = (v) => (typeof v === "number" && Number.isFinite(v)) ? v : null;
+  const cost = {
+    present: !!c.present,
+    final: true,   // an archived run is terminal — its cost is settled
+    totalCost: numOrNull(c.totalCost),
+    tokens: (c.tokens && typeof c.tokens.total === "number")
+      ? { total: c.tokens.total, input: numOrNull(c.tokens.input), output: numOrNull(c.tokens.output) }
+      : null,
+    modelUsage: Array.isArray(c.modelUsage) ? c.modelUsage.map((m) => ({
+      model: m && m.model != null ? String(m.model) : "?",
+      tokens: numOrNull(m && m.tokens),
+      cost: numOrNull(m && m.cost),
+      tokenShare: numOrNull(m && m.tokenShare),
+      costShare: numOrNull(m && m.costShare),
+    })) : null,
+  };
+  return {
+    key: runKey(run),
+    issueNumber: run.issueNumber != null ? run.issueNumber : null,
+    prNumber: run.prNumber != null ? run.prNumber : null,
+    title: run.title != null ? String(run.title) : null,
+    issueUrl: run.issueUrl || null,
+    prUrl: run.prUrl || null,
+    outcome: run.outcome || null,
+    startedAt: run.startedAt || null,
+    completedAt: run.completedAt || null,
+    cost,
+    archivedAt: nowIso || new Date().toISOString(),
+  };
+}
+
+// PURE fold: merge the snapshot's landed runs into the prior archive map, keeping the
+// richer cost, filling missing timestamps, and bounding the result to the newest
+// VOYAGE_LOG_CAP. No DOM / storage — exported for a Node unit test. Only MERGED /
+// SHIPPED voyages enter the log (a blocked / abandoned run is not a "shipped" run).
+function mergeVoyageArchive(prevMap, recentRuns, nowIso) {
+  const map = Object.assign({}, prevMap && typeof prevMap === "object" ? prevMap : {});
+  const list = Array.isArray(recentRuns) ? recentRuns : [];
+  for (const run of list) {
+    if (!run || run.blocked) continue;
+    if (run.outcome !== "Merged" && run.outcome !== "Shipped") continue;
+    const rec = voyageRecordFromRun(run, nowIso);
+    const prev = map[rec.key];
+    if (prev) {
+      const cost = costRichness(rec.cost) >= costRichness(prev.cost) ? rec.cost : prev.cost;
+      map[rec.key] = Object.assign({}, prev, rec, {
+        cost,
+        startedAt: rec.startedAt || prev.startedAt || null,
+        completedAt: rec.completedAt || prev.completedAt || null,
+        archivedAt: prev.archivedAt || rec.archivedAt,   // keep the FIRST-seen archive time
+      });
+    } else {
+      map[rec.key] = rec;
+    }
+  }
+  const entries = Object.values(map);
+  if (entries.length > VOYAGE_LOG_CAP) {
+    entries.sort((a, b) => voyageMs(b) - voyageMs(a));
+    const keep = {};
+    for (const e of entries.slice(0, VOYAGE_LOG_CAP)) keep[e.key] = e;
+    return keep;
+  }
+  return map;
+}
+
+// PURE: derive the display fields for one archive record — every value degrades to
+// "—" (never NaN / undefined / a misleading $0.00). Exported for a Node unit test.
+// Reuses the same money / token / model helpers the live rows use, so the archive
+// reads identically to the board.
+function voyageRowFields(rec) {
+  const c = (rec && rec.cost) || {};
+  // cost — a recorded POSITIVE figure only; 0 / null / absent → "—" (never "$0.00").
+  const tc = (c.present && typeof c.totalCost === "number" && Number.isFinite(c.totalCost) && c.totalCost > 0)
+    ? c.totalCost : null;
+  const costText = tc != null ? money(tc) : "—";
+  // tokens — via the shared tokenInfo helper (reads rec.cost.tokens.total).
+  const ti = tokenInfo(rec);
+  const tokensText = ti ? ti.text : "—";
+  // model split — via the shared modelInfo helper (reads rec.cost.modelUsage).
+  const mi = modelInfo(rec);
+  const models = mi ? mi.models : [];
+  const modelsText = mi ? modelSummary(mi) : "—";
+  // cycle time — dispatch→merge span, both stamps required, non-negative.
+  const s = Date.parse((rec && rec.startedAt) || "");
+  const e = Date.parse((rec && rec.completedAt) || "");
+  const cycleText = (Number.isFinite(s) && Number.isFinite(e) && e >= s) ? (durText(e - s) || "—") : "—";
+  // timestamp — a short local date/time for the landing, plus a full-precision title.
+  let whenText = "—", whenTitle = null;
+  if (Number.isFinite(e)) {
+    const d = new Date(e);
+    try { whenText = d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); }
+    catch { whenText = d.toISOString().slice(0, 16).replace("T", " "); }
+    whenTitle = d.toString();
+  }
+  const outcome = (rec && rec.outcome) || "—";
+  return { costText, tokensText, models, modelsText, cycleText, whenText, whenTitle, outcome };
+}
+
+function renderVoyageLog(state) {
+  const wrap = document.getElementById("voyagelog");
+  if (!wrap) return;
+  wrap.textContent = "";
+  // Fold this snapshot's landed runs into the persistent archive, then read it back.
+  const recentRuns = (state && Array.isArray(state.recentRuns)) ? state.recentRuns : [];
+  const archive = mergeVoyageArchive(loadVoyageArchive(), recentRuns, new Date().toISOString());
+  saveVoyageArchive(archive);
+  const entries = Object.values(archive).sort((a, b) => voyageMs(b) - voyageMs(a));
+  if (!entries.length) return;   // nothing shipped yet — the panel stays absent (clean degrade)
+
+  const panel = $("div", "voyagelog");
+  // header — matches the harbour lane-head idiom
+  const head = $("div", "lane-head vlog-head");
+  const h2 = $("h2"); h2.appendChild($("span", "anchor", "📜"));
+  h2.appendChild(document.createTextNode("voyage log"));
+  head.appendChild(h2);
+  const sub = $("span", "lane-sub");
+  sub.appendChild($("span", "count", String(entries.length)));
+  sub.appendChild(document.createTextNode(entries.length === 1 ? " voyage · " : " voyages · "));
+  sub.appendChild($("span", "archived", "archived on this device, newest first"));
+  head.appendChild(sub);
+  panel.appendChild(head);
+
+  const scroll = $("div", "vlog-scroll");
+  for (const rec of entries) scroll.appendChild(voyageLogRow(rec));
+  panel.appendChild(scroll);
+  wrap.appendChild(panel);
+}
+
+// One archive row — every value XSS-safe via the $() textContent helper (never innerHTML).
+function voyageLogRow(rec) {
+  const f = voyageRowFields(rec);
+  const row = $("div", "vlog-row");
+
+  // outcome pill (Shipped / Merged)
+  const oc = String(f.outcome || "").toLowerCase();
+  const pill = $("span", "vlog-outcome" + (oc === "shipped" ? " shipped" : oc === "merged" ? " merged" : ""),
+    f.outcome || "—");
+  row.appendChild(pill);
+
+  // id + title — number links to the PR (else issue); title links the same.
+  const id = $("div", "vlog-id");
+  const num = rec.issueNumber != null ? rec.issueNumber : rec.prNumber;
+  const primaryUrl = rec.prUrl || rec.issueUrl || null;
+  const numLabel = "#" + (num != null ? num : "?");
+  if (primaryUrl) {
+    const a = $("a", "vlog-num", numLabel);
+    a.href = primaryUrl; a.target = "_blank"; a.rel = "noopener";
+    id.appendChild(a);
+  } else {
+    id.appendChild($("span", "vlog-num", numLabel));
+  }
+  const titleTxt = rec.title || numLabel;
+  if (primaryUrl) {
+    const at = $("a", "vlog-title", titleTxt);
+    at.href = primaryUrl; at.target = "_blank"; at.rel = "noopener"; at.title = titleTxt;
+    id.appendChild(at);
+  } else {
+    const tt = $("span", "vlog-title", titleTxt); tt.title = titleTxt;
+    id.appendChild(tt);
+  }
+  row.appendChild(id);
+
+  // cost
+  const cost = $("div", "vlog-cost" + (f.costText === "—" ? " na" : ""), f.costText);
+  cost.title = "API-equivalent cost across the run's models";
+  row.appendChild(cost);
+
+  // token total
+  const tok = $("div", "vlog-tok" + (f.tokensText === "—" ? " na" : ""), f.tokensText);
+  row.appendChild(tok);
+
+  // model split — a compact share bar + a "%-per-model" text line
+  const models = $("div", "vlog-models");
+  if (f.models && f.models.length && f.models.some((m) => m.share != null)) {
+    const bar = $("div", "vlog-model-bar");
+    for (const m of f.models) {
+      if (m.share == null) continue;
+      const seg = $("span", "seg");
+      seg.style.width = Math.max(2, Math.round(m.share * 100)) + "%";
+      seg.style.background = m.color;
+      seg.title = m.label + " " + Math.round(m.share * 100) + "%";
+      bar.appendChild(seg);
+    }
+    models.appendChild(bar);
+  }
+  const mtext = $("div", "vlog-model-text" + (f.modelsText === "—" ? " na" : ""), f.modelsText);
+  if (f.modelsText !== "—") mtext.title = f.modelsText;
+  models.appendChild(mtext);
+  row.appendChild(models);
+
+  // cycle time (dispatch→merge)
+  const cyc = $("div", "vlog-cycle" + (f.cycleText === "—" ? " na" : ""), f.cycleText);
+  cyc.title = "cycle time — dispatch → merge";
+  row.appendChild(cyc);
+
+  // timestamp
+  const when = $("div", "vlog-when", f.whenText);
+  if (f.whenTitle) when.title = f.whenTitle;
+  row.appendChild(when);
+
+  return row;
+}
+
 // ---- the horizon: waiting-runs dependency graph (#111) --------------------
 // Nodes = queued/held runs (+ any still-in-flight prerequisite they wait on);
 // directed edges = crows-nest §2b relationships (depends on #N / same-file or
@@ -3206,6 +3528,8 @@ function render(state) {
     e.appendChild($("div", "big", "no runs to chart"));
     e.appendChild($("div", "sub", esc(state.degraded)));
     wrap.appendChild(e);
+    // The persistent voyage log (#194) survives a degraded snapshot — still show the archive.
+    renderVoyageLog(state);
     // The data vanished (degraded snapshot) and the board is now cleared — an open detail
     // panel would keep showing stale content over nothing, so close it here too (#164). This
     // early return precedes the usual refreshDetailPanel() call below, so do it explicitly.
@@ -3228,6 +3552,8 @@ function render(state) {
     e.appendChild($("div", "big", "an empty harbour"));
     e.appendChild($("div", "sub", "The fleet is idle — no armed issues, open PRs, or recent voyages."));
     wrap.appendChild(e);
+    // The persistent voyage log (#194) outlives an idle fleet — still show the archive.
+    renderVoyageLog(state);
     // No runs left to chart — the board is cleared, so an open detail panel has nothing
     // behind it; close it here too (this early return precedes refreshDetailPanel() below) (#164).
     closeDetailPanel();
@@ -3294,6 +3620,11 @@ function render(state) {
     }
     renderHarbour(state, fRecent);
   }
+  // the voyage log (#194) — a persistent local archive of shipped runs, rendered under
+  // BOTH layouts (independent of the stage filter, like the scoreboard/manifest). It folds
+  // the current snapshot's landed runs into localStorage, so it grows beyond the live
+  // recent-voyages window and survives a refresh / reload.
+  renderVoyageLog(state);
   // keep any open board-detail panel in sync with the fresh data (or close it) (#164)
   refreshDetailPanel();
 
