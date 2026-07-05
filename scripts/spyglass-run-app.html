@@ -341,6 +341,46 @@
     78% { opacity: 1; transform: translateY(0) scale(1); }
     100% { opacity: 0; transform: translateY(-5px); }
   }
+  /* ---------- one-shot EVENT bursts (#178) ----------
+     Brief, self-removing overlays fired on a state TRANSITION (not a loop), layered
+     over the ambient state animations. Each is an inert, pointer-events:none sheet
+     anchored to the card (.run / .kcard are position:relative), removed by a JS timeout.
+     Both are display:none under prefers-reduced-motion, so they are a pure no-op there. */
+
+  /* celebratory burst — a quick emerald FLASH sweeping the card the instant a run lands
+     (Merged/Shipped), on top of the slow shipped-glow ring + the rising pennant, so a
+     landing reads as a burst of light, not only a slow glow. */
+  .fx-burst {
+    position: absolute; inset: 0; z-index: 4; pointer-events: none;
+    border-radius: inherit; overflow: hidden;
+    animation: fx-burst-fade 1.15s ease-out 1 forwards;
+  }
+  .fx-burst::before {
+    content: ""; position: absolute; inset: -20%;
+    background:
+      radial-gradient(circle at 80% 42%, rgba(150,245,205,.6), rgba(150,245,205,0) 55%),
+      radial-gradient(circle at 20% 60%, rgba(120,235,190,.4), rgba(120,235,190,0) 50%);
+  }
+  @keyframes fx-burst-fade { 0% { opacity: 0; } 14% { opacity: 1; } 100% { opacity: 0; } }
+
+  /* storm burst — the alarming counterpart: a red shockwave FLASH sweeps the card, with a
+     brief nervous shake, the instant a run transitions INTO blocked. The shake is on the
+     overlay only (never the card's text), so legibility is untouched. */
+  .fx-storm {
+    position: absolute; inset: 0; z-index: 4; pointer-events: none; border-radius: inherit;
+    animation: fx-storm-shake 1.05s cubic-bezier(.36,.07,.19,.97) 1 forwards;
+  }
+  .fx-storm::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit;
+    box-shadow: inset 0 0 0 2px rgba(224,86,63,.9), inset 0 0 26px 2px rgba(224,86,63,.5);
+    animation: fx-storm-flash 1.05s ease-out 1 forwards;
+  }
+  @keyframes fx-storm-shake {
+    0%,100% { transform: translateX(0); }
+    12% { transform: translateX(-3px); } 26% { transform: translateX(3px); }
+    40% { transform: translateX(-2px); } 54% { transform: translateX(2px); } 70% { transform: translateX(-1px); }
+  }
+  @keyframes fx-storm-flash { 0% { opacity: 0; } 10% { opacity: 1; } 100% { opacity: 0; } }
   /* ---------- state-specific run-card animations (#150) ----------
      Ambient, per-state motion on LIVE (non-recent) run cards, keyed to the run's
      REAL armada:* group (the .g-<group> class the row carries). Tasteful + nautical;
@@ -365,6 +405,13 @@
   @keyframes card-awaiting {
     0%,100% { box-shadow: inset 3px 0 0 0 rgba(230,169,60,.45), 0 0 6px -2px rgba(230,169,60,.20); }
     50%     { box-shadow: inset 3px 0 0 0 rgba(230,169,60,.85), 0 0 16px -2px rgba(230,169,60,.44); }
+  }
+  /* in-review — a lively "alive" shimmer in the review orchid, a touch quicker than the
+     calm awaiting glow: a PR actively under review reads as busy, not parked (#178). */
+  .run.g-reviewing:not(.recent) > .voyage-row { animation: card-reviewing 3.2s ease-in-out infinite; }
+  @keyframes card-reviewing {
+    0%,100% { box-shadow: inset 3px 0 0 0 rgba(207,143,190,.5), 0 0 6px -2px rgba(207,143,190,.22); }
+    50%     { box-shadow: inset 3px 0 0 0 rgba(207,143,190,.92), 0 0 16px -2px rgba(207,143,190,.5); }
   }
   /* blocked — a soft warning pulse in the fleet's danger tone, a touch more insistent
      (faster) than the calm states: attention needed. Pairs with the red ship glow. */
@@ -670,8 +717,12 @@
     /* state-specific run animations (#150): drop the motion, keep a STATIC coloured
        left seam so each state still reads distinctly for a reduced-motion viewer. */
     .run.g-building:not(.recent) > .voyage-row { animation: none; box-shadow: inset 3px 0 0 0 rgba(86,180,233,.6); }
+    .run.g-reviewing:not(.recent) > .voyage-row { animation: none; box-shadow: inset 3px 0 0 0 rgba(207,143,190,.6); }
     .run.g-awaiting-merge:not(.recent) > .voyage-row { animation: none; box-shadow: inset 3px 0 0 0 rgba(230,169,60,.6); }
     .run.blocked:not(.recent) > .voyage-row { animation: none; box-shadow: inset 3px 0 0 0 rgba(224,86,63,.7); }
+    /* one-shot event bursts (#178): no flash/shake for a reduced-motion viewer — the
+       static state seams + the (static) pennant already convey the transition. */
+    .fx-burst, .fx-storm { display: none; }
   }
 
   /* ---------- KANBAN board (#163) — runs in lanes by pipeline stage ---------- */
@@ -707,6 +758,24 @@
   .kcard.blocked { border-left-color: var(--blocked);
     box-shadow: inset 0 0 0 1px rgba(224,86,63,.28); background: linear-gradient(180deg, #26130e, #1c0f0b); }
   .kcard.recent { opacity: .9; }
+  /* ---------- KANBAN state-reactive pulses (#178) ----------
+     The board's live cards breathe like the list rows do. building / in-review cards
+     get a subtle "alive" glow in their lane colour; a blocked card gets a red storm
+     pulse beyond its static seam. Terminal, recent, and just-landed cards stay calm.
+     Guarded with :not(.kentering) so the #177 lane-ENTER animation still plays on a
+     card sliding into a new lane (the ambient pulse resumes once it has settled).
+     All are disabled + pinned static under prefers-reduced-motion below. */
+  .kcard.g-building:not(.recent):not(.blocked):not(.kentering),
+  .kcard.g-reviewing:not(.recent):not(.blocked):not(.kentering) { animation: kcard-alive 3.8s ease-in-out infinite; }
+  @keyframes kcard-alive {
+    0%,100% { box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+    50%     { box-shadow: 0 0 13px -5px var(--k); }
+  }
+  .kcard.blocked:not(.recent):not(.kentering) { animation: kcard-storm 2.2s ease-in-out infinite; }
+  @keyframes kcard-storm {
+    0%,100% { box-shadow: inset 0 0 0 1px rgba(224,86,63,.28), 0 0 0 0 rgba(224,86,63,0); }
+    50%     { box-shadow: inset 0 0 0 1px rgba(224,86,63,.6), 0 0 15px -4px rgba(224,86,63,.55); }
+  }
   .kc-head { display: flex; align-items: center; gap: 6px; }
   .kc-ship { width: 20px; height: 15px; flex: none; display: inline-flex; }
   .kc-ship svg { width: 100%; height: 100%; }
@@ -756,6 +825,12 @@
     .kcard.kflip { transition: none; }
     .kcard.kentering { animation: none; }
     .kcard-ghost { display: none; }
+    /* state-reactive pulses (#178): drop the motion; a blocked card keeps a STATIC red
+       glow so it still reads as alarming (building/in-review fall back to their seam). */
+    .kcard.g-building:not(.recent):not(.blocked):not(.kentering),
+    .kcard.g-reviewing:not(.recent):not(.blocked):not(.kentering) { animation: none; }
+    .kcard.blocked:not(.recent):not(.kentering) { animation: none;
+      box-shadow: inset 0 0 0 1px rgba(224,86,63,.5), 0 0 12px -5px rgba(224,86,63,.5); }
   }
 
   /* ---------- the wake: a git-graph of shipped/merged runs landing on main (#176) ----------
@@ -2698,6 +2773,18 @@ function render(state) {
       const pennant = $("span", "landed-pennant", "⚓ just shipped");
       block.appendChild(pennant);
       setTimeout(() => pennant.remove(), 3400);
+      // celebratory BURST (#178): an emerald flash sweeping the card, layered over the
+      // glow + pennant. Inert overlay, self-removes; a no-op under reduced-motion (CSS).
+      const burst = $("span", "fx-burst");
+      block.appendChild(burst);
+      setTimeout(() => burst.remove(), 1300);
+    } else if (ev.kind === "blocked" && block) {
+      // storm BURST (#178): a red shockwave flash + brief shake the instant a run is
+      // blocked — the alarming counterpart to the ship burst, over the steady blocked
+      // pulse. Inert overlay, self-removes; a no-op under reduced-motion (CSS).
+      const storm = $("span", "fx-storm");
+      block.appendChild(storm);
+      setTimeout(() => storm.remove(), 1200);
     }
     foghorn(ev.kind);
   }
