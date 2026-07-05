@@ -1857,27 +1857,38 @@ function renderBoardAnimated(state, runs, recentRuns) {
   // We deliberately DON'T use requestAnimationFrame to release the invert: a backgrounded
   // tab throttles rAF, which would strand a card at its old position. Instead we commit the
   // invert with a single forced reflow, then release — the transition then plays reliably.
+  // Batch ALL reads before ANY write so the survivor FLIP costs one layout pass, not a
+  // forced reflow per card (#182). Phase 1 — PURE READS: measure every surviving card's LAST
+  // box (its matching FIRST box is already in firstRects) and note newcomers, writing NOTHING.
   const seen = new Set();
-  const movers = [];   // { el } cards to release after the reflow
+  const flips = [];      // { el, dx, dy } survivors that actually moved — inverted in phase 2
+  const entrants = [];   // cards new this poll — settled in during phase 2
   for (const c of boardEl.querySelectorAll(".kcard[data-key]")) {
     const key = c.dataset.key;
     seen.add(key);
     const first = firstRects.get(key);
     if (first) {
-      const last = c.getBoundingClientRect();
+      const last = c.getBoundingClientRect();   // read only — no style writes in this loop
       const dx = first.left - last.left;
       const dy = first.top - last.top;
-      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
-        // Invert: pin the card back to its old box with the transition suppressed.
-        c.style.transition = "none";
-        c.style.transform = `translate(${dx}px, ${dy}px)`;
-        movers.push(c);
-      }
+      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) flips.push({ el: c, dx, dy });
     } else {
-      // A card that wasn't on the board last poll — a genuinely new run: settle it in.
-      c.classList.add("kentering");
-      c.addEventListener("animationend", () => c.classList.remove("kentering"), { once: true });
+      entrants.push(c);
     }
+  }
+  // Phase 2 — PURE WRITES: apply the invert transform / enter classes. No getBoundingClientRect()
+  // reads here, so nothing forces a re-layout mid-loop — all measurement happened in phase 1.
+  const movers = [];   // cards to release after the single reflow
+  for (const { el, dx, dy } of flips) {
+    // Invert: pin the card back to its old box with the transition suppressed.
+    el.style.transition = "none";
+    el.style.transform = `translate(${dx}px, ${dy}px)`;
+    movers.push(el);
+  }
+  for (const c of entrants) {
+    // A card that wasn't on the board last poll — a genuinely new run: settle it in.
+    c.classList.add("kentering");
+    c.addEventListener("animationend", () => c.classList.remove("kentering"), { once: true });
   }
   if (movers.length) {
     // Force ONE reflow so the inverted positions become the transition's start state, then
