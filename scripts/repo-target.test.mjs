@@ -12,7 +12,7 @@ import assert from 'assert';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
-import { normalizeRepos, isValidRepo, resolveActive, planUse } from './repo-target.mjs';
+import { normalizeRepos, isValidRepo, resolveActive, planUse, assertLocalRepoMatchesActive } from './repo-target.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(HERE, 'repo-target.mjs');
@@ -51,6 +51,16 @@ test('isValidRepo distinguishes owner/name from junk', () => {
   assert.ok(!isValidRepo('ARMADA'));
   assert.ok(!isValidRepo('a/b/c'));
   assert.ok(!isValidRepo(''));
+});
+test('isValidRepo REJECTS a leading hyphen in either segment (would look like a gh flag)', () => {
+  assert.ok(!isValidRepo('-evil/repo'));
+  assert.ok(!isValidRepo('owner/-repo'));
+  assert.ok(!isValidRepo('--repo/x'));
+  // but an INTERNAL hyphen is still fine
+  assert.ok(isValidRepo('my-org/my-repo'));
+});
+test('normalizeRepos drops a leading-hyphen entry', () => {
+  assert.deepStrictEqual(normalizeRepos(['-a/b', 'c/d', 'e/-f']), ['c/d']);
 });
 
 // --- resolveActive: the precedence rule -------------------------------------
@@ -120,6 +130,42 @@ test('use --add on the very first repo (empty repos) works', () => {
 test('use rejects a malformed target', () => {
   const p = planUse({ target: 'notarepo', config: { repos: ['a/b'] }, add: true });
   assert.ok(!p.ok);
+});
+
+// --- assertLocalRepoMatchesActive: the BUILD/MERGE guard --------------------
+test('GUARD single-repo default (no config) is SAFE — active resolves to the checkout', () => {
+  const g = assertLocalRepoMatchesActive({ config: {}, checkoutRepo: 'calumjs/ARMADA' });
+  assert.ok(g.safe);
+  assert.strictEqual(g.activeRepo, 'calumjs/ARMADA');
+  assert.strictEqual(g.checkoutRepo, 'calumjs/ARMADA');
+});
+test('GUARD activeRepo == checkout is SAFE', () => {
+  const g = assertLocalRepoMatchesActive({
+    config: { repos: ['calumjs/ARMADA', 'calumjs/site'], activeRepo: 'calumjs/ARMADA' },
+    checkoutRepo: 'calumjs/ARMADA',
+  });
+  assert.ok(g.safe);
+});
+test('GUARD activeRepo != checkout REFUSES with a clear message', () => {
+  const g = assertLocalRepoMatchesActive({
+    config: { repos: ['calumjs/ARMADA', 'calumjs/site'], activeRepo: 'calumjs/site' },
+    checkoutRepo: 'calumjs/ARMADA',
+  });
+  assert.ok(!g.safe);
+  assert.strictEqual(g.activeRepo, 'calumjs/site');
+  assert.strictEqual(g.checkoutRepo, 'calumjs/ARMADA');
+  assert.match(g.reason, /multi-repo build\/merge not supported/);
+  assert.match(g.reason, /calumjs\/site/);
+  assert.match(g.reason, /calumjs\/ARMADA/);
+});
+test('GUARD a --repo flag pointing away from the checkout REFUSES too', () => {
+  const g = assertLocalRepoMatchesActive({ config: {}, checkoutRepo: 'calumjs/ARMADA', flagRepo: 'other/repo' });
+  assert.ok(!g.safe);
+  assert.strictEqual(g.activeRepo, 'other/repo');
+});
+test('GUARD unknown checkout (gh failed) fails SAFE — nothing to compare, no false refuse', () => {
+  const g = assertLocalRepoMatchesActive({ config: { activeRepo: 'calumjs/site' }, checkoutRepo: null });
+  assert.ok(g.safe);
 });
 
 // --- subprocess smoke: resolve --repo short-circuits ambient (no gh needed) --

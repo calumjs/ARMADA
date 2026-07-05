@@ -5,6 +5,14 @@
 > reports a PR merged, the lookout walks its in-flight issues and closes the ones that are genuinely
 > done. Section numbers (§5a–§5e) match the labels other skills cross-reference.
 
+> **Multi-repo (crows-nest §1):** every `gh` call below is a **remote** op, so each carries
+> `<repoArgs>` = `--repo <activeRepo>` when multi-repo is configured (empty otherwise — the ambient cwd
+> repo, exactly as today). This includes the mutating close/reconcile calls (`gh issue close`,
+> `gh issue edit`, `gh pr edit`, `gh pr comment`), which act cross-repo just like the §2a scans. The one
+> exception is the **local** head-branch reap (`git push origin --delete`, §5d): git acts on the
+> *checkout's* origin remote, not `<activeRepo>` — but because build/merge is guarded to the checkout
+> repo (§1), the reap only ever runs for that same repo, so it stays correct.
+
 Opening a PR is not finishing an issue. An issue left on `armada:done` after its PR has merged is
 the lookout's blind spot: the work shipped but the backlog still shows it open. So each tick — after
 the dispatch pass (SKILL.md §2), or whenever a merge pipeline reports a PR merged — the lookout also
@@ -17,7 +25,7 @@ alone is not enough; a PR can land and still leave an acceptance criterion unmet
 Walk the issues ARMADA still owns that *might* be finishable — past the build but not yet terminal:
 
 ```bash
-gh issue list --state open --label "armada:done" --json number,title,labels,body --limit 50
+gh issue list <repoArgs> --state open --label "armada:done" --json number,title,labels,body --limit 50
 ```
 
 Skip any issue still **in motion** — labelled `armada:underway` or `armada:reviewing`. Those mean a
@@ -32,8 +40,8 @@ shipwright links its PR to the issue with `Closes #<n>` (full) or `Relates to #<
 that PR and read its merge state:
 
 ```bash
-gh pr list --search "<number> in:body" --state all --json number,body,state,mergedAt,mergeCommit
-gh pr view <pr> --json state,mergedAt,mergeCommit --jq '.state'   # must be "MERGED"
+gh pr list <repoArgs> --search "<number> in:body" --state all --json number,body,state,mergedAt,mergeCommit
+gh pr view <repoArgs> <pr> --json state,mergedAt,mergeCommit --jq '.state'   # must be "MERGED"
 ```
 
 - **No merged PR yet** (open, or `state != "MERGED"`) → leave the issue as-is; a later tick re-checks.
@@ -63,9 +71,9 @@ When both gates pass, close the issue with a comment that links the merged PR an
 then reconcile the labels to the terminal state:
 
 ```bash
-gh issue close <number> \
+gh issue close <repoArgs> <number> \
   --comment "🔭 crows-nest: shipped in #<pr> (merged <sha>). ACs: <each criterion → where it was met>."
-gh issue edit <number> \
+gh issue edit <repoArgs> <number> \
   --add-label "armada:shipped" \
   --remove-label "armada:done" --remove-label "armada:underway" --remove-label "armada:reviewing"
 ```
@@ -89,11 +97,11 @@ the cleanup, or a delete that was refused at the time. When the loop confirms a 
 posture as the merge step**:
 
 ```bash
-head=$(gh pr view <pr> --json headRefName,state --jq 'select(.state=="MERGED")|.headRefName')
+head=$(gh pr view <repoArgs> <pr> --json headRefName,state --jq 'select(.state=="MERGED")|.headRefName')
 # Only if the branch still exists, isn't the base/default, and no other open PR uses it:
 if [ -n "$head" ] && [ "$head" != "<baseBranch>" ] \
    && git ls-remote --exit-code --heads origin "$head" >/dev/null 2>&1 \
-   && [ "$(gh pr list --state open --head "$head" --json number --jq 'length')" = "0" ]; then
+   && [ "$(gh pr list <repoArgs> --state open --head "$head" --json number --jq 'length')" = "0" ]; then
   git push origin --delete "$head" || echo "branch reap skipped (protection/permission?) — non-fatal"
 fi
 ```
@@ -127,7 +135,7 @@ The lookout already pulled recently-merged fleet PRs in the batched scan
 ([SKILL.md §2a](../SKILL.md#2a-scan-both-tracks-in-one-batched-scan)):
 
 ```bash
-gh pr list --label "<triggerLabel>" --state merged \
+gh pr list <repoArgs> --label "<triggerLabel>" --state merged \
   --json number,title,labels,mergedAt,closingIssuesReferences,headRefName --limit 30
 ```
 
@@ -150,8 +158,8 @@ Either way the two merge paths never double-ring.
    already excludes `armada:blocked` PRs, so only the transient `armada:reviewing` needs clearing.)
 
    ```bash
-   gh pr edit <pr> --add-label "armada:merged" --remove-label "armada:reviewing"
-   gh pr comment <pr> --body "🔭 crows-nest: reconciled — merged out-of-band; marked armada:merged."
+   gh pr edit <repoArgs> <pr> --add-label "armada:merged" --remove-label "armada:reviewing"
+   gh pr comment <repoArgs> <pr> --body "🔭 crows-nest: reconciled — merged out-of-band; marked armada:merged."
    ```
 
 2. **Issue → closed + `armada:shipped`.** Resolve the PR's `closingIssuesReferences` / `Closes #<n>`

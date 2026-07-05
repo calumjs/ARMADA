@@ -34,9 +34,23 @@
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import { assertLocalRepoMatchesActive } from './repo-target.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MERGE_GATE = path.join(HERE, 'merge-gate.mjs');
+
+// Resolve the LOCAL checkout's origin repo via the injected shell (best-effort).
+// The merge path's `gh pr merge`/`update-branch` act on exactly this ambient repo,
+// so it's what the multi-repo build/merge guard compares `activeRepo` against.
+export function checkoutRepoVia(sh) {
+  try {
+    const r = sh('gh repo view --json nameWithOwner --jq .nameWithOwner');
+    const name = ((r && r.stdout) || '').trim();
+    return name || null;
+  } catch {
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Structured-output schemas for the agent() fan-out. Each reviewer/builder
@@ -254,6 +268,21 @@ export function computeMergeDecision(state) {
 export async function runReviewMergePipeline(ctx, deps) {
   const { pr, config } = ctx;
   const { agent, sh, log = () => {} } = deps;
+
+  // MULTI-REPO BUILD/MERGE GUARD (first increment). This whole pipeline operates on
+  // the LOCAL checkout: `gh pr merge`/`update-branch`/`checks`/`view` target the
+  // ambient repo and the address/rebase agents work the checkout's worktree. Selecting
+  // a different `activeRepo` re-targets the READ scans and remote label/comment writes
+  // (those carry `--repo`), but it does NOT re-clone or re-checkout the repo — so this
+  // pipeline cannot safely merge a repo other than the checkout's origin. When they
+  // differ, REFUSE with a clear message rather than silently merging the wrong repo.
+  // (Single-repo default: active == checkout ⇒ safe ⇒ unchanged.)
+  const guard = assertLocalRepoMatchesActive({ config, checkoutRepo: checkoutRepoVia(sh) });
+  if (!guard.safe) {
+    log(`guard: ${guard.reason}`);
+    return terminal(pr, 'blocked', guard.reason, null);
+  }
+
   const autoMerge = config.autoMerge === true;
   const maxReviewRounds = Number.isFinite(config.maxReviewRounds) ? config.maxReviewRounds : 2;
   const maxRebaseRounds = Number.isFinite(config.maxRebaseRounds) ? config.maxRebaseRounds : 1;

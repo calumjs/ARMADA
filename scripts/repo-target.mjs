@@ -30,15 +30,29 @@
 //       no re-commission. The target must already be in `repos`; pass --add to
 //       append it first. This is how you switch which repo the fleet operates
 //       on between runs.
+//   node scripts/repo-target.mjs guard [--repo <owner/name>]
+//       The BUILD/MERGE safety gate. Scans + remote label/comment CAN target a
+//       different repo (they're pure `gh --repo` remote ops), but building and
+//       merging run against the LOCAL checkout/worktree — and switching activeRepo
+//       does NOT switch the checkout. So when the resolved active repo differs
+//       from the checkout's origin repo, this REFUSES (exit 4, clear message) so
+//       the caller does not silently build/merge the wrong repo. Exit 0 = safe
+//       (single-repo default, or activeRepo == checkout). Building a non-checkout
+//       repo is a deliberate follow-up — see crows-nest/references/multi-repo.md.
 //
-// Exit codes: 0 ok · 2 usage error · 3 validation error (target not configured).
+// Exit codes: 0 ok · 2 usage error · 3 validation error (target not configured) ·
+//             4 build/merge guard: activeRepo != checkout (refuse).
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
 
-const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+// owner/name — each segment must START with an alphanumeric/dot/underscore (NOT a
+// hyphen), so a leading-hyphen token (which `gh` would parse as a FLAG, not a repo)
+// can never pass validation and reach a `gh --repo <value>` call. Hyphens are still
+// allowed inside a segment (`my-org/my-repo`).
+const REPO_RE = /^[A-Za-z0-9._][A-Za-z0-9._-]*\/[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for the test — no I/O, no gh, no process.exit)
@@ -103,6 +117,38 @@ export function planUse({ target, config = {}, add = false }) {
     repos = [...repos, t];
   }
   return { ok: true, repos, active: t };
+}
+
+// The BUILD/MERGE local-vs-remote guard. Repo-targeted READS (§2a scans) and remote
+// WRITES (`gh issue edit`/`comment`, `gh pr edit`/`comment`, label reconcile) work
+// cross-repo because they carry `--repo <activeRepo>`. But BUILDING (shipwright) and
+// MERGING (`gh pr merge`/`update-branch`, worktree checkout) act on the LOCAL
+// checkout, and selecting a different `activeRepo` does NOT re-clone/re-checkout that
+// repo. So a build/merge can only safely target the repo the checkout's origin
+// already points at. This is the pure decision helper: given the resolved active repo
+// and the checkout's origin repo, say whether a build/merge may proceed.
+//
+// Returns { safe, activeRepo, checkoutRepo, reason }. It fails SAFE (safe:true) only
+// on a PROVEN match or when there's nothing to compare (single-repo default, or the
+// checkout repo couldn't be determined — the underlying `gh` op would fail on its own
+// then). It refuses (safe:false) only on a proven mismatch.
+export function assertLocalRepoMatchesActive({ config = {}, checkoutRepo = null, flagRepo = null }) {
+  const { repo: activeRepo } = resolveActive({ flagRepo, config, ambient: checkoutRepo });
+  // Nothing to compare against, or single-repo default (active resolved to the
+  // ambient checkout): always safe — today's behaviour, byte for byte.
+  if (!activeRepo || !checkoutRepo || activeRepo === checkoutRepo) {
+    return { safe: true, activeRepo, checkoutRepo };
+  }
+  return {
+    safe: false,
+    activeRepo,
+    checkoutRepo,
+    reason:
+      `multi-repo build/merge not supported in this increment; activeRepo ${activeRepo} ` +
+      `≠ checkout ${checkoutRepo}. Scans + spyglass + remote label/comment ARE repo-targeted, ` +
+      `but building/merging a non-checkout repo is a deliberate follow-up (not delivered here). ` +
+      `Check out ${activeRepo} (or set activeRepo back to ${checkoutRepo}) to build/merge it.`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +261,31 @@ function main() {
     return;
   }
 
-  process.stderr.write(`unknown command "${cmd}". Use: resolve | list | use\n`);
+  if (cmd === 'guard') {
+    // BUILD/MERGE gate: refuse (exit 4) when the resolved active repo differs from
+    // the LOCAL checkout's origin repo. The checkout repo is the ambient `gh repo
+    // view` — the merge path's `gh pr merge` acts on exactly that repo.
+    const g = assertLocalRepoMatchesActive({
+      config,
+      checkoutRepo: ambientRepo(),
+      flagRepo: args.repo,
+    });
+    if (args.json) {
+      process.stdout.write(JSON.stringify(g) + '\n');
+    }
+    if (g.safe) {
+      if (!args.json) {
+        process.stdout.write(
+          `ok — build/merge may target ${g.activeRepo || 'the ambient repo'} (matches the checkout)\n`,
+        );
+      }
+      return;
+    }
+    if (!args.json) process.stderr.write(g.reason + '\n');
+    process.exit(4);
+  }
+
+  process.stderr.write(`unknown command "${cmd}". Use: resolve | list | use | guard\n`);
   process.exit(2);
 }
 

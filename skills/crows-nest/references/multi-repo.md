@@ -53,13 +53,38 @@ the fleet at a repo you never configured.
 
 ## How the fleet consumes it
 
-- **[`crows-nest`](../SKILL.md) §1/§2a** — at arm time it resolves the active repo and, **when
-  multi-repo is configured**, threads `--repo <activeRepo>` into every `gh` scan/claim/reconcile call
-  and leads the tick line with `[<owner/name>]` so the target is unambiguous. With no `repos` config it
-  omits `--repo` and runs against the cwd repo exactly as today.
-- **[`spyglass`](../../spyglass/SKILL.md)** — `resolveRepo` already follows the same precedence
-  (`--repo` flag > `config.activeRepo` > ambient), so the dashboard charts the selected repo with no
-  extra flag. Pass `--repo <owner/name>` to override for one session.
+- **[`crows-nest`](../SKILL.md) §1/§2a** — it **re-resolves the active repo at the start of every tick**
+  (so a mid-watch `use` switch takes effect on the next tick, no re-arm) and, **when multi-repo is
+  configured**, threads `--repo <activeRepo>` into every **remote** `gh` scan/claim/reconcile call (§2a
+  scans, §2d claim, §3e/§5f/close-the-loop label + comment writes) and leads the tick line with
+  `[<owner/name>]` so the target is unambiguous. With no `repos` config it omits `--repo` and runs
+  against the cwd repo exactly as today.
+- **[`spyglass`](../../spyglass/SKILL.md)** — both snapshot drivers resolve the repo through the shared
+  `repo-target.mjs` resolver (same precedence AND validation), so the dashboard charts the selected repo
+  with no extra flag. Pass `--repo <owner/name>` to override for one session.
+
+## Build & merge are GUARDED, not repo-targeted (this increment)
+
+Repo targeting is safe for **remote** `gh` operations — the scans, the spyglass view, and the label /
+comment writes all take `--repo <activeRepo>` and act on GitHub directly. **Building and merging do
+not.** shipwright builds in a **local worktree of the checkout**, and the review→merge pipeline runs
+`gh pr merge` / `update-branch` against the **ambient checkout repo**; selecting a different `activeRepo`
+does **not** re-clone or re-checkout that repo. So building/merging a repo other than the checkout's
+origin would silently act on the **wrong** local tree.
+
+Rather than do that, the fleet **refuses**: when `activeRepo` ≠ the checkout's origin repo, the guard
+trips and the build/merge is held with a clear message —
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/repo-target.mjs" guard
+#   activeRepo calumjs/site ≠ checkout calumjs/ARMADA → exit 4 (refuse)
+```
+
+`review-merge-pipeline.mjs` calls the same guard internally and returns `blocked` with that reason
+instead of merging. Making the build/merge path itself **cross-repo** — checking out / cloning the
+selected repo, running its own `.armada/config.json` build commands — is a deliberate **follow-up**, not
+delivered here. Until then: to build/merge a repo, make it the checkout (or set `activeRepo` back to the
+checkout's origin).
 
 ## Switching, step by step
 
