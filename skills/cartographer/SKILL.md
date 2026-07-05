@@ -271,10 +271,67 @@ writes it with a **safe default**:
 `commission` **always writes `"off"`** on a fresh repo — turning cartographer's autonomy on is a
 deliberate hand edit, never something commissioning enables (same posture as `autoMerge: false`).
 
+### 8a. The `cartography` key interacts with `.gitignore` — `"on"` needs a tracked store
+
+Because `"on"` **commits** into the active PR by staging `.armada/cartography/` (§9), that path must
+be **tracked** for the learning to land. If the repo **gitignores `.armada/cartography/`**, the
+`git add` is a **silent no-op** and `"on"` writes into a void — the same silent-gitignore collision
+class as the drop-in `.claude/` issue (#95/#96). This gives a clear rule:
+
+| `cartography` | Commits to the PR? | Effect if `.armada/cartography/` is gitignored |
+| :--- | :--- | :--- |
+| `"off"` | No (never auto-runs) | No effect — nothing is written. |
+| `"proposal"` | No (presents a diff for approval) | **No effect** — a gitignored store doesn't strand it. |
+| `"on"` | **Yes** (stages + commits) | **Learning silently dropped** — `git add` no-ops. Warned by commission §1c and cartographer §9.0. |
+
+So: a repo that wants `"on"` must keep `.armada/cartography/` **tracked** (not gitignored); a repo
+that *does* gitignore it — treating its learned map as local scratch, which is exactly what **ARMADA
+itself** does to keep its own cartography out of the shipped plugin — should stay at **`"proposal"`**
+rather than `"on"`. The two guards make the collision impossible to hit silently: commission §1c
+warns at setup time, and cartographer §9.0 warns again at commit time and **skips the commit** rather
+than reporting a success that never landed.
+
 ## 9. Reviewable updates — never a silent default-branch mutation
 
 Cartography is repo knowledge that future builds *trust*, so an update must be **reviewed, never a
 silent commit to the base branch**. cartographer rides the existing review machinery:
+
+### 9.0 Preflight — refuse to stage a gitignored store (don't silently no-op)
+
+**Before staging anything, check that `.armada/cartography/` is actually tracked** — because if the
+repo gitignores it, `git add .armada/cartography/` is a **silent no-op** (git refuses ignored paths),
+the commit carries nothing, and the learning is **silently dropped**. This is the same
+silent-gitignore collision class as the drop-in `.claude/` issue (#95/#96) and is exactly the failure
+this guard exists to catch: `"on"` mode *looks* like it committed, but nothing landed. commission
+warns about it at setup (commission §1c); cartographer is the **commit-time backstop** — never assume
+the store is committable, verify it:
+
+```bash
+# Does the store path get ignored? (check-ignore exits 0 when the path IS ignored)
+git check-ignore -q .armada/cartography && echo "GITIGNORED" || echo "tracked"
+```
+
+If `.armada/cartography/` (or `.armada/`) is ignored, **do not attempt the silent `git add`** — it
+would no-op and you'd report success while nothing landed. Instead **surface a clear warning and skip
+the commit**, then carry on without failing (on the auto path cartographer is best-effort and
+side-channel, §7 — it must never turn a green tick red; on the manual path, tell the user directly):
+
+```
+⚠ cartography: .armada/cartography/ is gitignored, so the learned heuristics cannot be committed —
+  `git add` would be a silent no-op and the update would be lost. Nothing was committed. To land
+  cartography, either un-ignore .armada/cartography/ (e.g. add `!.armada/cartography/` to .gitignore)
+  and re-run, or switch cartography to "proposal" mode (which presents the diff for approval instead
+  of committing). I will not modify your .gitignore.
+```
+
+Report this in the §10 summary as `Path: BLOCKED (.armada/cartography/ gitignored — nothing committed)`
+so the drop is **visible**, never silent. **Never** work around the ignore by force-adding
+(`git add -f`) — that smuggles the update past the very `.gitignore` the repo set on purpose, and past
+the review intent; the correct resolution is the human un-ignoring the path or choosing `"proposal"`.
+(`"proposal"` mode never reaches this preflight in a blocking way — it presents a diff rather than
+committing, so a gitignored store doesn't strand it; the guard bites only the committing paths below.)
+
+Only once the store is confirmed **tracked** do you proceed to commit:
 
 - **When there's an active ARMADA PR** (the common case — the run that produced the learning is on an
   open PR): **commit the `.armada/cartography/` changes into that PR's branch.** The update then rides
@@ -330,8 +387,12 @@ Summarise what was learned, in one short block:
 - **Added:**   <N> heuristic(s)   — e.g. workflows: "run npm run generate before build" (High)
 - **Updated:** <N> — e.g. conventions: "use FooService" confidence Medium → High (+ PR #145)
 - **Pruned:**  <N> — e.g. removed stale "edit config.yml" (superseded)
-- **Path:**    committed to PR #<n>  |  opened cartography PR #<m>  |  proposed for approval
+- **Path:**    committed to PR #<n>  |  opened cartography PR #<m>  |  proposed for approval  |  BLOCKED (.armada/cartography/ gitignored — nothing committed, §9.0)
 ```
+
+The **`BLOCKED`** path is the §9.0 preflight outcome — printed when `.armada/cartography/` is
+gitignored so the commit can't land; it makes the silent drop **visible** (nothing was committed,
+here's why, here's how to fix it) instead of reporting a phantom success.
 
 On the auto path, this summary is a **log line in the tick output** (side-channel, §7) — never a
 ship's-bell notification of its own and never anything that gates the tick.
@@ -348,6 +409,11 @@ ship's-bell notification of its own and never anything that gates the tick.
   `heuristic / evidence / confidence` format), **committed into the active ARMADA PR** (or a dedicated
   cartography PR / a proposed diff when there's no active PR) so every update rides the muster review
   + autoMerge gate and is never a silent default-branch mutation.
+- A **commit-time gitignore preflight** (§9.0): if `.armada/cartography/` is gitignored, the commit
+  paths **skip staging and surface a clear warning** (`Path: BLOCKED`) instead of silently no-op'ing a
+  `git add` — so `"on"`-mode learning is never silently dropped. Never force-added past the ignore;
+  the fix is un-ignoring the store or using `"proposal"` mode. commission §1c warns about the same
+  collision at setup time.
 - A one-block summary of what was added / updated / pruned and which review path it took (§10).
 - The `fleet-defect` self-improvement loop is **untouched** — cartographer is about the host repo,
   not ARMADA (§0).
