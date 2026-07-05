@@ -727,6 +727,37 @@
   .kc-meta { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); }
   @media (max-width: 640px) { .kcol { flex-basis: 76vw; min-width: 76vw; } }
 
+  /* ---------- KANBAN lane-transition animation (#177) ----------
+     The board is rebuilt from scratch each --watch poll, so a run that changed stage
+     used to POP into its new lane. Instead we FLIP it: measure each card's box before
+     the rebuild, then after the rebuild INVERT surviving cards back to their old box
+     with a transform and PLAY that transform to zero — the card slides/settles from its
+     old lane to its new one. New cards fade+settle IN; departed cards ghost OUT. Every
+     effect is transform/opacity only (compositor-friendly, 60fps, no layout thrash) and
+     is fully disabled under prefers-reduced-motion below. */
+  .kcard.kflip { transition: transform 460ms cubic-bezier(.22,.61,.36,1); will-change: transform; }
+  .kcard.kentering { animation: kcard-enter 380ms cubic-bezier(.22,.61,.36,1) 1; }
+  @keyframes kcard-enter {
+    from { opacity: 0; transform: translateY(-9px) scale(.965); }
+    to   { opacity: 1; transform: none; }
+  }
+  /* a departed card, re-parented to the body as an inert fixed-position ghost that fades
+     and settles down out of its old lane. pointer-events:none + aria-hidden keep it inert. */
+  .kcard-ghost {
+    position: fixed; margin: 0; z-index: 40; pointer-events: none;
+    box-sizing: border-box; animation: kcard-leave 360ms ease-in 1 forwards;
+  }
+  @keyframes kcard-leave {
+    from { opacity: .92; transform: translateY(0) scale(1); }
+    to   { opacity: 0;   transform: translateY(9px) scale(.94); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    /* no motion: cards appear directly in their new lane, no flip/enter, no ghost. */
+    .kcard.kflip { transition: none; }
+    .kcard.kentering { animation: none; }
+    .kcard-ghost { display: none; }
+  }
+
   /* ---------- the wake: a git-graph of shipped/merged runs landing on main (#176) ----------
      A dedicated band that reads like `git log --graph`: recently LANDED runs (the recent-
      voyages set) as commits on a single VERTICAL trunk, NEWEST AT TOP, each node deep-linking
@@ -1119,6 +1150,9 @@ const expanded = new Set();        // run keys the operator has opened — prese
 const userCollapsed = new Set();   // active-build keys the operator manually collapsed despite auto-expand (#131)
 let prevState = new Map();         // runKey -> { group, activeIndex, blocked } from the last render
 let prevShippedToday = null;       // last-rendered shipped-today count — drives the manifest ticker flourish (#127)
+let boardPainted = false;          // has the KANBAN board been painted at least once this board-view session?
+                                   // gates the #177 lane-transition FLIP so a first paint (or a list→board
+                                   // switch) settles calmly instead of animating every card at once.
 let sortMode = "stage";
 // The layout the operator has chosen: the default "list" (voyage rows + harbour) or
 // the "board" KANBAN view (runs in lanes by pipeline stage — #163). Persisted in
@@ -1787,6 +1821,115 @@ function renderBoard(state, runs, recentRuns) {
   boardEl.appendChild(board);
 }
 
+// ---- KANBAN lane-transition animation (#177) — FLIP the board across a poll ----
+// renderBoard() rebuilds every card from scratch each --watch poll, so a run that
+// changed stage jumps into its new lane. This wrapper makes the move VISIBLE without
+// touching the (simple, correct) rebuild: it measures each card's box BEFORE the
+// rebuild, lets renderBoard rebuild as usual, then FLIPs — for each surviving card it
+// INVERTs the box delta with a transform and PLAYs it to zero (the card slides from its
+// old lane to its new one); a card that's newly on the board fades+settles IN; a card
+// that left the board ghosts OUT from its old spot. Pure transform/opacity (composited,
+// 60fps, no layout thrash); the whole thing no-ops under prefers-reduced-motion. READ-ONLY.
+function prefersReducedMotion() {
+  return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+}
+function renderBoardAnimated(state, runs, recentRuns) {
+  const boardEl = document.getElementById("board");
+  const animate = boardPainted && !prefersReducedMotion();
+
+  // FIRST — measure the current cards' boxes (viewport coords) and hold the live nodes,
+  // which renderBoard is about to detach (textContent=""). We reuse the detached nodes as
+  // leave-ghosts, so no cloning is needed.
+  const firstRects = new Map();   // key -> DOMRect (pre-rebuild position)
+  const firstNodes = new Map();   // key -> the (soon-detached) card element
+  if (animate) {
+    for (const c of boardEl.querySelectorAll(".kcard[data-key]")) {
+      firstRects.set(c.dataset.key, c.getBoundingClientRect());
+      firstNodes.set(c.dataset.key, c);
+    }
+  }
+
+  // Rebuild the board exactly as before.
+  renderBoard(state, runs, recentRuns);
+  if (!animate) { boardPainted = true; return; }
+
+  // LAST — measure the fresh cards; INVERT survivors to their old box and enter newcomers.
+  // We deliberately DON'T use requestAnimationFrame to release the invert: a backgrounded
+  // tab throttles rAF, which would strand a card at its old position. Instead we commit the
+  // invert with a single forced reflow, then release — the transition then plays reliably.
+  // Batch ALL reads before ANY write so the survivor FLIP costs one layout pass, not a
+  // forced reflow per card (#182). Phase 1 — PURE READS: measure every surviving card's LAST
+  // box (its matching FIRST box is already in firstRects) and note newcomers, writing NOTHING.
+  const seen = new Set();
+  const flips = [];      // { el, dx, dy } survivors that actually moved — inverted in phase 2
+  const entrants = [];   // cards new this poll — settled in during phase 2
+  for (const c of boardEl.querySelectorAll(".kcard[data-key]")) {
+    const key = c.dataset.key;
+    seen.add(key);
+    const first = firstRects.get(key);
+    if (first) {
+      const last = c.getBoundingClientRect();   // read only — no style writes in this loop
+      const dx = first.left - last.left;
+      const dy = first.top - last.top;
+      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) flips.push({ el: c, dx, dy });
+    } else {
+      entrants.push(c);
+    }
+  }
+  // Phase 2 — PURE WRITES: apply the invert transform / enter classes. No getBoundingClientRect()
+  // reads here, so nothing forces a re-layout mid-loop — all measurement happened in phase 1.
+  const movers = [];   // cards to release after the single reflow
+  for (const { el, dx, dy } of flips) {
+    // Invert: pin the card back to its old box with the transition suppressed.
+    el.style.transition = "none";
+    el.style.transform = `translate(${dx}px, ${dy}px)`;
+    movers.push(el);
+  }
+  for (const c of entrants) {
+    // A card that wasn't on the board last poll — a genuinely new run: settle it in.
+    c.classList.add("kentering");
+    c.addEventListener("animationend", () => c.classList.remove("kentering"), { once: true });
+  }
+  if (movers.length) {
+    // Force ONE reflow so the inverted positions become the transition's start state, then
+    // PLAY: enable the transition and clear the transform so every card slides to its new lane.
+    void boardEl.offsetHeight;   // single synchronous layout flush for all movers
+    for (const c of movers) {
+      c.classList.add("kflip");
+      c.style.transition = "";   // drop the inline "none" so the .kflip transition applies
+      c.style.transform = "";    // release → slide to the natural (new-lane) position
+      const done = () => { c.classList.remove("kflip"); c.style.transition = ""; c.style.transform = ""; c.removeEventListener("transitionend", done); };
+      c.addEventListener("transitionend", done);
+      setTimeout(done, 700);     // safety net if transitionend is missed (e.g. a hidden tab)
+    }
+  }
+
+  // Departed cards — present before, gone now: re-parent the held node to the body as an
+  // inert fixed ghost pinned at its old box, and let it fade+settle out, then remove it.
+  for (const [key, rect] of firstRects) {
+    if (seen.has(key)) continue;
+    const ghost = firstNodes.get(key);
+    if (!ghost) continue;
+    ghost.classList.remove("kflip", "kentering");
+    ghost.classList.add("kcard-ghost");
+    ghost.style.transform = "";
+    ghost.style.left = rect.left + "px";
+    ghost.style.top = rect.top + "px";
+    ghost.style.width = rect.width + "px";
+    ghost.style.height = rect.height + "px";
+    // Make the ghost fully inert: no focus, no a11y presence, never matches board queries.
+    ghost.removeAttribute("data-key");
+    ghost.removeAttribute("tabindex");
+    ghost.removeAttribute("role");
+    ghost.setAttribute("aria-hidden", "true");
+    document.body.appendChild(ghost);
+    ghost.addEventListener("animationend", () => ghost.remove(), { once: true });
+    setTimeout(() => ghost.remove(), 600);   // safety net
+  }
+
+  boardPainted = true;
+}
+
 // ---- focused detail panel (#164) — a board card's full detail, in a modal ----
 // Reuses renderCard(run) so the panel shows exactly the same detail the list view
 // expands inline (pipeline, branch/worktree, per-model cost table, logbook video,
@@ -2009,6 +2152,8 @@ document.getElementById("sort").addEventListener("change", (e) => { sortMode = e
 // survives the --watch data refresh (JS state) and the appVersion reload (localStorage).
 function setViewMode(mode) {
   viewMode = (mode === "board") ? "board" : "list";
+  // Leaving the board clears it, so re-entering should settle calmly, not FLIP every card (#177).
+  if (viewMode !== "board") boardPainted = false;
   try { localStorage.setItem("spyglass:viewMode", viewMode); } catch { /* storage blocked — session-only */ }
   document.getElementById("view-list").setAttribute("aria-pressed", viewMode === "list" ? "true" : "false");
   document.getElementById("view-board").setAttribute("aria-pressed", viewMode === "board" ? "true" : "false");
@@ -2468,6 +2613,7 @@ function render(state) {
     // early return precedes the usual refreshDetailPanel() call below, so do it explicitly.
     closeDetailPanel();
     prevState = new Map();
+    boardPainted = false;   // the board was cleared — the next real paint settles calmly (#177)
     return;
   }
   if (!runs.length && !recentRuns.length) {
@@ -2486,6 +2632,7 @@ function render(state) {
     // behind it; close it here too (this early return precedes refreshDetailPanel() below) (#164).
     closeDetailPanel();
     prevState = new Map();
+    boardPainted = false;   // the board was cleared — the next real paint settles calmly (#177)
     return;
   }
 
@@ -2507,7 +2654,7 @@ function render(state) {
     document.getElementById("horizon").textContent = "";
     harbourEl.textContent = "";
     wrap.textContent = "";
-    renderBoard(state, fRuns, fRecent);
+    renderBoardAnimated(state, fRuns, fRecent);
   } else {
     boardEl.textContent = "";
     // Under a filter, the contextual lanes only make sense for their own state: the horizon
