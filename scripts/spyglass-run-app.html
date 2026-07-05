@@ -104,6 +104,17 @@
     border: 1px solid var(--wood-edge); border-radius: 999px; padding: 4px 8px; cursor: pointer;
   }
   .sortsel:hover { border-color: var(--brass); }
+  /* layout toggle (#163) — list ⇄ KANBAN board; a visible segmented control */
+  .viewseg { display: inline-flex; border: 1px solid var(--wood-edge); border-radius: 999px;
+    overflow: hidden; background: var(--chip); }
+  .viewseg .seg {
+    font: inherit; font-size: 11.5px; letter-spacing: .04em; color: var(--ink-dim);
+    background: transparent; border: 0; padding: 4px 11px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .viewseg .seg + .seg { border-left: 1px solid var(--wood-edge); }
+  .viewseg .seg:hover { color: var(--parch); }
+  .viewseg .seg[aria-pressed="true"] { color: var(--brass-bright); background: #1a1608; }
 
   /* thin animated sea swell under the masthead */
   .swell { height: 26px; margin: 14px 0 0; overflow: hidden; position: relative;
@@ -627,6 +638,59 @@
     .run.g-awaiting-merge:not(.recent) > .voyage-row { animation: none; box-shadow: inset 3px 0 0 0 rgba(230,169,60,.6); }
     .run.blocked:not(.recent) > .voyage-row { animation: none; box-shadow: inset 3px 0 0 0 rgba(224,86,63,.7); }
   }
+
+  /* ---------- KANBAN board (#163) — runs in lanes by pipeline stage ---------- */
+  /* Wide content: the board scrolls horizontally inside its own container so the
+     page body never scrolls sideways, even with all seven lanes on a narrow window. */
+  .board { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto;
+    padding: 2px 2px 12px; margin: 12px 0 18px; scrollbar-width: thin; }
+  .kcol {
+    flex: 0 0 220px; min-width: 220px; display: flex; flex-direction: column;
+    background: linear-gradient(180deg, var(--wood-2), var(--wood));
+    border: 1px solid var(--wood-edge); border-top: 2px solid var(--kc, var(--wood-edge));
+    border-radius: 10px; box-shadow: inset 0 1px 0 rgba(198,168,106,.06), 0 5px 14px rgba(0,0,0,.3);
+  }
+  .kcol-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 9px 12px; border-bottom: 1px solid var(--line);
+  }
+  .kcol-name { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-dim); }
+  .kcol-count {
+    font-family: var(--mono); font-size: 11px; color: var(--kc, var(--ink-dim)); min-width: 18px;
+    text-align: center; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--wood-edge);
+  }
+  .klane { display: flex; flex-direction: column; gap: 8px; padding: 10px; min-height: 46px; }
+  .kempty { color: var(--ink-faint); font-size: 11px; text-align: center; padding: 10px 4px;
+    border: 1px dashed var(--line); border-radius: 8px; opacity: .7; }
+  .kcard {
+    position: relative;   /* anchors the "just shipped" pennant flourish to the card */
+    background: linear-gradient(180deg, #12243a, #0f1e30);
+    border: 1px solid var(--wood-edge); border-left: 3px solid var(--k, var(--building));
+    border-radius: 8px; padding: 9px 10px; display: flex; flex-direction: column; gap: 5px;
+  }
+  .kcard.just-shipped { animation: shipped-glow 2.4s ease-out 1; }
+  .kcard.blocked { border-left-color: var(--blocked);
+    box-shadow: inset 0 0 0 1px rgba(224,86,63,.28); background: linear-gradient(180deg, #26130e, #1c0f0b); }
+  .kcard.recent { opacity: .9; }
+  .kc-head { display: flex; align-items: center; gap: 6px; }
+  .kc-ship { width: 20px; height: 15px; flex: none; display: inline-flex; }
+  .kc-ship svg { width: 100%; height: 100%; }
+  .kc-num { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); text-decoration: none; }
+  a.kc-num:hover { color: var(--brass-bright); text-decoration: underline; }
+  .kc-flag { margin-left: auto; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--blocked); border: 1px solid #5a2a1d; background: #22110c; padding: 1px 6px; border-radius: 999px; }
+  .kc-title { font-size: 12.5px; color: var(--ink); text-decoration: none; line-height: 1.3;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  a.kc-title:hover { color: var(--parch); text-decoration: underline; }
+  .kc-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .kc-status { font-size: 11px; font-weight: 600; }
+  .kc-cost { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim);
+    display: inline-flex; align-items: baseline; gap: 4px; }
+  .kc-cost .tag { font-size: 9px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-faint); }
+  .kc-cost.est .cnum, .kc-cost.accruing .cnum { color: var(--awaiting); }
+  .kc-cost.final .cnum { color: var(--done); }
+  .kc-meta { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); }
+  @media (max-width: 640px) { .kcol { flex-basis: 76vw; min-width: 76vw; } }
 </style>
 </head>
 <body>
@@ -640,6 +704,10 @@
         <span class="spacer"></span>
         <div class="controls">
           <span class="weather" id="weather" title="Fleet health"><span class="glyph">·</span><span class="txt">…</span></span>
+          <div class="viewseg" role="group" aria-label="Layout — list or KANBAN board">
+            <button class="seg" id="view-list" data-view="list" title="Voyage list" aria-pressed="true"><span aria-hidden="true">▤</span><span class="lbl">list</span></button>
+            <button class="seg" id="view-board" data-view="board" title="KANBAN board — runs in lanes by stage" aria-pressed="false"><span aria-hidden="true">▦</span><span class="lbl">board</span></button>
+          </div>
           <select class="sortsel" id="sort" title="Order the fleet" aria-label="Sort runs">
             <option value="stage">by furthest along</option>
             <option value="cost">by cost</option>
@@ -658,6 +726,7 @@
       <div class="substamp" id="sub">weighing anchor…</div>
     </div>
     <div id="fleet"></div>
+    <div id="board"></div>
     <div id="mergequeue"></div>
     <div class="runs" id="runs"></div>
     <div id="horizon"></div>
@@ -836,6 +905,16 @@ const GAUGES = [
   ["queued", "queued"], ["building", "building"], ["reviewing", "reviewing"],
   ["awaiting-merge", "awaiting"], ["done", "done"], ["blocked", "blocked"],
 ];
+// KANBAN lanes (#163) — ARMADA's REAL seven voyage stages, in pipeline order, matching
+// the STAGES array in spyglass-run-snapshot.mjs (the genuine stageForIssue / stageForPr
+// mapping — NOT an invented stage list). Each run lands in the column at its activeIndex.
+// Used as a fallback for the column labels; the live names come from run.stages when present.
+const STAGE_NAMES = ["Queued", "Building", "PR opened", "In review", "Awaiting merge", "Merged", "Shipped"];
+// The coarse GROUP each stage belongs to — drives each lane's accent colour, in lockstep
+// with groupForStage in the snapshot (Queued→queued, Building→building, PR opened/In review
+// →reviewing, Awaiting merge→awaiting-merge, Merged/Shipped→done). Blocked is an overlay on
+// the card, not a lane, so it isn't a column.
+const STAGE_GROUP = ["queued", "building", "reviewing", "reviewing", "awaiting-merge", "done", "done"];
 
 // vessel iconography — a little sloop, tinted by state colour.
 function shipSVG(color) {
@@ -854,6 +933,13 @@ const userCollapsed = new Set();   // active-build keys the operator manually co
 let prevState = new Map();         // runKey -> { group, activeIndex, blocked } from the last render
 let prevShippedToday = null;       // last-rendered shipped-today count — drives the manifest ticker flourish (#127)
 let sortMode = "stage";
+// The layout the operator has chosen: the default "list" (voyage rows + harbour) or
+// the "board" KANBAN view (runs in lanes by pipeline stage — #163). Persisted in
+// localStorage so the choice survives BOTH the live --watch data refresh (a re-render)
+// AND the appVersion auto-reload (a full page reload). Read-only: a view preference,
+// never a fleet mutation. Falls back to "list" if storage is unavailable/blocked.
+let viewMode = "list";
+try { const v = localStorage.getItem("spyglass:viewMode"); if (v === "board" || v === "list") viewMode = v; } catch { /* storage blocked — default list */ }
 
 function groupOf(run) {
   if (run.group) return run.group;
@@ -1372,6 +1458,97 @@ function renderRun(run) {
   return block;
 }
 
+// ---- KANBAN board (#163) — runs in lanes by pipeline stage ----------------
+// A compact run card for the board: vessel + deep-linked number, title, live status,
+// cost and elapsed. READ-ONLY — the only interactive elements are the GitHub deep links
+// (new tab, rel=noopener). A blocked run keeps its (approximated) stage lane but wears the
+// blocked overlay (red seam + a ⚠ badge), matching the voyage row's blocked treatment.
+function renderKCard(run) {
+  const g = groupOf(run);
+  const color = GROUP_COLOR[g] || "var(--building)";
+  const num = "#" + (run.issueNumber ?? run.prNumber ?? "?");
+  const card = $("div", "kcard g-" + g + (run.blocked ? " blocked" : "") + (run.recent ? " recent" : "") + (run.terminal ? " terminal" : ""));
+  card.style.setProperty("--k", color);
+  card.dataset.key = runKey(run);   // so the "just shipped" flourish can target a board card too
+  const head = $("div", "kc-head");
+  const ship = $("span", "kc-ship" + (run.blocked || run.terminal ? "" : " sailing"));
+  ship.innerHTML = shipSVG(color);
+  head.appendChild(ship);
+  const numUnitIsPr = run.issueNumber == null && run.prNumber != null;
+  const numUrl = numUnitIsPr ? run.prUrl : run.issueUrl;
+  head.appendChild(deepLink("kc-num", num, numUrl, numUrl ? `open ${num} on GitHub` : null, true));
+  if (run.blocked) head.appendChild($("span", "kc-flag", "⚠ blocked"));
+  card.appendChild(head);
+  const titleUrl = run.prUrl || run.issueUrl;
+  const titleTip = titleUrl ? (run.prUrl ? `open PR #${run.prNumber} on GitHub` : `open ${num} on GitHub`) : null;
+  card.appendChild(deepLink("kc-title", esc(run.title), titleUrl, titleTip, false));
+  const foot = $("div", "kc-foot");
+  const stt = $("span", "kc-status", run.blocked ? "Blocked" : esc(run.status));
+  stt.style.color = color;
+  foot.appendChild(stt);
+  const cd = costCell(run);
+  const c = $("span", "kc-cost" + (cd.cls ? " " + cd.cls : ""));
+  const cnum = $("span", "cnum", cd.text);
+  if (cd.since) { cnum.classList.add("js-estcost"); cnum.dataset.since = cd.since; }  // live-ticking estimate
+  c.appendChild(cnum);
+  if (cd.tag) c.appendChild($("span", "tag", cd.tag));
+  if (cd.title) c.title = cd.title;
+  foot.appendChild(c);
+  card.appendChild(foot);
+  const meta = $("div", "kc-meta");
+  if (run.recent) {
+    // A completed voyage: when it landed (static), not a live-ticking clock.
+    const ago = elapsedText(run.completedAt);
+    const verb = run.outcome === "Merged" ? "merged" : (run.blocked ? "blocked" : "shipped");
+    meta.textContent = ago ? `${verb} ${ago} ago` : verb;
+    if (run.completedAt) meta.title = new Date(run.completedAt).toLocaleString();
+  } else {
+    meta.classList.add("js-elapsed");   // the 1s ticker keeps this current
+    if (run.startedAt) { meta.dataset.since = run.startedAt; meta.textContent = elapsedText(run.startedAt) || ""; }
+  }
+  card.appendChild(meta);
+  return card;
+}
+
+// The board itself: seven fixed lanes in pipeline order (empty lanes still render,
+// labelled), each run dropped into the column at its activeIndex. In-flight AND recent
+// runs share the board — a merged/shipped run lands in the Merged/Shipped lane. The lane
+// labels come from the runs' own `stages` array (the snapshot's real STAGES), falling back
+// to STAGE_NAMES so the full pipeline shows even before any run is present in a lane.
+function renderBoard(state, runs, recentRuns) {
+  const boardEl = document.getElementById("board");
+  boardEl.textContent = "";
+  const all = [...runs, ...recentRuns];
+  const names = (runs[0] && runs[0].stages) || (recentRuns[0] && recentRuns[0].stages) || STAGE_NAMES;
+  const n = names.length;
+  const cols = Array.from({ length: n }, () => []);
+  for (const run of all) {
+    let i = Number(run.activeIndex);
+    if (!Number.isFinite(i)) i = 0;
+    i = Math.max(0, Math.min(n - 1, i));   // clamp into a real lane (blocked overlay handled on the card)
+    cols[i].push(run);
+  }
+  const board = $("div", "board");
+  names.forEach((name, i) => {
+    const grp = STAGE_GROUP[i] || "queued";
+    const col = $("div", "kcol grp-" + grp);
+    col.style.setProperty("--kc", GROUP_COLOR[grp] || "var(--building)");
+    const chead = $("div", "kcol-head");
+    chead.appendChild($("span", "kcol-name", name));
+    chead.appendChild($("span", "kcol-count", String(cols[i].length)));
+    col.appendChild(chead);
+    const lane = $("div", "klane");
+    if (!cols[i].length) {
+      lane.appendChild($("div", "kempty", "—"));
+    } else {
+      for (const run of sortRuns(cols[i])) lane.appendChild(renderKCard(run));
+    }
+    col.appendChild(lane);
+    board.appendChild(col);
+  });
+  boardEl.appendChild(board);
+}
+
 // ---- manifest (fleet totals) bar ------------------------------------------
 function renderFleet(state, runs) {
   const wrap = document.getElementById("fleet");
@@ -1496,6 +1673,22 @@ document.getElementById("chime").addEventListener("click", (e) => {
   if (chimeOn) foghorn("shipped"); // confirmation blast (and unlocks audio)
 });
 document.getElementById("sort").addEventListener("change", (e) => { sortMode = e.target.value; if (lastState) render(lastState); });
+// layout toggle (#163) — switch list ⇄ board, persist, and re-render in place. The choice
+// survives the --watch data refresh (JS state) and the appVersion reload (localStorage).
+function setViewMode(mode) {
+  viewMode = (mode === "board") ? "board" : "list";
+  try { localStorage.setItem("spyglass:viewMode", viewMode); } catch { /* storage blocked — session-only */ }
+  document.getElementById("view-list").setAttribute("aria-pressed", viewMode === "list" ? "true" : "false");
+  document.getElementById("view-board").setAttribute("aria-pressed", viewMode === "board" ? "true" : "false");
+  if (lastState) render(lastState);
+}
+for (const id of ["view-list", "view-board"]) {
+  document.getElementById(id).addEventListener("click", (e) => setViewMode(e.currentTarget.dataset.view));
+}
+// Reflect the persisted preference on the control immediately (no render — lastState isn't
+// set until the first poll; the first render() itself honours viewMode).
+document.getElementById("view-list").setAttribute("aria-pressed", viewMode === "list" ? "true" : "false");
+document.getElementById("view-board").setAttribute("aria-pressed", viewMode === "board" ? "true" : "false");
 // Re-lay the horizon graph's SVG edges when the viewport reflows (debounced).
 let resizeT = null;
 window.addEventListener("resize", () => {
@@ -1798,6 +1991,7 @@ function render(state) {
 
   if (state && state.degraded) {
     document.getElementById("fleet").textContent = "";
+    document.getElementById("board").textContent = "";
     document.getElementById("horizon").textContent = "";
     harbourEl.textContent = "";
     mergeEl.textContent = "";
@@ -1811,6 +2005,7 @@ function render(state) {
   }
   if (!runs.length && !recentRuns.length) {
     document.getElementById("fleet").textContent = "";
+    document.getElementById("board").textContent = "";
     document.getElementById("horizon").textContent = "";
     harbourEl.textContent = "";
     mergeEl.textContent = "";
@@ -1823,33 +2018,46 @@ function render(state) {
     return;
   }
 
-  renderFleet(state, runs);
-  // The ready-to-merge lane (#140) — reviewed-clean, mergeable, unmerged PRs awaiting a
-  // human merge, surfaced prominently (they also stay in the voyage list below).
-  renderMergeQueue(state);
-  // The horizon — the waiting-runs dependency graph (#111). Queued/held runs render
-  // here as a graph, so pull them OUT of the in-flight voyage list below to avoid
-  // double-listing them (only when the scheduler actually surfaces them as waiting).
-  renderHorizon(state);
-  const sched = state && state.scheduler;
-  const waitingNums = new Set(((sched && sched.nodes) || []).filter((n) => n.waiting).map((n) => n.number));
-  const flightRuns = runs.filter((r) => !(r.issueNumber != null && waitingNums.has(r.issueNumber) && groupOf(r) === "queued"));
+  renderFleet(state, runs);   // the manifest bar rides above BOTH layouts
 
-  // Transitions across BOTH lanes: a run that merged this poll moves into the
-  // harbour and earns the "just shipped ⚓" glow there.
+  // Transitions across BOTH lanes, computed once regardless of layout so the chime and
+  // "just shipped" flourish fire the same way in list or board view.
   const events = detectTransitions([...runs, ...recentRuns]);
 
-  if (flightRuns.length) {
-    for (const run of sortRuns(flightRuns)) wrap.appendChild(renderRun(run));
-  } else if (!waitingNums.size) {
-    // Nothing under way and nothing waiting, but the harbour has recent arrivals.
-    wrap.appendChild($("div", "lane-note", "No voyages under way — the fleet is idle. Recent arrivals below."));
+  const boardEl = document.getElementById("board");
+  if (viewMode === "board") {
+    // KANBAN board (#163) is the single per-run surface — the in-flight list, harbour,
+    // merge queue and horizon lanes are hidden so runs aren't double-listed. The board
+    // itself carries in-flight AND recent runs, grouped into their real stage lanes.
+    mergeEl.textContent = "";
+    document.getElementById("horizon").textContent = "";
+    harbourEl.textContent = "";
+    wrap.textContent = "";
+    renderBoard(state, runs, recentRuns);
+  } else {
+    boardEl.textContent = "";
+    // The ready-to-merge lane (#140) — reviewed-clean, mergeable, unmerged PRs awaiting a
+    // human merge, surfaced prominently (they also stay in the voyage list below).
+    renderMergeQueue(state);
+    // The horizon — the waiting-runs dependency graph (#111). Queued/held runs render
+    // here as a graph, so pull them OUT of the in-flight voyage list below to avoid
+    // double-listing them (only when the scheduler actually surfaces them as waiting).
+    renderHorizon(state);
+    const sched = state && state.scheduler;
+    const waitingNums = new Set(((sched && sched.nodes) || []).filter((n) => n.waiting).map((n) => n.number));
+    const flightRuns = runs.filter((r) => !(r.issueNumber != null && waitingNums.has(r.issueNumber) && groupOf(r) === "queued"));
+    if (flightRuns.length) {
+      for (const run of sortRuns(flightRuns)) wrap.appendChild(renderRun(run));
+    } else if (!waitingNums.size) {
+      // Nothing under way and nothing waiting, but the harbour has recent arrivals.
+      wrap.appendChild($("div", "lane-note", "No voyages under way — the fleet is idle. Recent arrivals below."));
+    }
+    renderHarbour(state, recentRuns);
   }
-  renderHarbour(state, recentRuns);
 
-  // flourish + optional chime for ship/block transitions (either lane)
+  // flourish + optional chime for ship/block transitions (either lane, either layout)
   for (const ev of events) {
-    const block = document.querySelector(`.run[data-key="${CSS.escape(ev.key)}"]`);
+    const block = document.querySelector(`.run[data-key="${CSS.escape(ev.key)}"], .kcard[data-key="${CSS.escape(ev.key)}"]`);
     if (ev.kind === "shipped" && block) {
       block.classList.add("just-shipped");
       // celebratory flourish (#127): a brief "just shipped" pennant rising off the row,
