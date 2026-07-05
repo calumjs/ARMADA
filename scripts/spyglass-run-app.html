@@ -283,6 +283,13 @@
     color: var(--brass-bright); line-height: 1; }
   .score .sv.dim { color: var(--ink-faint); }
   .score .sk { font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-faint); }
+  /* lower-bound marker (#193 follow-up): when a tile sums only the client-visible
+     subset (spendN/avgSampleN < shippedToday) it understates the true total, so it
+     wears the same "~"-prefix + brass estimate tint + tiny caveat sub-label the
+     manifest cost cell uses — visible on-screen (a livestream capture can't read a
+     hover title). The caveat mirrors .m-cost .caveat and adds only one short line. */
+  .score .sv.est { color: var(--brass); }
+  .score .caveat { font-size: 9.5px; color: var(--ink-faint); letter-spacing: .02em; line-height: 1.1; }
   @media (max-width: 640px) { .score { min-width: 45%; flex-basis: 45%; } }
 
   /* ---------- the horizon: waiting-runs dependency graph (#111) ---------- */
@@ -2396,11 +2403,18 @@ function durText(ms) {
 
 // One scoreboard tile — label + value. Value is set via textContent (XSS-safe); a "—"
 // placeholder is dimmed. `title` carries the metric's plain-language explanation.
-function scoreTile(label, value, title) {
+// `caveat` (optional) flags a LOWER-BOUND figure — a tile that could only sum the
+// client-visible subset (e.g. spend/avg on a >12-ship day). When present on a real
+// value it wears the manifest's estimate idiom: a leading "~", a brass tint, and a
+// small caveat sub-label — so the understatement is visible on-screen, not just in
+// the hover title. Never shown on the "—" empty state.
+function scoreTile(label, value, title, caveat) {
   const present = value != null && value !== "—";
+  const lb = present && caveat != null && caveat !== "";   // lower-bound marker: real values only
   const cell = $("div", "score");
-  cell.appendChild($("div", "sv" + (present ? "" : " dim"), present ? value : "—"));
+  cell.appendChild($("div", "sv" + (present ? "" : " dim") + (lb ? " est" : ""), present ? (lb ? "~" + value : value) : "—"));
   cell.appendChild($("div", "sk", label));
+  if (lb) cell.appendChild($("div", "caveat", caveat));
   if (title) cell.title = title;
   return cell;
 }
@@ -2423,17 +2437,27 @@ function renderScoreboard(state) {
   bar.appendChild(scoreTile("shipped today", shipped,
     "Features that landed (merged/shipped) today, since local midnight."));
 
+  // A tile is a LOWER BOUND when it could only sum the client-visible subset — i.e.
+  // fewer runs contributed than the authoritative shippedToday count (true on a
+  // >recent-cap day, like a 16-ship day). Flag it visibly so a viewer isn't misled
+  // into reading spend/avg as covering every shipped run.
+  const shippedN = Number.isFinite(s.shippedToday) ? s.shippedToday : null;
+  const spendLB = shippedN != null && s.spendN < shippedN;
+  const avgLB = shippedN != null && s.avgSampleN < shippedN;
+
   const spendVal = s.spendKnown ? (money(s.spend) || "—") : "—";
   bar.appendChild(scoreTile("spent today", spendVal,
     s.spendKnown
       ? `Total recorded fleet spend across ${s.spendN} of today's landed run(s) (runs without a recorded cost aren't included).`
-      : "No recorded cost yet for today's landed runs."));
+      : "No recorded cost yet for today's landed runs.",
+    s.spendKnown && spendLB ? `≥ ${s.spendN} of ${shippedN} runs` : null));
 
   const avgVal = s.avgBuildMs != null ? (durText(s.avgBuildMs) || "—") : "—";
   bar.appendChild(scoreTile("avg build", avgVal,
     s.avgSampleN > 0
       ? `Mean dispatch→merge time across ${s.avgSampleN} of today's landed run(s).`
-      : "No completed build times yet today."));
+      : "No completed build times yet today.",
+    s.avgSampleN > 0 && avgLB ? `≥ ${s.avgSampleN} of ${shippedN} runs` : null));
 
   const thr = (s.throughput != null && Number.isFinite(s.throughput)) ? (s.throughput.toFixed(1) + "/h") : "—";
   bar.appendChild(scoreTile("throughput", thr,
