@@ -64,6 +64,11 @@
     min-height: 100vh;
   }
   .page { max-width: 1200px; margin: 0 auto; padding: 0 18px 72px; position: relative; z-index: 1; }
+  /* KANBAN board view (#175): let the board breathe to the stream's full width so all
+     seven stage lanes fit through Shipped without horizontal scroll. The list view keeps
+     its calmer 1200px measure; only the board — which lays seven lanes side-by-side beside
+     the 236px git-tree column — reclaims the extra width. */
+  body.vb-board .page { max-width: 1480px; }
 
   /* ---------- fleet-busyness ambient "visual tempo" (#179) ----------
      An ever-present, board-wide sense of life whose tempo + intensity track the fleet's
@@ -769,31 +774,45 @@
   /* ---------- KANBAN board (#163) — runs in lanes by pipeline stage ---------- */
   /* Wide content: the board scrolls horizontally inside its own container so the
      page body never scrolls sideways, even with all seven lanes on a narrow window. */
-  .board { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto;
-    padding: 2px 2px 12px; margin: 12px 0 18px; scrollbar-width: thin; }
+  /* All seven lanes share the row and fit without horizontal scroll (#175): flex:1 1 0 lets
+     them divide the main column's width evenly (down to a sensible min), so Awaiting-merge,
+     Merged and Shipped are always on screen beside the git-tree column. align-items:stretch +
+     a viewport-tall min-height reclaim the empty space below — every column runs the full
+     height of the frame rather than hugging the top third. */
+  .board { display: flex; gap: 10px; align-items: stretch; overflow-x: auto;
+    padding: 2px 2px 12px; margin: 12px 0 18px; scrollbar-width: thin;
+    min-height: calc(100vh - 250px); }
   .kcol {
-    flex: 0 0 220px; min-width: 220px; display: flex; flex-direction: column;
+    flex: 1 1 0; min-width: 150px; display: flex; flex-direction: column;
     background: linear-gradient(180deg, var(--wood-2), var(--wood));
-    border: 1px solid var(--wood-edge); border-top: 2px solid var(--kc, var(--wood-edge));
+    border: 1px solid var(--wood-edge); border-top: 4px solid var(--kc, var(--wood-edge));
     border-radius: 10px; box-shadow: inset 0 1px 0 rgba(198,168,106,.06), 0 5px 14px rgba(0,0,0,.3);
   }
+  /* Stronger per-lane colour accent (#175): a thick coloured top border, a header washed in
+     the lane's own colour, and a coloured lane name — so the left→right pipeline flow reads
+     at a glance instead of relying on a hairline seam. */
   .kcol-head {
     display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    padding: 9px 12px; border-bottom: 1px solid var(--line);
+    padding: 10px 12px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--kc, var(--wood-edge)) 22%, transparent), transparent);
+    border-radius: 6px 6px 0 0;
   }
-  .kcol-name { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-dim); }
+  .kcol-name { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; font-weight: 650;
+    color: var(--kc, var(--ink-dim)); text-shadow: 0 1px 2px rgba(0,0,0,.35); }
   .kcol-count {
     font-family: var(--mono); font-size: 11px; color: var(--kc, var(--ink-dim)); min-width: 18px;
-    text-align: center; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--wood-edge);
-  }
-  .klane { display: flex; flex-direction: column; gap: 8px; padding: 10px; min-height: 46px; }
+    text-align: center; padding: 1px 6px; border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--kc, var(--wood-edge)) 55%, var(--wood-edge)); }
+  /* the lane grows to fill the tall column, so cards spread into the reclaimed vertical space */
+  .klane { display: flex; flex-direction: column; gap: 9px; padding: 10px; flex: 1 1 auto; min-height: 46px; }
   .kempty { color: var(--ink-faint); font-size: 11px; text-align: center; padding: 10px 4px;
     border: 1px dashed var(--line); border-radius: 8px; opacity: .7; }
   .kcard {
     position: relative;   /* anchors the "just shipped" pennant flourish to the card */
     background: linear-gradient(180deg, #12243a, #0f1e30);
     border: 1px solid var(--wood-edge); border-left: 3px solid var(--k, var(--building));
-    border-radius: 8px; padding: 9px 10px; display: flex; flex-direction: column; gap: 5px;
+    border-radius: 8px; padding: 11px 12px; display: flex; flex-direction: column; gap: 6px;
   }
   .kcard.just-shipped { animation: shipped-glow 2.4s ease-out 1; }
   .kcard.blocked { border-left-color: var(--blocked);
@@ -824,12 +843,15 @@
   a.kc-num:hover { color: var(--brass-bright); text-decoration: underline; }
   .kc-flag { margin-left: auto; font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase;
     color: var(--blocked); border: 1px solid #5a2a1d; background: #22110c; padding: 1px 6px; border-radius: 999px; }
-  .kc-title { font-size: 12.5px; color: var(--ink); text-decoration: none; line-height: 1.3;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  /* Fuller title (#175): with the redundant stage label dropped from the foot, the title gets
+     the reclaimed line — up to three lines before it truncates. */
+  .kc-title { font-size: 13px; color: var(--ink); text-decoration: none; line-height: 1.32;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   a.kc-title:hover { color: var(--parch); text-decoration: underline; }
   .kc-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .kc-status { font-size: 11px; font-weight: 600; }
-  .kc-cost { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim);
+  /* cost sits at the foot's right edge whether or not a status sub-label precedes it (#175) */
+  .kc-cost { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); margin-left: auto;
     display: inline-flex; align-items: baseline; gap: 4px; }
   .kc-cost .tag { font-size: 9px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-faint); }
   .kc-cost.est .cnum, .kc-cost.accruing .cnum { color: var(--awaiting); }
@@ -1899,9 +1921,19 @@ function renderKCard(run) {
   const titleTip = titleUrl ? (run.prUrl ? `open PR #${run.prNumber} on GitHub` : `open ${num} on GitHub`) : null;
   card.appendChild(deepLink("kc-title", esc(run.title), titleUrl, titleTip, false));
   const foot = $("div", "kc-foot");
-  const stt = $("span", "kc-status", run.blocked ? "Blocked" : esc(run.status));
-  stt.style.color = color;
-  foot.appendChild(stt);
+  // Drop the redundant per-card stage label (#175): the card already sits in its stage lane,
+  // so a status that merely repeats the lane's name ("Building" in the Building lane) is noise.
+  // Keep only status that ADDS information beyond the lane — a sub-state like "Addressing",
+  // "Held" or "Eligible". "Blocked" is already flagged by the ⚠ badge in the head, so it's
+  // dropped here too. When nothing informative remains, the freed line goes to the fuller
+  // title / progress %; the cost stays right-aligned in the foot on its own.
+  const laneStage = ((run.stages || STAGE_NAMES)[run.activeIndex] || "").toLowerCase();
+  const statusTxt = run.blocked ? "" : (run.status || "");
+  if (statusTxt && statusTxt.toLowerCase() !== laneStage) {
+    const stt = $("span", "kc-status", esc(statusTxt));
+    stt.style.color = color;
+    foot.appendChild(stt);
+  }
   const cd = costCell(run);
   const c = $("span", "kc-cost" + (cd.cls ? " " + cd.cls : ""));
   const cnum = $("span", "cnum", cd.text);
@@ -2357,6 +2389,8 @@ function setViewMode(mode) {
   // Leaving the board clears it, so re-entering should settle calmly, not FLIP every card (#177).
   if (viewMode !== "board") boardPainted = false;
   try { localStorage.setItem("spyglass:viewMode", viewMode); } catch { /* storage blocked — session-only */ }
+  // Board view widens the page to the stream's full width so all seven lanes fit (#175).
+  document.body.classList.toggle("vb-board", viewMode === "board");
   document.getElementById("view-list").setAttribute("aria-pressed", viewMode === "list" ? "true" : "false");
   document.getElementById("view-board").setAttribute("aria-pressed", viewMode === "board" ? "true" : "false");
   if (lastState) render(lastState);
@@ -2368,6 +2402,7 @@ for (const id of ["view-list", "view-board"]) {
 // set until the first poll; the first render() itself honours viewMode).
 document.getElementById("view-list").setAttribute("aria-pressed", viewMode === "list" ? "true" : "false");
 document.getElementById("view-board").setAttribute("aria-pressed", viewMode === "board" ? "true" : "false");
+document.body.classList.toggle("vb-board", viewMode === "board");   // widen the page in board view (#175)
 
 // stage/state filter (#164) — narrow the board, persist, and re-render in place. The choice
 // survives the --watch data refresh (JS state) and the appVersion reload (localStorage). Two
