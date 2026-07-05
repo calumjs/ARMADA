@@ -230,6 +230,8 @@ overwriting** — the user may have hand-tuned it.
   "triggerLabel": "armada",        // crows-nest only acts on issues/PRs with this label
   "dispatch": "shipwright",        // "shipwright" (one build pass) or "flagship" (auto loop)
   "baseBranch": "<detected default>",
+  "repos": [],                     // MULTI-REPO (opt-in): extra "owner/name" targets the fleet may switch between. [] / omitted = single-repo default — the fleet acts on THIS repo only, exactly as before. See §3a.
+  "activeRepo": "",                // MULTI-REPO: which of `repos` is currently selected. "" / omitted = the ambient repo (this checkout). Switch with `repo-target.mjs use <owner/name>` — no re-commission. See §3a.
   "pluginRoot": "",                // DROP-IN ONLY: absolute path to the dir holding bundled scripts/ (the dropped-in .claude). Runtime fallback the skills consume when CLAUDE_PLUGIN_ROOT is unset, so drop-in works with no export. "" under the plugin install — the installer's CLAUDE_PLUGIN_ROOT wins. See §1a.
   "authors": "",                   // "" = act on anyone; "alice" or "alice,bob" to restrict by author
   "autoMerge": false,              // ready-PR pipeline may merge? Default false: stop-before-merge.
@@ -294,6 +296,37 @@ Add `.armada/` is fine to commit (it's project config, not secrets). Mention tha
 auto-merge on; opting into autonomous merging is a deliberate, explicit choice the user makes later
 by hand (see the README Safety section). `mergeMethod`/`maxReviewRounds` only take effect once the
 user turns `autoMerge` on.
+
+### 3a. Multi-repo targeting (`repos` / `activeRepo`) — opt-in, single-repo default unchanged
+
+ARMADA is commissioned **per-repo**, and by default the fleet acts on **this** repo — the ambient
+`gh` repo (whatever `gh repo view` resolves in the cwd). That single-repo default is unchanged: a
+config with **no `repos`** behaves exactly as it always has. `repos`/`activeRepo` add **opt-in**
+first-class support for the fleet to *switch between* more than one repo without re-commissioning
+each time:
+
+- **`repos`** — a list of `owner/name` the fleet may target (e.g. `["calumjs/ARMADA", "calumjs/site"]`).
+  Also accepts the comma-separated string form `authors` uses. **Empty/omitted ⇒ single-repo default.**
+- **`activeRepo`** — which one of `repos` is **currently selected**. Empty/omitted ⇒ the ambient repo.
+
+The **one resolution rule** every repo-scoped skill/script applies is
+**`--repo <owner/name>` flag  >  `config.activeRepo`  >  ambient `gh repo view`**. The bundled
+[`repo-target.mjs`](../../scripts/repo-target.mjs) helper is the single source of truth for it and
+makes the active repo **unambiguous and reported**:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/repo-target.mjs" list                 # configured repos, active marked '*'
+node "${CLAUDE_PLUGIN_ROOT}/scripts/repo-target.mjs" resolve              # the active repo + WHERE it came from
+node "${CLAUDE_PLUGIN_ROOT}/scripts/repo-target.mjs" use calumjs/site     # SWITCH the active repo — no re-commission
+node "${CLAUDE_PLUGIN_ROOT}/scripts/repo-target.mjs" use calumjs/new --add  # append a repo, then select it
+```
+
+Switching writes `activeRepo` (and, with `--add`, extends `repos`) into `.armada/config.json`;
+[`crows-nest`](../crows-nest/SKILL.md) §1 and [`spyglass`](../spyglass/SKILL.md) then target the
+selected repo — no re-commission. This increment operates on **one selected repo at a time**;
+watching several repos **concurrently** is a deliberate follow-up (see
+[crows-nest references/multi-repo.md](../crows-nest/references/multi-repo.md)). commission writes
+`repos: []` and `activeRepo: ""` on a fresh repo — the single-repo default.
 
 Write `notify` as `"terminal"` (the default) so the **ship's bell** is on for the events that
 matter — a PR merged / an issue shipped, and any block — without pinging on routine ticks. It's the
@@ -597,6 +630,7 @@ and don't arm the loop for them** (both are the user's call):
   install mode: <"plugin" — CLAUDE_PLUGIN_ROOT set by the installer | "drop-in" — skills under .claude/skills/, pluginRoot recorded as the fallback (no export needed)>
   base branch : <base>
   build/test  : <commands, or "none detected — skills will infer">
+  repos       : <"single-repo (this repo)" when repos=[]; else "active <owner/name> of [<repos>]" — switch with repo-target.mjs use <owner/name>, no re-commission (§3a)>
   authors     : <"" = anyone, or the configured allowlist>
   auto-merge  : off (default) — the sole merge gate; ready-PR pipeline stops at "awaiting human merge"
   notify      : terminal (default) — ship's bell on shipped + blocked; off | blocked | terminal | all

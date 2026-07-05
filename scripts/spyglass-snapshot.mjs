@@ -38,6 +38,7 @@ import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { execFileSync, spawn } from 'child_process';
+import { resolveActive, isValidRepo } from './repo-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -83,10 +84,18 @@ function ghJson(args) {
   }
 }
 
-function resolveRepo(explicit) {
-  if (explicit) return explicit;
-  const r = ghJson(['repo', 'view', '--json', 'nameWithOwner']);
-  return r && r.nameWithOwner ? r.nameWithOwner : null;
+function resolveRepo(explicit, config = {}) {
+  // The SINGLE SOURCE OF TRUTH for the resolution rule is repo-target.mjs. Use its
+  // resolver so the precedence (--repo flag > config.activeRepo > ambient) AND the
+  // REPO_RE validation (junk / leading-hyphen rejected before it reaches `gh`) match
+  // crows-nest exactly. Only call `gh repo view` for the ambient repo when neither the
+  // flag nor config.activeRepo already decides it — preserving today's single-repo path.
+  const active = typeof config.activeRepo === 'string' ? config.activeRepo.trim() : '';
+  const needAmbient = !isValidRepo(explicit) && !isValidRepo(active);
+  const ambient = needAmbient
+    ? (() => { const r = ghJson(['repo', 'view', '--json', 'nameWithOwner']); return r && r.nameWithOwner ? r.nameWithOwner : null; })()
+    : null;
+  return resolveActive({ flagRepo: explicit, config, ambient }).repo;
 }
 
 // ---------------------------------------------------------------------------
@@ -394,7 +403,7 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const { config, commissioned } = readConfig();
   const label = args.label || config.triggerLabel || 'armada';
-  const repo = resolveRepo(args.repo);
+  const repo = resolveRepo(args.repo, config);
   const slug = (repo || 'local-repo').replace(/[^A-Za-z0-9._-]+/g, '-');
   const outDir = args.out || path.join(os.tmpdir(), 'armada-spyglass', slug);
 

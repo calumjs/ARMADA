@@ -78,6 +78,45 @@ Read `.armada/config.json` from the target repo:
 - `dispatch` — how to hand off a claimed issue: `"shipwright"` (one build pass, default) or
   `"flagship"` (autonomous drive-to-merge loop).
 - `baseBranch` — default base for new work.
+- `repos` / `activeRepo` — **opt-in multi-repo targeting** (default: single-repo, unchanged). `repos`
+  is a list of `owner/name` the fleet may switch between; `activeRepo` selects which one this watch
+  targets. **Both empty/omitted ⇒ the lookout watches THIS repo** (the ambient `gh` cwd repo), exactly
+  as before. When set, the lookout **re-resolves the active repo at the start of every tick** (§2a) and
+  targets it for that tick — the resolution rule is **`--repo` flag > `config.activeRepo` > ambient
+  `gh repo view`**, centralised in the bundled `repo-target.mjs` helper. Re-resolving per tick (not once
+  at arm time) is what lets a mid-watch `repo-target.mjs use <owner/name>` switch take effect on the
+  **next tick** with no re-arm — matching [references/multi-repo.md](references/multi-repo.md). **Report
+  the active repo in the tick header so it's unambiguous**, and switch it between ticks with no
+  re-commission:
+
+  ```bash
+  node "${CLAUDE_PLUGIN_ROOT:-<pluginRoot>}/scripts/repo-target.mjs" resolve   # active repo + source (flag/config/ambient)
+  node "${CLAUDE_PLUGIN_ROOT:-<pluginRoot>}/scripts/repo-target.mjs" use <owner/name>   # switch the active repo (writes activeRepo); next tick targets it
+  ```
+
+  Then **thread the resolved repo into every `gh` call** — the §2a scans, the §2d claim
+  (`gh issue edit`/`gh issue comment`), and the §3/§5 reconcile label/comment edits (§3e, §5f, and
+  [references/close-the-loop.md](references/close-the-loop.md)) — as `<repoArgs>` = `--repo <activeRepo>`,
+  **but only when it differs from the ambient repo** (i.e. `repos`/`activeRepo` is configured). These are
+  all **remote `gh` ops** that work cross-repo, so they all carry `<repoArgs>` — reads *and* writes, not
+  just the scans. With no multi-repo config, `<repoArgs>` is empty and every call runs against the cwd
+  repo exactly as today.
+
+  **Build/merge is the exception — it is GUARDED, not repo-targeted.** Selecting a different `activeRepo`
+  re-points the remote scans and label/comment writes, but it does **not** re-clone or re-checkout the
+  repo — so [`shipwright`](../shipwright/SKILL.md) (build) and
+  [`review-merge-pipeline.mjs`](../../scripts/review-merge-pipeline.mjs) (merge) cannot safely act on a
+  repo other than the checkout's origin. Before dispatching a build or entering the merge pipeline, run
+  the guard; when `activeRepo` ≠ the checkout's origin it **refuses with a clear message** rather than
+  acting on the wrong repo:
+
+  ```bash
+  node "${CLAUDE_PLUGIN_ROOT:-<pluginRoot>}/scripts/repo-target.mjs" guard   # exit 0 safe · exit 4 refuse (activeRepo != checkout)
+  ```
+
+  This increment watches **one selected repo per `/loop`**; watching several **concurrently**, and
+  **building/merging a non-checkout repo**, are deliberate follow-ups — see
+  [references/multi-repo.md](references/multi-repo.md).
 - `commands` — the project's `build`/`test`/`lint` (the ready-PR pipeline re-validates with these).
 - `pluginRoot` — the **fallback** location of ARMADA's bundled `scripts/` dir, recorded by
   [`commission`](../commission/SKILL.md) §1a under a no-plugin **drop-in** install (an absolute path
@@ -283,9 +322,10 @@ one PR list per tick, each `--json`-projected so the whole scan is two round-tri
 per-item calls:
 
 ```bash
-gh issue list --label "<triggerLabel>" --state open \
+# <repoArgs> = "--repo <activeRepo>" when multi-repo is configured (§1), else empty (ambient cwd repo).
+gh issue list <repoArgs> --label "<triggerLabel>" --state open \
   --json number,title,labels,createdAt,assignees,author,body --limit 50
-gh pr list --label "<triggerLabel>" --state open \
+gh pr list <repoArgs> --label "<triggerLabel>" --state open \
   --json number,title,isDraft,labels,headRefName,baseRefName,files,body,mergeable,statusCheckRollup,updatedAt --limit 50
 ```
 
@@ -301,7 +341,7 @@ non-terminal `armada:*` state and needs reconciling to shipped. Pull those in **
 round-trip so the on-merge reconcile (§5.1) has its input from the same scan:
 
 ```bash
-gh pr list --label "<triggerLabel>" --state merged \
+gh pr list <repoArgs> --label "<triggerLabel>" --state merged \
   --json number,title,labels,mergedAt,closingIssuesReferences,headRefName --limit 30
 ```
 
@@ -489,8 +529,10 @@ For each issue on the frontier (§2c) — once the quartermaster verdict is ALLO
 #### 2d.i Claim it
 
 ```bash
-gh issue edit <number> --add-label "armada:underway" --remove-label "<triggerLabel>"
-gh issue comment <number> --body "🔭 crows-nest: picked up by ARMADA — dispatching to <dispatch target>."
+# <repoArgs> = "--repo <activeRepo>" when multi-repo is configured (§1), else empty.
+# These are REMOTE gh writes, so they carry <repoArgs> exactly like the §2a scans.
+gh issue edit <repoArgs> <number> --add-label "armada:underway" --remove-label "<triggerLabel>"
+gh issue comment <repoArgs> <number> --body "🔭 crows-nest: picked up by ARMADA — dispatching to <dispatch target>."
 ```
 
 #### 2d.ii Dispatch it
@@ -498,6 +540,22 @@ gh issue comment <number> --body "🔭 crows-nest: picked up by ARMADA — dispa
 Hand the claimed issue to the dispatch target. **How** you dispatch depends on whether the tick is
 running autonomously or under a watching human — the two modes trade approval gates for context
 isolation:
+
+**Multi-repo guard first (build/merge only).** When multi-repo is configured (§1), a build **runs in a
+local worktree of the checkout** — and selecting a different `activeRepo` does *not* re-checkout that
+repo. So before dispatching a build against a non-checkout `activeRepo`, run the guard and **refuse the
+build** if it can't safely target the checkout:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-<pluginRoot>}/scripts/repo-target.mjs" guard \
+  || { echo "crows-nest: multi-repo build/merge not supported this increment — activeRepo ≠ checkout; skipping build"; }
+```
+
+The **scans, claim, and reconcile above still target `<activeRepo>`** (they're remote `gh` ops) — only
+the *build/merge* is held. Mark such an issue held-for-multi-repo in the tick line rather than building
+it against the wrong repo; building a non-checkout repo is a documented follow-up
+([references/multi-repo.md](references/multi-repo.md)). With single-repo config the guard exits 0 and
+dispatch proceeds exactly as today.
 
 - **Autonomous (`/loop`) path — dispatch into a *background* subagent.** When the tick is firing
   under `/loop`, the lookout commands and a subagent works. Spawn the dispatch target (`shipwright`,
@@ -584,11 +642,14 @@ the foreground lookout already posts the same comment from the subagent's result
 was both blocked *and* redundant — so it's gone. (Host-issue comments only — the pipeline still posts
 PR comments on its *own* PR; those aren't classifier-blocked.) Map the result like so:
 
-- `status: "opened"` → `gh issue edit <issue> --add-label "armada:done" --remove-label "armada:underway"`,
-  then `gh issue comment <issue> --body "🔭 crows-nest: PR opened — <pr>"`. **Ring the bell** for the
+(These are remote `gh` writes — carry `<repoArgs>` = `--repo <activeRepo>` on each when multi-repo is
+configured (§1), empty otherwise, exactly like the §2a scans and §2d claim.)
+
+- `status: "opened"` → `gh issue edit <repoArgs> <issue> --add-label "armada:done" --remove-label "armada:underway"`,
+  then `gh issue comment <repoArgs> <issue> --body "🔭 crows-nest: PR opened — <pr>"`. **Ring the bell** for the
   *opened* event (§8) — fired **only** when `notify: "all"`: `⚓ #<issue> → PR opened: <pr>`.
-- `status: "blocked"` → `gh issue edit <issue> --add-label "armada:blocked" --remove-label "armada:underway"`,
-  then `gh issue comment <issue> --body "🔭 crows-nest: blocked — <reason>"`. **Ring the bell** for the
+- `status: "blocked"` → `gh issue edit <repoArgs> <issue> --add-label "armada:blocked" --remove-label "armada:underway"`,
+  then `gh issue comment <repoArgs> <issue> --body "🔭 crows-nest: blocked — <reason>"`. **Ring the bell** for the
   *blocked* event (§8) — fired when `notify` is `"blocked"`, `"terminal"`, or `"all"`:
   `⛔ #<issue> blocked: <reason>`.
 
@@ -701,6 +762,10 @@ lands via §3e):
 ```
 crows-nest tick: 5 units (3 issues, 2 PRs) · dispatched build #142 "Add CSV export" + review #150 "Fix auth" (background) · held: #143 (waiting on #142) · #151 (base #150 merging first) · #144 queued (1/1 builds in flight) · watch live
 ```
+
+**When multi-repo is configured (§1), lead the tick with the active repo** so it's unambiguous which
+repo this watch is targeting — e.g. `crows-nest tick [calumjs/site]: …`. With single-repo config
+(no `repos`), omit the prefix — the tick line is unchanged.
 
 The schedule line must always surface three things: **builds running**, **reviews running**, and
 **held + why** — so a glance at the loop history shows the full picture across both tracks. Separate
@@ -947,8 +1012,9 @@ lookout reconciles every one **not yet terminal** — MERGED and **not already**
    `armada:blocked` PRs — §2a — so there's no blocked label to strip here; only the transient
    `armada:reviewing` needs clearing.)
    ```bash
-   gh pr edit <pr> --add-label "armada:merged" --remove-label "armada:reviewing"
-   gh pr comment <pr> --body "🔭 crows-nest: reconciled — merged out-of-band; marked armada:merged."
+   # Remote gh writes — carry <repoArgs> = "--repo <activeRepo>" when multi-repo is configured (§1).
+   gh pr edit <repoArgs> <pr> --add-label "armada:merged" --remove-label "armada:reviewing"
+   gh pr comment <repoArgs> <pr> --body "🔭 crows-nest: reconciled — merged out-of-band; marked armada:merged."
    ```
 2. **Ensure the linked issue is closed and `armada:shipped`** — hand the merged PR straight into the
    close-the-loop procedure (§5a–§5d / [close-the-loop.md](references/close-the-loop.md)): resolve its
@@ -1080,6 +1146,11 @@ node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-run-snapshot.m
 # spyglass — whole-fleet sea-chart ("chart"):
 node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-snapshot.mjs" --label "armada" --watch 15
 ```
+
+When multi-repo is configured (§1), the dashboard picks up the same `activeRepo` from config
+automatically (spyglass §1a resolves `--repo` flag > `config.activeRepo` > ambient), so it charts the
+selected repo without an extra flag; pass `--repo <owner/name>` on the line to override for one
+session.
 
 Tell the user: *"…and this line brings up the live spyglass dashboard alongside the watch — it serves
 over `http://127.0.0.1:<port>` and refreshes itself; Ctrl-C to close it."* When `spyglass` is
