@@ -345,6 +345,34 @@ Agent tool created are the harness's to reap — only clean up the ones *you* ad
 dependency install in a fresh tree (e.g. `npm ci`, `bundle install`, restoring packages), do it
 in the worktree.
 
+### 4a. Record the run→branch map (so progress/cost climb without a live `/loop`)
+
+The moment you know your **branch** and **worktree path** — right after creating the worktree above —
+record the run→(branch, worktree) map so the read-only dashboard can resolve *this* run to *this* branch
+and start climbing its phase→% beats and cost **immediately**, regardless of how you were dispatched
+(issue #191). Key it by the issue number, exactly as the map producer expects:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-cost-postmortem.mjs" \
+  map --issue <n> --branch <branch> [--worktree <worktree-path>]
+```
+
+**Why you, and not only crows-nest.** crows-nest emits this same map at dispatch **when it dispatches
+under `/loop`** (its §8g.i). But under **manual dispatch** — a human runs `/shipwright <n>` directly, or
+crows-nest picks up an armed issue **outside a loop** (its supervised single pick) — that foreground
+step never fires, so `out/costs/_runs.json` stayed empty, `scripts/liveness-beat.mjs` couldn't resolve
+the run to a branch, and the card sat at a flat % with no cost for the whole build. Writing it here, from
+the one component present in **every** dispatch mode, closes that gap. The write is **idempotent** — the
+producer keys by issue and updates the entry **in place** (never a duplicate) and **preserves the
+original `startedAt` burn-clock** — so when crows-nest *also* writes it under `/loop` there is **no
+regression**, just the same entry refreshed.
+
+Same discipline as your liveness beat (§0a): **best-effort and side-channel** (it writes only under
+`out/costs/`, gitignored) and **reap-safe** — the producer resolves the **main** repo root itself
+(`git rev-parse --git-common-dir`), so the entry lands in the main repo's `out/costs/_runs.json` even
+though your cwd is inside the worktree, and it survives the worktree being reaped on merge. If the script
+is missing or the write fails, **swallow it and carry on** — it must never block or delay the build.
+
 ## 5. Implement
 
 Follow the approved plan. **Match the surrounding code** — its naming, structure, error handling,
