@@ -116,6 +116,41 @@ The phase you beat also drives a **coarse progress % estimate** (#156): the prod
 a slim progress bar + % on your in-flight review card. You do **nothing extra** — just beat your phase;
 the % is a read-only derivation, honestly an **estimate**, and degrades to **no bar** when unavailable.
 
+## 0c. Consult the repo's cartography — review against the pitfalls the fleet has learned
+
+Before the lenses fan out, **read the repo's cartography** — `.armada/cartography/`
+(`architecture.md`, `conventions.md`, `pitfalls.md`, `workflows.md`, `testing.md`, `glossary.md`, or
+a single `cartography.md`), the per-repo heuristics [`cartographer`](../cartographer/SKILL.md)
+accumulates from past runs. This is the **same store [`shipwright`](../shipwright/SKILL.md) consults
+before building** (its Research step, §2) — reading it here closes the *consult-before-acting* loop on
+the **review** side: shipwright reads the map before it builds, muster reads the same map before it
+reviews, so the fleet's learned knowledge shapes both sides consistently and neither diverges from the
+other's understanding of the repo.
+
+The entries are **actionable `heuristic / evidence / confidence` triples** the fleet learned about
+*this* repo. Fold the relevant ones into the review as an **additional lens** — a known repo-specific
+pitfall is exactly the kind of regression a diff review should catch **if the change reintroduces it**:
+
+- A **pitfall** ("don't edit `*.gen.ts` — they're regenerated and your change is lost") → **flag any
+  hunk in the diff that reintroduces it** (e.g. edits a fenced/generated file), same severity spirit as
+  a code finding.
+- A **convention** ("use `FooService`, not the raw client") → flag a diff that diverges from the grain
+  the repo keeps steering toward.
+- A **workflow** ("run `npm run generate` before the build") → note a change that ignores a required
+  ordering the fleet has already learned.
+
+Weight by confidence exactly as shipwright does: **High-confidence heuristics** are an active review
+lens by default; **Low-confidence** ones are surfaced as considerations, not hard grounds to block.
+Pass the relevant heuristics into **both** lenses (§1) as extra context so each reviews the diff with
+the repo's learned pitfalls in hand — a cartography-flagged regression is a normal finding (§2), keyed
+and posted like any other.
+
+**Best-effort / graceful — never blocks.** If `.armada/cartography/` is **absent or empty**, the repo
+just hasn't been mapped yet: **proceed with the normal review** — no-op, never error, never block.
+muster is **read-only** w.r.t. cartography (it only reads the map to inform the review; *writing* back
+what a run learned is [`cartographer`](../cartographer/SKILL.md)'s job, not muster's — consistent with
+muster's `disallowed-tools: Write, Edit`).
+
 ## 1. Fan out two reviewers in parallel subagents
 
 > **Who owns the fan-out depends on how muster is reached — because a subagent can't nest agents.**
