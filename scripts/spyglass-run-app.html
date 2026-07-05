@@ -835,6 +835,17 @@
   .kc-cost.est .cnum, .kc-cost.accruing .cnum { color: var(--awaiting); }
   .kc-cost.final .cnum { color: var(--done); }
   .kc-meta { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); }
+  /* coarse progress estimate on the board card (#174): a slim full-width bar + % under
+     the foot. Same phase-derived signal the list row shows (#156); completed cards fill
+     to 100%. Honest — a phase-derived estimate (tooltip says so). */
+  .kc-prog { display: flex; align-items: center; gap: 6px; width: 100%; }
+  .kc-prog-track { position: relative; flex: 1 1 auto; height: 4px; border-radius: 2px;
+    background: #22384f; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); }
+  .kc-prog-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px;
+    background: linear-gradient(90deg, var(--brass-dim), var(--brass-bright)); transition: width .6s ease; }
+  .kc-prog-pct { font-family: var(--mono); font-size: 10px; font-weight: 650;
+    color: var(--brass); min-width: 26px; text-align: right; white-space: nowrap; }
+  @media (prefers-reduced-motion: reduce) { .kc-prog-fill { transition: none; } }
   @media (max-width: 640px) { .kcol { flex-basis: 76vw; min-width: 76vw; } }
 
   /* ---------- KANBAN lane-transition animation (#177) ----------
@@ -1393,6 +1404,20 @@ function progressInfo(run) {
   return { pct, title };
 }
 
+// Board-card PROGRESS estimate (#174). The KANBAN cards want the SAME phase-derived %
+// the list view shows for in-flight (building/reviewing) runs, PLUS a completed voyage
+// reads 100% — a merged/shipped/terminal run is fully sailed, so its card fills the bar.
+// A blocked run gets no bar (it isn't "done", and its blocked seam already tells the
+// story). Queued / awaiting-merge in-flight runs have no phase beat, so they render no
+// bar — exactly as in the list view. Null → the card renders no bar (clean degrade).
+function kProgressInfo(run) {
+  if (!run) return null;
+  if (!run.blocked && (run.recent || run.terminal || groupOf(run) === "done")) {
+    return { pct: 100, title: "100% — voyage complete" };
+  }
+  return progressInfo(run);   // in-flight building/reviewing estimate (#156), else null
+}
+
 // ---- compact voyage row (default overview) --------------------------------
 function renderRow(run, isOpen) {
   const num = "#" + (run.issueNumber ?? run.prNumber ?? "?");
@@ -1886,6 +1911,25 @@ function renderKCard(run) {
   if (cd.title) c.title = cd.title;
   foot.appendChild(c);
   card.appendChild(foot);
+  // slim progress bar + % on the board card (#174) — the same phase-derived estimate the
+  // list view carries, with completed voyages reading 100%. Omitted when there's no signal.
+  const pi = kProgressInfo(run);
+  if (pi) {
+    const prog = $("div", "kc-prog");
+    prog.title = pi.title;
+    prog.setAttribute("role", "progressbar");
+    prog.setAttribute("aria-valuemin", "0");
+    prog.setAttribute("aria-valuemax", "100");
+    prog.setAttribute("aria-valuenow", String(pi.pct));
+    prog.setAttribute("aria-label", `progress estimate ${pi.pct}%`);
+    const track = $("span", "kc-prog-track");
+    const fill = $("span", "kc-prog-fill");
+    fill.style.width = pi.pct + "%";
+    track.appendChild(fill);
+    prog.appendChild(track);
+    prog.appendChild($("span", "kc-prog-pct", pi.pct + "%"));
+    card.appendChild(prog);
+  }
   const meta = $("div", "kc-meta");
   if (run.recent) {
     // A completed voyage: when it landed (static), not a live-ticking clock.
@@ -2810,10 +2854,17 @@ function render(state) {
     // an active filter (#164) only matching cards populate; every lane still renders
     // (labelled), so the board is visibly narrowed to the chosen stage/state.
     mergeEl.textContent = "";
-    document.getElementById("horizon").textContent = "";
     harbourEl.textContent = "";
     wrap.textContent = "";
     renderBoardAnimated(state, fRuns, fRecent);
+    // The cross-run dependency graph renders UNDER the board too (#174) — #horizon sits
+    // right after #board in the DOM (with the now-empty merge/runs lanes collapsed between
+    // them), so this lands it directly beneath the lanes, matching its list-view role.
+    // renderHorizon self-hides when the scheduler surfaces no waiting runs, so with no
+    // cross-run dependencies the board simply shows nothing beneath it (an empty graph,
+    // not a missing render). Independent of the filter — the board shows every lane, so the
+    // dependency graph rides along with it.
+    renderHorizon(state);
   } else {
     boardEl.textContent = "";
     // Under a filter, the contextual lanes only make sense for their own state: the horizon
