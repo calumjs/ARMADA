@@ -2714,7 +2714,7 @@ function renderTrends(state) {
   const t = computeTrends(records, Date.now(), 14);
   if (!t.anyShipped) return;   // no shipped history yet — the strip stays absent (clean degrade)
 
-  const bar = $("div", "trends tr-in");
+  const bar = $("div", "trends");
   const lede = $("div", "tr-lede");
   lede.appendChild($("div", "k", "trends"));
   lede.appendChild($("div", "sub", `last ${t.days} days`));
