@@ -138,6 +138,66 @@ commissioning; it only makes the silent-no-op collision visible. (Plugin mode is
 plugin lives in the install cache, not in the repo's `.claude/`, so a gitignored `.claude/` doesn't
 strand it.)
 
+## 1c. Warn when `.armada/cartography/` is gitignored but `cartography: "on"` (the learning can't land)
+
+The same **silent-gitignore collision class** as §1b (and drop-in #95/#96) also bites
+[`cartographer`](../cartographer/SKILL.md). With `cartography: "on"`, cartographer **commits its
+learned heuristics into the active PR** by staging `.armada/cartography/` (see cartographer §9). But
+if a repo gitignores `.armada/cartography/` — a reasonable choice for a repo that treats its learned
+map as local scratch, and exactly what ARMADA does to keep *its own* cartography out of the shipped
+plugin — then `git add .armada/cartography/` is a **silent no-op**: the commit carries nothing, the
+update never lands in the PR, and the learning is **silently dropped**. `"on"` mode looks like it's
+working but writes into a void. (`"proposal"` mode is *unaffected* — it presents a diff for approval
+rather than committing, so a gitignored dir doesn't strand it. Only `"on"` commits, so only `"on"`
+hits the drop.)
+
+Detect the collision and warn — but, exactly as §1b, **never edit the user's `.gitignore`** (out of
+scope):
+
+Test the **actual files** cartographer would stage, not just the directory path — a bare
+`git check-ignore -q .armada/cartography` catches only a dir/parent ignore, but a **content-level**
+rule (`.armada/cartography/*`, `.armada/cartography/**`, or a scoped `*.md`) can leave the directory
+reported "tracked" while the learned files themselves are unstageable, so the silent-drop class isn't
+fully closed. Dry-run the exact add and treat "nothing added / paths are ignored" as GITIGNORED:
+
+```bash
+# Robust preflight: dry-run the add cartographer would run and see if git would stage anything.
+staged=$(git add --dry-run --ignore-missing -- .armada/cartography/ 2>&1)
+if [ -z "$staged" ] || printf '%s' "$staged" | grep -qiE 'ignored by .*gitignore|paths are ignored'; then
+  echo "GITIGNORED"      # dir may look tracked, but the learned files won't stage → treat as ignored
+else
+  echo "tracked"
+fi
+# Alternative — check-ignore each concrete file under the store (catches *, **, *.md):
+#   for f in .armada/cartography/*.md; do git check-ignore -q "$f" && echo "GITIGNORED: $f"; done
+# Read the cartography mode from the config just written/confirmed (§3):
+#   → .armada/config.json → cartography   ("off" | "proposal" | "on")
+```
+
+If the store is ignored (by a dir, parent `.armada/`, or content-level `*`/`**`/`*.md` rule) **and**
+`cartography: "on"`, print a prominent warning in the readiness report:
+
+```
+⚠ .armada/cartography/ is covered by .gitignore, but cartography is set to "on" — cartographer
+  commits its learned heuristics into the active PR by staging that dir, and `git add
+  .armada/cartography/` is a silent no-op when it's ignored, so the learning is SILENTLY DROPPED
+  and never lands. Un-ignore the cartography path yourself so the commit can land — the right
+  un-ignore depends on which rule is catching the files:
+    • a direct dir ignore (.armada/cartography/)        → add `!.armada/cartography/`
+    • a recursive/content ignore (.../**, .../*, *.md)   → add `!.armada/cartography/**`
+    • a parent-dir ignore (.armada/ ignores everything)  → `!.armada/`, then `!.armada/cartography/`,
+        then `!.armada/cartography/**` (a child negation can't un-ignore a file whose parent is ignored)
+  …or keep cartography at "proposal" (which presents a diff for approval instead of committing, so a
+  gitignored dir doesn't strand it). commission will not modify your .gitignore for you.
+```
+
+This warning is **advisory** — it never edits `.gitignore`, flips the `cartography` key, stages
+anything, or blocks commissioning; it only makes the silent-drop collision visible **before** a
+`"on"` run writes into a void. cartographer raises the *same* warning at commit time as a backstop
+(cartographer §9), so the collision is caught whether it's set here or later. (Left at the default
+`cartography: "off"`, or at `"proposal"`, this warning never fires — nothing commits, so nothing is
+dropped.)
+
 ## 2. Detect the project's commands and base branch
 
 ARMADA is stack-agnostic, so commissioning *discovers* how to build this specific repo instead of
@@ -273,6 +333,15 @@ learning is a deliberate hand edit, never something commissioning enables. The u
 `"on"` (auto-runs and commits knowledge into the active PR so it rides the muster review + autoMerge
 gate). This is distinct from the fleet-defect loop above: `cartography` learns about the *host* repo;
 `autoArmSelfFixes` is about defects in *ARMADA itself*.
+
+**The `cartography` key interacts with `.gitignore`.** Because `"on"` mode *commits* into the active
+PR by staging `.armada/cartography/`, that path **must be tracked** for the learning to land — if the
+repo gitignores `.armada/cartography/`, `git add` is a silent no-op and `"on"` writes into a void
+(the §1c collision). `"off"` and `"proposal"` don't commit, so they're unaffected by the ignore. So:
+a repo that wants `cartography: "on"` must keep `.armada/cartography/` tracked (not gitignored); a
+repo that *does* gitignore it (treating its map as local scratch — ARMADA itself does this to keep
+its own cartography out of the shipped plugin) should stay at `"proposal"` (present-a-diff) rather
+than `"on"`. §1c warns when this collision is present; cartographer §9 warns again at commit time.
 
 `foghorn` holds the defaults for the spoken narrator ([`foghorn`](../foghorn/SKILL.md) — the fleet's
 **voice**, which speaks activity aloud). All keys are optional with sensible defaults, so write the
@@ -560,6 +629,12 @@ and don't arm the loop for them** (both are the user's call):
     silent no-op; collaborators who clone get no skills). Prefer the plugin route for shared/multi-machine
     repos, or un-ignore .claude/skills/ yourself. commission will not modify your .gitignore.
 
+<any mode — printed when .armada/cartography/ is gitignored AND cartography is "on" (§1c):>
+  ⚠ .armada/cartography/ is gitignored but cartography is "on" — cartographer's learned heuristics
+    can't land (git add is a silent no-op; the learning is silently dropped). Un-ignore
+    .armada/cartography/ yourself so the commit lands, or keep cartography at "proposal" (presents a
+    diff instead of committing). commission will not modify your .gitignore.
+
 Next:
   1. Label the issues you want built with `armada`:
        gh issue edit <number> --add-label armada
@@ -571,8 +646,10 @@ The `chartered` line reports the §5 offer's outcome; the `autoMerge` `⚠` line
 printed **only** when `autoMerge: true` and no required status checks gate the base branch. The
 `install mode` line and the two drop-in blocks come from §1a/§1b — the `▸` block (which records
 `pluginRoot` and notes the export is an optional override) prints **only** in drop-in mode, and the
-gitignore `⚠` prints **only** in drop-in mode when `.claude/` is ignored; both are omitted under a
-plugin install.
+`.claude/` gitignore `⚠` prints **only** in drop-in mode when `.claude/` is ignored; both are omitted
+under a plugin install. The **cartography** gitignore `⚠` is the §1c warning — it prints in **any**
+install mode (the cartography store lives in the repo regardless of install mode), but **only** when
+`.armada/cartography/` is gitignored **and** `cartography: "on"`; it's omitted otherwise.
 
 ## Idempotency & re-runs
 
@@ -610,6 +687,10 @@ plugin install.
   in drop-in mode — the **optional** `export CLAUDE_PLUGIN_ROOT=...` override line and, when `.claude/`
   is gitignored, the silent-no-op **gitignore-collision warning** (§1b). commission never edits
   `.gitignore`.
+- A **cartography gitignore-collision warning** (§1c) — printed in any install mode when
+  `.armada/cartography/` is gitignored **and** `cartography: "on"`, since the ignored path makes
+  cartographer's `git add` a silent no-op and the learning never lands. Advisory only; commission
+  never edits `.gitignore` and never flips the `cartography` key.
 - The ten GitHub labels created/reconciled (issue track + PR track + shared blocked + public-intake
   `armada:considered` / `armada:flagged` + `fleet-defect`).
 - An **offer** to charter a short list of recommended setup/improvement issues (CI merge-gate first),
