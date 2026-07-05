@@ -185,17 +185,23 @@ Read `.armada/config.json` from the target repo:
   (rejects a blank/silent capture before posting), and **never blocks, fails, or delays** the tick or
   the merge. The full convention is §8f. Default `"off"` = crows-nest never records (manual `/logbook`
   still works).
-- `costs` — gates the **cost post-mortem producer** that feeds [`spyglass`](../spyglass/SKILL.md)'s
-  per-run dashboard. One of `"on" | "off"`, **default `"on"` when absent** (the write is cheap, local,
-  and gitignored, so it's on unless an operator opts out). When on, at each reconcile point the bell
-  rings (§2d build-completion, §3e PR-pipeline outcome, §5 issue-shipped) the lookout hands the just-
-  completed subagent's **real token usage** to `scripts/spyglass-cost-postmortem.mjs`, which accumulates
-  a per-model breakdown + an API-equivalent cost estimate into `out/costs/<run>.json`; and at **dispatch
-  (§2d)** it records the run→(branch, worktree) map into `out/costs/_runs.json` so the read-only
-  dashboard surfaces branch/worktree/folder **before** a PR exists. Writes **only** under `out/costs/`
-  (gitignored); under the **same best-effort side-channel discipline** as the bell (§8c), cartographer
-  (§8d), and logbook (§8f) — it never blocks, fails, or delays the tick. The full convention is §8g.
-  Default `"off"` = never produce (the dashboard just shows `n/a` cost + no in-flight worktree).
+- `costs` — gates the **cost + liveness post-mortem producers** that feed
+  [`spyglass`](../spyglass/SKILL.md)'s per-run dashboard (its cost table AND its progress-% bar). One of
+  `"on" | "off"`, **default `"on"` when absent** (the writes are cheap, local, and gitignored, so it's on
+  unless an operator opts out). When on, at each reconcile point the bell rings (§2d build-completion,
+  §3e PR-pipeline outcome, §5 issue-shipped) the lookout hands the just-completed subagent's **real token
+  usage** to `scripts/spyglass-cost-postmortem.mjs`, which accumulates a per-model breakdown + an
+  API-equivalent cost estimate into `out/costs/<run>.json`, and **emits a terminal liveness beat on the
+  run's behalf** (`scripts/liveness-beat.mjs`) so `out/liveness/<run>.json` reads 100%; at **dispatch
+  (§2d)** it records the run→(branch, worktree) map into `out/costs/_runs.json` **and emits an initial
+  `building` beat** so the progress bar populates before a PR exists; and **before reaping** a
+  build/merge worktree it **consolidates** that worktree's `out/costs`/`out/liveness` into the main repo
+  (`scripts/consolidate-run-artifacts.mjs`) so nothing recorded is lost. All of this — done by the
+  reliable **foreground** lookout, not the reap-prone subagent — is why the dashboard's cost and progress
+  displays actually populate (#170). Writes **only** under `out/costs/` / `out/liveness/` (gitignored);
+  under the **same best-effort side-channel discipline** as the bell (§8c), cartographer (§8d), and
+  logbook (§8f) — it never blocks, fails, or delays the tick. The full convention is §8g. Default
+  `"off"` = never produce (the dashboard just shows `n/a` cost + no progress bar + no in-flight worktree).
 - `budget` — the fleet's **spend governor** ([`quartermaster`](../quartermaster/SKILL.md)). An optional
   object with `perRunUSD` and/or `perDayUSD` (both optional; **absent = ungoverned**, the default). When
   set, the lookout consults `quartermaster check` **before dispatching new builds (§2d)** and **holds**
@@ -670,8 +676,12 @@ idle point (§8d.ii), so a busy backlog doesn't emit one cartography PR per buil
 and synchronous; it never blocks or fails this reconcile.
 
 Also after this reconcile, if the `costs` key isn't `"off"` (§8g), **record the build subagent's real
-token usage** into `out/costs/<run>.json` (§8g.ii) so the spyglass dashboard shows real cost. (The
-run→worktree map was already recorded at dispatch, §8g.i.) Best-effort, side-channel, never fatal.
+token usage** into `out/costs/<run>.json` (§8g.ii) so the spyglass dashboard shows real cost, **emit a
+terminal liveness beat on the run's behalf** (`liveness-beat done`, §8g.iii) so the progress bar reaches
+100% even if the subagent's own `done` was stranded in its worktree, and — when the build ran in a
+manual worktree you'll clean up — **consolidate that worktree's `out/` into the main repo before
+removing it** (§8g.iii). (The run→worktree map + the initial `building` beat were already recorded at
+dispatch, §8g.i.) Best-effort, side-channel, never fatal.
 
 #### Is an in-flight build actually stalled? Read the liveness beat, never raw mtime
 
@@ -781,7 +791,7 @@ you just built (§2b) and the held reasons you just reported are **crows-nest-in
 labels — so [`spyglass`](../spyglass/SKILL.md)'s **horizon** view (its waiting-runs dependency graph)
 can't see them without help. If the `costs` key isn't `"off"` (§8g), hand the graph to the spyglass
 producer so the strictly read-only dashboard can render it — **best-effort, side-channel, never
-blocking the tick** (§8g.iii). This is a *view* of the schedule you already computed; it never changes
+blocking the tick** (§8g.iv). This is a *view* of the schedule you already computed; it never changes
 the scheduling decision (§2c).
 
 ### 2f. Opportunistic background recon — dispatch lighthouse when capacity is free
@@ -937,7 +947,11 @@ or the merge. The merge has already landed; the recording is the last, optional 
 
 And after the merge, if the `costs` key isn't `"off"` (§8g), **record the review pipeline's real usage**
 — the two review lenses + any codex second-lens tokens — into `out/costs/<run>.json` (§8g.ii),
-accumulated onto the build's tokens for one per-run total. Best-effort, side-channel, never fatal.
+accumulated onto the build's tokens for one per-run total. Because the merge **reaps the head
+worktree/branch** (§4.5), do this in order: first **consolidate the merged branch's worktree `out/` into
+the main repo** and **emit a terminal beat** (`status merged`) on the run's behalf (§8g.iii), THEN reap —
+so no cost/liveness the run recorded is destroyed with the worktree. Best-effort, side-channel, never
+fatal.
 
 ## 4. The review→merge pipeline (a Workflow)
 
@@ -1101,7 +1115,10 @@ background under the §8c discipline; it never blocks or fails the close.
 And when an issue closes `armada:shipped`, if the `costs` key isn't `"off"` (§8g), **finalise the cost
 post-mortem** — record any remaining usage into `out/costs/<run>.json` **with `--final`** (§8g.ii) so
 the file is stamped `final: true`, the accumulated per-run total the spyglass dashboard shows as the
-settled figure for the shipped run (not an accruing one). Best-effort, side-channel, never fatal.
+settled figure for the shipped run (not an accruing one) — and **emit a terminal beat** on the run's
+behalf (`status shipped`, §8g.iii) so the run reads 100% on the board. If a build worktree for this run
+still lingers, **consolidate its `out/` into the main repo first** (§8g.iii) so nothing recorded is
+lost. Best-effort, side-channel, never fatal.
 
 ## 6. Arm the loop — hand the /loop line to the user
 
@@ -1534,16 +1551,35 @@ the bug. Reconcile the two so the obligation is owned exactly once:
   prefixed `crows-nest logbook:`) and carry on. A failed or skipped recording never turns a green tick
   red and never affects the merge.
 
-### 8g. Spyglass cost post-mortem — write real cost + the run map at reconcile points
+### 8g. Spyglass cost + liveness post-mortem — record real cost AND progress at reconcile points
 
-[`spyglass`](../spyglass/SKILL.md)'s per-run dashboard renders each run's cost and in-flight metadata,
-but it is **strictly read-only** — it can only *consume* that data, never produce it. crows-nest is the
-producer: it already receives each dispatched subagent's token usage on completion, so it writes the
-data the dashboard reads. Gated by the `costs` key (§1); under the **identical best-effort, side-channel
-discipline as §8c** — it must **never block, derail, fail, or delay** the tick. The producer is the
-bundled `scripts/spyglass-cost-postmortem.mjs`, resolved with the standard scripts-dir rule (**prefer
-`${CLAUDE_PLUGIN_ROOT}`, else the `pluginRoot` from `.armada/config.json`**, §1/§4). It writes **only**
-under `out/costs/` (gitignored), never the tracked tree.
+[`spyglass`](../spyglass/SKILL.md)'s per-run dashboard renders each run's cost, in-flight metadata, and
+a coarse **progress %** bar, but it is **strictly read-only** — it can only *consume* that data, never
+produce it. crows-nest is the producer: it already receives each dispatched subagent's token usage on
+completion and it is the reliable **foreground** lookout, so it writes the data the dashboard reads.
+Gated by the `costs` key (§1); under the **identical best-effort, side-channel discipline as §8c** — it
+must **never block, derail, fail, or delay** the tick. Two bundled producers, both resolved with the
+standard scripts-dir rule (**prefer `${CLAUDE_PLUGIN_ROOT}`, else the `pluginRoot` from
+`.armada/config.json`**, §1/§4) so they work on a drop-in install WITHOUT a `CLAUDE_PLUGIN_ROOT` export:
+
+- `scripts/spyglass-cost-postmortem.mjs` — the per-model **cost** file (`out/costs/<run>.json`) + the
+  run→worktree map + the scheduler-state.
+- `scripts/liveness-beat.mjs` — the phase/progress **liveness** beat (`out/liveness/<run>.json`) that
+  drives the progress bar.
+
+**Why crows-nest, not the subagent, is the reliable producer (the #170 defect).** shipwright/muster
+subagents DO emit their own beats + self-report usage (shipwright §0a/§0b), but that is best-effort
+inside a build-focused agent that may skip it, and — critically — a subagent writes with its cwd inside
+its **build worktree**, which crows-nest **reaps** on merge (§4.5). The dashboard reads the **MAIN**
+repo's `out/`, so a worktree-only file is both invisible AND destroyed on reap (verified live: an
+in-flight build's worktree had the only copy of its liveness/cost, and no copy reached the board). So
+the reliable foreground lookout OWNS recording: it (i) records real cost from the subagent's returned
+result, (ii) emits a coarse beat **on the run's behalf** at dispatch and reconcile, and (iii)
+consolidates any worktree-emitted files into the main repo **before** reaping. Both producers now
+resolve the **main repo root** (`git rev-parse --git-common-dir`) internally, so even a beat/cost
+emitted from inside a worktree lands in the main repo's `out/` — where the dashboard reads and where it
+outlives worktree cleanup. Everything here writes **only** under `out/costs/` / `out/liveness/`
+(gitignored), never the tracked tree.
 
 #### 8g.i Record the run→worktree map at dispatch (§2d)
 
@@ -1556,8 +1592,22 @@ node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-cost-postmorte
   map --issue <n> --branch <branch> --worktree <worktree-path>
 ```
 
-This is cheap and synchronous (no subagent). Recording is the last, optional step of the dispatch —
-never re-ordered ahead of the claim, never able to block or fail it.
+**Also emit a coarse `building` beat ON THE RUN'S BEHALF at dispatch** so the progress bar populates
+**immediately** — not only if/when the subagent gets around to its first beat (the #170 gap: a run sat
+with no `out/liveness/<run>.json` for its whole build, so the bar showed nothing). Key it by the run's
+**branch** (else its issue number), matching the subagent's own beats so they RE-ARM the same run doc:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/liveness-beat.mjs" \
+  beat --run <branch|issue> --phase implementing --note "crows-nest: build dispatched"
+```
+
+The beat lands in the **main repo's** `out/liveness/` (the producer resolves the main repo root itself,
+so it's correct even if this runs with a cwd inside a worktree, and needs no `CLAUDE_PLUGIN_ROOT`
+export). The subagent's own richer beats (research → planning → … → opening-pr) then refine the phase as
+it advances; this is just the floor so the bar is never empty. Both writes are cheap and synchronous (no
+subagent). Recording is the last, optional step of the dispatch — never re-ordered ahead of the claim,
+never able to block or fail it.
 
 #### 8g.ii Accumulate real usage at each terminal reconcile (§2d / §3e / §5)
 
@@ -1610,10 +1660,51 @@ read-only dashboard renders the **final** figure — or, when no *priced* usage 
 recorded (e.g. an all-unpriced codex/gpt run, or nothing extracted), a graceful **`—`**
 (#121). The producer writes `totalCost: null` when nothing is priced, and the dashboard
 degrades to `—` **regardless** of whether this write happened at all — a terminal run never
-shows `$0.00`. This write is still best-effort/side-channel (§8g.iv): if it's skipped or
+shows `$0.00`. This write is still best-effort/side-channel (§8g.v): if it's skipped or
 fails, the dashboard simply shows `—` for that run's cost, never a wrong number.
 
-#### 8g.iii Expose the scheduler-state (waiting-runs graph) at scheduling (§2c)
+#### 8g.iii Emit a terminal beat on the run's behalf, and consolidate before reaping
+
+Two more foreground writes make the progress bar reach 100% and stop any recorded data being lost to a
+reaped worktree — the other halves of the #170 fix. Both are best-effort/side-channel (§8g.v) and keyed
+by the run's **branch** (else its issue number), exactly like the cost record.
+
+**(a) Terminal beat at each terminal reconcile (§2d / §3e / §5).** After the consequential action lands,
+emit the terminal marker on the run's behalf so the dashboard reads the run as **100% / done** even if
+the subagent's own `done` never made it to the main repo (it may have written into the reaped worktree,
+or been skipped):
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/liveness-beat.mjs" \
+  done --run <branch|issue> --status <opened|blocked|merged|shipped> --reason "<one line>"
+```
+
+The `done` marker latches `terminal:true`, which the read-only driver maps to **100%** regardless of the
+last phase (spyglass §6). A branch flows through several dispatches (build → review → address → rebase),
+and a later dispatch's first beat **re-arms** the run (liveness-beat clears the terminal marker and bumps
+`lifecycle`), so emitting `done` here can never wrongly pin a still-live branch to done — the next
+dispatch's `building` beat (§8g.i) re-arms it.
+
+**(b) Consolidate worktree artifacts BEFORE reaping (§4.5 / §5).** Just before crows-nest reaps a
+build/merge worktree, drain any cost/liveness files the subagent wrote INSIDE that worktree into the main
+repo, so a file that landed there (a degraded `git rev-parse`, or an explicit `--out=<worktree>`) is not
+destroyed with the worktree:
+
+```bash
+# run BEFORE `git worktree remove` (crows-nest §4.5 "Branch cleanup on merge")
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/consolidate-run-artifacts.mjs" \
+  --worktree <worktree-path>
+```
+
+It MERGES, never blindly overwrites: the main repo already holds crows-nest's authoritative cost + the
+terminal beat above, so a worktree file is copied only when the main repo LACKS it or the worktree copy
+is strictly **more complete** (a terminal beat / a `final` cost / a later write / more accumulated work);
+the crows-nest-owned aggregate maps (`_runs.json`, `_schedule.json`) are only ever gap-filled, never
+clobbered. A missing/already-reaped worktree is a clean no-op. The helper never throws (§8g.v), so it can
+never block or fail the reap — if it errors, reaping proceeds and the dashboard simply falls back to
+whatever the main repo already has.
+
+#### 8g.iv Expose the scheduler-state (waiting-runs graph) at scheduling (§2c)
 
 After building the cross-track graph and selecting the frontier (§2b/§2c) — and **after** the
 consequential dispatches have landed — expose the schedule read-only so spyglass's **horizon** view can
@@ -1636,11 +1727,12 @@ the schedule, written once per tick — it never influences the decision (§2c).
 side-channel, `costs`-gated discipline as the cost writes above: if it errors or the producer is absent,
 the tick is unaffected (the dashboard just infers the graph itself).
 
-#### 8g.iv Gating and the discipline
+#### 8g.v Gating and the discipline
 
-- **Gated by `costs` (§1).** `"off"` → never map, never record, never expose the schedule (the
-  dashboard shows `n/a` cost + no in-flight worktree, and infers the waiting-graph itself — degrades
-  cleanly). Default `"on"` when absent.
+- **Gated by `costs` (§1).** `"off"` → never map, never record, never emit a beat on the run's behalf,
+  never consolidate, never expose the schedule (the dashboard shows `n/a` cost, no progress bar, no
+  in-flight worktree, and infers the waiting-graph itself — degrades cleanly). Default `"on"` when
+  absent.
 - **Never fatal.** If the producer errors or isn't available, the tick is **completely unaffected** —
   swallow any failure (log at most once, prefixed `crows-nest cost:`) and carry on. The producer itself
   never throws (it prints + exits non-zero), so a failed write is always log-and-ignore.

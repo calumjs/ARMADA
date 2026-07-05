@@ -64,6 +64,7 @@
 //       Doctor: print the phase-grace table + the resolved out dir. Writes NOTHING.
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from 'fs';
+import { execFileSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -165,8 +166,43 @@ function parseArgs(argv) {
   return args;
 }
 
+// Resolve the CANONICAL repo root for liveness data — the MAIN worktree, not whichever
+// isolated build worktree this producer happens to be invoked from (#170). This mirrors
+// the spyglass cost producer (spyglass-cost-postmortem.mjs mainRepoRoot): crows-nest
+// dispatches each build into `.claude/worktrees/<agent>/`, and a subagent that beats with
+// its cwd inside that worktree would otherwise write `out/liveness/<run>.json` THERE —
+// where the read-only dashboard driver (which reads the MAIN repo's `out/liveness/`) never
+// looks, and which is DELETED when the worktree is reaped on ship. So a run's progress beat
+// never survived to the board (the exact defect #170 was chartered on: an in-flight build's
+// worktree had no out/liveness the dashboard could read).
+//
+// `git rev-parse --git-common-dir` yields the SHARED `.git` (the main repo's) even from a
+// linked worktree; its parent is the main worktree root. Every run — from any worktree —
+// thus consolidates its beat into the one main-repo `out/liveness/`, where the reader
+// classifies (crows-nest §2d) and where it outlives worktree cleanup. This is ALSO the
+// path-resolution fix (AC-5): the beat lands in the right place WITHOUT depending on
+// `${CLAUDE_PLUGIN_ROOT}` resolving inside the worktree. Read-only w.r.t. git; on any
+// failure (not a git repo, bare repo, git absent) it degrades to `cwd` — never throws.
+function mainRepoRoot() {
+  try {
+    const common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (!common) return process.cwd();
+    const root = path.dirname(common);
+    return root || process.cwd();
+  } catch {
+    return process.cwd();
+  }
+}
+
+// The liveness data dir. An explicit `--out` always wins (tests / an operator override).
+// Absent it, consolidate into the MAIN repo's `out/liveness/` (#170) rather than the raw
+// cwd, so a beat emitted from inside a build worktree still lands where the dashboard
+// driver reads and survives worktree cleanup.
 function outDirOf(args) {
-  return path.join(args.out || process.cwd(), 'out', 'liveness');
+  const base = args.out || mainRepoRoot();
+  return path.join(base, 'out', 'liveness');
 }
 
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : (Number.isFinite(Number(v)) && v !== '' && v != null ? Number(v) : null));
@@ -381,4 +417,4 @@ if (isEntry) main();
 
 // Exported for consumers (the spyglass snapshot threads the phase→% into run-state.json)
 // and unit tests. Importing never triggers main() (see isEntry above).
-export { PHASE_PROGRESS, progressFor, PHASE_GRACE, graceFor, classifyDoc };
+export { PHASE_PROGRESS, progressFor, PHASE_GRACE, graceFor, classifyDoc, mainRepoRoot, outDirOf };
