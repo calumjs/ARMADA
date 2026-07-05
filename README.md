@@ -181,6 +181,10 @@ A couple of related distribution conventions:
   //   "off"      → never auto-runs; only manual /cartographer works (default)
   //   "proposal" → auto-runs at crows-nest's reconcile points but only proposes a diff for approval
   //   "on"       → auto-runs and commits learning into the active PR (rides muster review + autoMerge)
+  // NOTE: "on" COMMITS into the PR, so .armada/cartography/ must be TRACKED (not gitignored) or the
+  // git add is a silent no-op and the learning is dropped. If you gitignore .armada/cartography/
+  // (treating the map as local scratch — as ARMADA itself does), stay at "proposal". commission and
+  // cartographer both warn on this collision; they never edit your .gitignore.
   "cartography": "off",
   // Autonomous reconnaissance (lighthouse) — surveys for FUTURE work and charters it, unarmed.
   "lighthouse": {
