@@ -254,7 +254,7 @@
 
   /* ---------- today's fleet scoreboard banner (#193) ----------
      A slim top strip above the manifest with today's live scoreboard: features
-     shipped, total spend, average build time (dispatch→merge) and throughput. It
+     shipped, total spend, time to ship (issue opened → merged) and throughput. It
      shares the manifest's wood+brass look so it reads as one instrument, and stays
      compact (one short row) so it never pushes the KANBAN lanes off-screen. Every
      figure degrades to "—" (never NaN/undefined/Infinity) when its data is absent;
@@ -666,8 +666,8 @@
   /* ---------- voyage log — scrollable archive of every shipped run (#194) ----------
      The board is live-only: finished runs age out of the recent-voyages window and are
      lost. The voyage log is a PERSISTENT, scrollable archive of past shipped runs, each
-     showing issue/PR + title, cost + token total, model split (%), cycle time
-     (dispatch→merge) and the landing timestamp. It ACCUMULATES client-side into
+     showing issue/PR + title, cost + token total, model split (%), time to ship
+     (issue opened → merged) and the landing timestamp. It ACCUMULATES client-side into
      localStorage keyed by run id, so a run survives beyond the live board window / a
      snapshot refresh / a full page reload. A self-contained panel with its own scroll
      (max-height + overflow-y:auto) so it never disrupts the live lanes, in the same
@@ -2381,8 +2381,8 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---- today's fleet scoreboard banner (#193) -------------------------------
-// A live "today's scoreboard": features shipped, total spend, average build time
-// (dispatch→merge) and throughput. All four are derived PURELY from the snapshot the
+// A live "today's scoreboard": features shipped, total spend, time to ship
+// (issue opened → merged) and throughput. All four are derived PURELY from the snapshot the
 // page already polls — state.rollup + state.recentRuns — so they update on the same
 // poll cycle and mutate nothing (READ-ONLY).
 //
@@ -2393,10 +2393,11 @@ document.addEventListener("keydown", (e) => {
 //   * spent today     — Σ recorded per-run cost (run.cost.totalCost) over today's landed
 //                       runs that carry a cost file. A lower bound: runs without a recorded
 //                       cost don't contribute; spendKnown is false when NONE do (→ "—").
-//   * avg build       — mean(completedAt − startedAt) over today's landed runs that have
-//                       both stamps. startedAt is the issue/PR open (or crows-nest dispatch)
-//                       time and completedAt the merge/close time — the driver's dispatch→
-//                       merge span. Null (→ "—") when no sample.
+//   * time to ship    — mean(completedAt − startedAt) over today's landed runs that have
+//                       both stamps. startedAt is the issue/PR open (crows-nest dispatch
+//                       is only a fallback) and completedAt the merge/close time — so this
+//                       is lead time (issue opened → merged), NOT a dispatch→merge span.
+//                       Null (→ "—") when no sample.
 //   * throughput      — shippedToday ÷ hours elapsed since local midnight (features/hour).
 //                       Guarded so an empty/zero-elapsed day yields "—", never Infinity.
 //
@@ -2432,7 +2433,7 @@ function computeScoreboard(state, nowMs) {
     if (tc != null) { spend += tc; spendKnown = true; spendN += 1; }
   }
 
-  // 3) avg build time — mean dispatch→merge span over today's landed runs with both stamps.
+  // 3) time to ship — mean lead time (issue opened → merged) over today's landed runs with both stamps.
   let durSum = 0, durN = 0;
   for (const r of landedToday) {
     const s = parseMs(r.startedAt), e = parseMs(r.completedAt);
@@ -2514,9 +2515,9 @@ function renderScoreboard(state) {
     s.spendKnown && spendLB ? `≥ ${s.spendN} of ${shippedN} runs` : null));
 
   const avgVal = s.avgBuildMs != null ? (durText(s.avgBuildMs) || "—") : "—";
-  bar.appendChild(scoreTile("avg build", avgVal,
+  bar.appendChild(scoreTile("time to ship", avgVal,
     s.avgSampleN > 0
-      ? `Mean dispatch→merge time across ${s.avgSampleN} of today's landed run(s).`
+      ? `Mean time to ship — issue opened → merged — across ${s.avgSampleN} of today's landed run(s).`
       : "No completed build times yet today.",
     s.avgSampleN > 0 && avgLB ? `≥ ${s.avgSampleN} of ${shippedN} runs` : null));
 
@@ -3085,7 +3086,7 @@ function voyageRowFields(rec) {
   const mi = modelInfo(rec);
   const models = mi ? mi.models : [];
   const modelsText = mi ? modelSummary(mi) : "—";
-  // cycle time — dispatch→merge span, both stamps required, non-negative.
+  // time to ship — lead time (issue opened → merged) span, both stamps required, non-negative.
   const s = Date.parse((rec && rec.startedAt) || "");
   const e = Date.parse((rec && rec.completedAt) || "");
   const cycleText = (Number.isFinite(s) && Number.isFinite(e) && e >= s) ? (durText(e - s) || "—") : "—";
@@ -3193,9 +3194,9 @@ function voyageLogRow(rec) {
   models.appendChild(mtext);
   row.appendChild(models);
 
-  // cycle time (dispatch→merge)
+  // time to ship (issue opened → merged)
   const cyc = $("div", "vlog-cycle" + (f.cycleText === "—" ? " na" : ""), f.cycleText);
-  cyc.title = "cycle time — dispatch → merge";
+  cyc.title = "time to ship — issue opened → merged";
   row.appendChild(cyc);
 
   // timestamp
