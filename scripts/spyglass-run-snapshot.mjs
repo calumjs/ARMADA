@@ -658,6 +658,44 @@ function readLiveness(branch, issueNumber, prNumber, worktree) {
   };
 }
 
+// Consume the up-front run ESTIMATE (READ-ONLY, #212) — the best-effort PREDICTION
+// shipwright records after planning + before it implements (SKILL §4b, scripts/estimate.mjs):
+// estimated cost (USD) + estimated time-to-ship (seconds), stamped `at` (when it was
+// predicted). This driver only READS it; the file lives under the gitignored out/estimates/
+// dir. The dashboard grades it against ACTUAL for shipped runs. Path resolution + basename
+// flattening mirror readLiveness/readCost (main repo first, then the run's worktree; keyed
+// by branch → issue → pr). Degrades to null (→ no estimate shown, clean `—`) when the file
+// is absent / corrupt. Each returned number is a non-negative finite value or null, so a
+// partial/garbled file can never surface NaN/Infinity onto the board.
+function readEstimate(branch, issueNumber, prNumber, worktree) {
+  const safe = (s) => String(s).replace(/[\\/]/g, '-');
+  const roots = [path.join(process.cwd(), 'out', 'estimates')];
+  if (worktree) roots.push(path.join(worktree, 'out', 'estimates'));
+  const keys = [branch, issueNumber, prNumber].filter((k) => k != null);
+  let doc = null;
+  for (const root of roots) {
+    for (const k of keys) {
+      const f = path.join(root, `${safe(k)}.json`);
+      if (existsSync(f)) {
+        try { doc = JSON.parse(readFileSync(f, 'utf8')); break; }
+        catch { /* malformed — skip, try next */ }
+      }
+    }
+    if (doc) break;
+  }
+  if (!doc || typeof doc !== 'object') return null;
+  const numPos = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0) ? v : null;
+  const cost = numPos(doc.cost);
+  const durationSec = numPos(doc.durationSec);
+  if (cost == null && durationSec == null) return null;   // nothing gradeable → no estimate
+  return {
+    cost,                              // estimated USD (null → cost ungraded)
+    durationSec,                       // estimated time-to-ship in seconds (null → time ungraded)
+    at: doc.at != null ? String(doc.at) : null,   // when the prediction was made (before the build)
+    note: (typeof doc.note === 'string' && doc.note.trim()) ? doc.note.trim().slice(0, 140) : null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Live code-diff side-channel (#211) — the actual CODE a building run is writing.
 //
@@ -1506,6 +1544,11 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
     const diff = (building && (worktree || branch))
       ? captureDiff({ worktree, branch, base: (pr && pr.baseRefName) || baseBranch })
       : null;
+    // Up-front run ESTIMATE (#212) — shipwright's best-effort prediction (cost + time to
+    // ship) recorded after planning, before it implemented. Read for EVERY run (in-flight
+    // AND recent/terminal) so the voyage log can grade estimate → actual on shipped runs;
+    // null when the run never recorded one (→ the dashboard shows `—`, clean degrade).
+    const estimate = readEstimate(branch, issueNumber, prNumber, worktree);
     // Elapsed since the run started: the issue/PR open time, or the crows-nest
     // dispatch time from the run map (whichever is earliest & known).
     const startedAt = (issue && issue.createdAt) || (pr && pr.createdAt)
@@ -1569,6 +1612,7 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
       doneVideo,
       progress, // #156 — coarse phase-derived % from liveness (null → no bar)
       diff,     // #211 — bounded live code-diff for an in-flight building run (null → panel hidden)
+      estimate, // #212 — up-front prediction {cost, durationSec, at} recorded before the build (null → no estimate)
       cost,
       // recent-lane fields (#113); absent/null on in-flight runs.
       recent: !!recent,
@@ -1723,7 +1767,7 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
   rollup.held = scheduler.nodes.filter((n) => n.waiting && n.held).length;
 
   return {
-    schema: 8,                         // schema 8 (#211): each in-flight BUILDING run gains diff {lines:[{t,text}], files, filesShown, moreFiles, linesShown, truncated, added, removed} — a bounded live code-diff of the branch/worktree it's writing (null when not building / no branch / no changes). Additive — older tabs ignore it. schema 7 (#140): + readyToMerge[] — the human merge queue (reviewed-clean, mergeable, unmerged PRs, longest-waiting first); each in-flight PR run gains mergeable/readyToMerge/mergeCommand/waitingSince; rollup gains readyToMerge. schema 6 (#156): each in-flight run gains progress {pct, phase, estimate, terminal, source} — a coarse phase-derived % from the liveness beat (null when unavailable). schema 5 (#111): + scheduler {source, nodes, edges} — the waiting-runs dependency graph; rollup gains waiting/eligible/held. Additive — older tabs read tolerantly.
+    schema: 9,                         // schema 9 (#212): each run gains estimate {cost, durationSec, at, note} — the up-front PREDICTION shipwright records after planning/before implementing (null when none). The app grades estimate → actual per shipped run in the voyage log + a calibration rollup. Additive — older tabs ignore it. schema 8 (#211): each in-flight BUILDING run gains diff {lines:[{t,text}], files, filesShown, moreFiles, linesShown, truncated, added, removed} — a bounded live code-diff of the branch/worktree it's writing (null when not building / no branch / no changes). Additive — older tabs ignore it. schema 7 (#140): + readyToMerge[] — the human merge queue (reviewed-clean, mergeable, unmerged PRs, longest-waiting first); each in-flight PR run gains mergeable/readyToMerge/mergeCommand/waitingSince; rollup gains readyToMerge. schema 6 (#156): each in-flight run gains progress {pct, phase, estimate, terminal, source} — a coarse phase-derived % from the liveness beat (null when unavailable). schema 5 (#111): + scheduler {source, nodes, edges} — the waiting-runs dependency graph; rollup gains waiting/eligible/held. Additive — older tabs read tolerantly.
     appVersion: computeAppVersion(),   // content stamp of the shipped app, recomputed each snapshot (so a long-lived --watch producer re-stamps when the UI ships) → drives the tab's version self-reload (SKILL §6)
     estRatePerMin,                     // coarse USD/min burn rate the dashboard uses to live-tick an in-flight run's estimate off `costSince` (kept here so it's server-configurable and driver/dashboard agree)
     generatedAt: new Date().toISOString(),
@@ -1921,4 +1965,5 @@ export {
   LOCK_NAME, LOCK_INFO, pidAlive, acquireWatchLock, releaseWatchLock,
   samePath, servedRootFromCommand, resolveServedRoot, checkServedRoot, parseArgs,
   parseDiff, captureDiff, DIFF_MAX_FILES, DIFF_MAX_LINES, DIFF_MAX_LINE_LEN,
+  readEstimate,
 };

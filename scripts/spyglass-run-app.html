@@ -759,6 +759,62 @@
     .vlog-row .vlog-tok, .vlog-row .vlog-models, .vlog-row .vlog-cycle { display: none; }
   }
 
+  /* ---------- estimate vs actual — calibration (#212) ----------
+     The fleet records an up-front PREDICTION (cost + time to ship) before it builds; this
+     panel grades that prediction against the actual for every shipped run that has both.
+     A rollup ("avg accuracy · within X%") + per-run "estimate → actual" rows with a signed
+     Δ, clearly labelled estimate vs actual. Same wood+brass idiom + own scroll as the log.
+     READ-ONLY — a view of how well-calibrated the fleet is. Self-hides with no graded run. */
+  .calibration { margin: 22px 0 12px; }
+  .calibration .cal-head .lane-sub .count { color: var(--brass-bright); font-weight: 650; }
+  .cal-rollup {
+    display: grid; grid-template-columns: minmax(0,1.4fr) 1fr 1fr; gap: 12px; align-items: stretch;
+    margin: 6px 0 12px;
+  }
+  .cal-hero, .cal-tile {
+    border: 1px solid var(--wood-edge); border-radius: 12px; padding: 12px 14px;
+    background: linear-gradient(180deg, #14242f, #0f1d29);
+    box-shadow: inset 0 1px 0 rgba(198,168,106,.06);
+  }
+  .cal-hero-k, .cal-tk { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-dim); }
+  .cal-hero-v { font-family: var(--mono); font-size: 26px; font-weight: 700; color: var(--brass-bright); margin-top: 4px; }
+  .cal-hero-v.dim { color: var(--ink-faint); }
+  .cal-tv { font-family: var(--mono); font-size: 17px; font-weight: 650; color: var(--parch); margin-top: 3px; }
+  .cal-tv.dim { color: var(--ink-faint); }
+  .cal-tn { font-size: 10.5px; color: var(--ink-faint); margin-top: 2px; }
+  .cal-scroll {
+    max-height: 360px; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin;
+    border: 1px solid var(--wood-edge); border-radius: 12px;
+    background: linear-gradient(180deg, #12222f, #0e1c29);
+    box-shadow: inset 0 1px 0 rgba(198,168,106,.06), 0 6px 18px rgba(0,0,0,.3);
+  }
+  .cal-row {
+    display: grid; align-items: center; gap: 12px;
+    grid-template-columns: 76px minmax(0,1fr) minmax(150px,1.1fr) minmax(150px,1.1fr);
+    padding: 10px 14px; border-bottom: 1px solid var(--line);
+  }
+  .cal-row:last-child { border-bottom: 0; }
+  .cal-row:hover { background: rgba(198,168,106,.045); }
+  .cal-id { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
+  .cal-title { color: var(--parch); font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; min-width: 0; }
+  .cal-pair { display: flex; align-items: baseline; gap: 6px; font-family: var(--mono); font-size: 12px; white-space: nowrap;
+    justify-content: flex-end; }
+  .cal-pair .cal-est { color: var(--ink-dim); }
+  .cal-pair .cal-arrow { color: var(--ink-faint); }
+  .cal-pair .cal-act { color: var(--parch); font-weight: 650; }
+  .cal-pair .cal-na { color: var(--ink-faint); }
+  .cal-delta { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; }
+  .cal-delta.over { color: var(--awaiting); }
+  .cal-delta.under { color: var(--done); }
+  .cal-delta.even { color: var(--brass); }
+  @media (max-width: 900px) {
+    .cal-rollup { grid-template-columns: 1fr 1fr; }
+    .cal-rollup .cal-hero { grid-column: 1 / -1; }
+    .cal-row { grid-template-columns: 64px minmax(0,1fr) minmax(120px,1fr); }
+    .cal-row .cal-time { display: none; }
+  }
+
   /* ---------- expanded log card ---------- */
   .logcard {
     border: 1px solid var(--brass-dim); border-top: 0; border-radius: 0 0 12px 12px;
@@ -1350,6 +1406,7 @@
         <div id="horizon"></div>
         <div id="harbour"></div>
         <div id="voyagelog"></div>
+        <div id="calibration"></div>
       </div>
       <aside class="side">
         <div id="gittree"></div>
@@ -2693,6 +2750,76 @@ function computeTrends(records, nowMs, days) {
   };
 }
 
+// ---- estimate-vs-actual calibration (#212) --------------------------------
+// PURE: grade the fleet's up-front PREDICTIONS against what actually happened. Folds an
+// array of shipped-run archive records (each may carry `estimate {cost, durationSec}` +
+// the actual `cost.totalCost` and startedAt→completedAt lead time) into per-run rows and a
+// rollup, so the dashboard can show "estimate → actual" with a signed delta + an accuracy
+// %, plus "avg within X%" over the runs that have both. No DOM / storage — exported for a
+// Node unit test. HONEST + SAFE: a run is graded on a dimension ONLY when it has BOTH a
+// finite estimate AND a finite positive actual for it; anything missing → that dimension is
+// null (rendered "—"), never a NaN / Infinity / divide-by-zero. Runs with no estimate at
+// all, or no gradeable dimension, are excluded entirely (→ an empty rollup hides the panel).
+function computeCalibration(records) {
+  const list = Array.isArray(records) ? records : [];
+  const parseMs = (iso) => { const t = Date.parse(iso == null ? "" : iso); return Number.isFinite(t) ? t : null; };
+  const posNum = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0) ? v : null;
+  const rows = [];
+  let costErrSum = 0, costErrN = 0, timeErrSum = 0, timeErrN = 0;
+  for (const rec of list) {
+    if (!rec) continue;
+    const est = rec.estimate;
+    if (!est) continue;                       // no up-front prediction → not gradeable
+    const estCost = posNum(est.cost);
+    const estDur = posNum(est.durationSec);
+    // actual cost — a recorded POSITIVE figure only (0 / null / unpriced → ungraded).
+    const c = rec.cost || {};
+    const actCost = (c.present && typeof c.totalCost === "number" && Number.isFinite(c.totalCost) && c.totalCost > 0)
+      ? c.totalCost : null;
+    // actual time to ship — the same lead time the voyage log shows (opened → merged), sec.
+    const s = parseMs(rec.startedAt), e = parseMs(rec.completedAt);
+    const actDur = (s != null && e != null && e >= s) ? (e - s) / 1000 : null;
+
+    // Grade a single dimension: needs a finite estimate AND a finite positive actual.
+    // delta = actual − estimate (positive = over-ran the prediction); errPct = |delta|/actual.
+    const grade = (estimate, actual) => {
+      if (estimate == null || actual == null || !(actual > 0)) return null;
+      const delta = actual - estimate;
+      const errPct = Math.abs(delta) / actual;
+      return { est: estimate, act: actual, delta, errPct };
+    };
+    const cost = grade(estCost, actCost);
+    const time = grade(estDur, actDur);
+    if (!cost && !time) continue;             // has an estimate object but nothing to grade
+    if (cost) { costErrSum += cost.errPct; costErrN += 1; }
+    if (time) { timeErrSum += time.errPct; timeErrN += 1; }
+    rows.push({
+      key: rec.key || null,
+      issueNumber: rec.issueNumber != null ? rec.issueNumber : null,
+      prNumber: rec.prNumber != null ? rec.prNumber : null,
+      title: rec.title || null,
+      prUrl: rec.prUrl || null,
+      issueUrl: rec.issueUrl || null,
+      outcome: rec.outcome || null,
+      completedAt: rec.completedAt || null,
+      cost, time,
+    });
+  }
+  rows.sort((a, b) => (Date.parse(b.completedAt || "") || 0) - (Date.parse(a.completedAt || "") || 0));
+  const mean = (sum, n) => (n > 0 ? sum / n : null);
+  const allN = costErrN + timeErrN;
+  return {
+    rows,
+    n: rows.length,
+    avgCostErr: mean(costErrSum, costErrN),                 // mean |Δ|/actual over cost-graded runs (0..1+)
+    avgTimeErr: mean(timeErrSum, timeErrN),                 // mean |Δ|/actual over time-graded runs
+    avgErr: mean(costErrSum + timeErrSum, allN),            // combined mean abs error → "avg within X%"
+    costN: costErrN,
+    timeN: timeErrN,
+    any: rows.length > 0,
+  };
+}
+
 // Build a compact sparkline as an inline SVG element (no external libs; XSS-safe —
 // pure element/attribute construction, never innerHTML). Draws a faint area fill + a
 // thin line across the non-null points, and a small end-dot on the last known value.
@@ -2813,7 +2940,7 @@ function renderTrends(state) {
 // The voyage-log fold + row-derivation are pure (no DOM / storage) and function-hoisted,
 // so they're referenceable here even though defined further down (#194).
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { computeScoreboard, computeTrends, durText, mergeVoyageArchive, voyageRowFields, voyageRecordFromRun, costRichness, voyageMs };
+  module.exports = { computeScoreboard, computeTrends, computeCalibration, durText, mergeVoyageArchive, voyageRowFields, voyageRecordFromRun, costRichness, voyageMs };
 }
 
 // ---- manifest (fleet totals) bar ------------------------------------------
@@ -3389,6 +3516,15 @@ function voyageRecordFromRun(run, nowIso) {
       costShare: numOrNull(m && m.costShare),
     })) : null,
   };
+  // Up-front ESTIMATE (#212) — the prediction shipwright recorded before the build. Kept
+  // on the archive record so estimate → actual can be graded per shipped run + folded into
+  // the calibration rollup. Each number degrades to null (that dimension ungraded).
+  const est = (run && run.estimate) || null;
+  const estimate = est ? {
+    cost: numOrNull(est.cost),
+    durationSec: numOrNull(est.durationSec),
+    at: est.at != null ? String(est.at) : null,
+  } : null;
   return {
     key: runKey(run),
     issueNumber: run.issueNumber != null ? run.issueNumber : null,
@@ -3400,6 +3536,7 @@ function voyageRecordFromRun(run, nowIso) {
     startedAt: run.startedAt || null,
     completedAt: run.completedAt || null,
     cost,
+    estimate,
     archivedAt: nowIso || new Date().toISOString(),
   };
 }
@@ -3420,6 +3557,9 @@ function mergeVoyageArchive(prevMap, recentRuns, nowIso) {
       const cost = costRichness(rec.cost) >= costRichness(prev.cost) ? rec.cost : prev.cost;
       map[rec.key] = Object.assign({}, prev, rec, {
         cost,
+        // Never DROP an estimate a prior fold captured: the up-front prediction is written
+        // once, so if a later degraded snapshot lacks it, keep what we already archived.
+        estimate: rec.estimate || prev.estimate || null,
         startedAt: rec.startedAt || prev.startedAt || null,
         completedAt: rec.completedAt || prev.completedAt || null,
         archivedAt: prev.archivedAt || rec.archivedAt,   // keep the FIRST-seen archive time
@@ -3574,6 +3714,130 @@ function voyageLogRow(rec) {
   row.appendChild(when);
 
   return row;
+}
+
+// ---- estimate-vs-actual calibration panel (#212) --------------------------
+// Grades the fleet's up-front predictions against actuals, from the SAME persistent
+// voyage archive the log folds (estimate + actual both ride the record). Shows a rollup
+// ("calibrated to within ~X%") + a per-run "estimate → actual" list with a signed delta,
+// clearly labelled estimate vs actual. Rides above BOTH layouts like the scoreboard/trends.
+// Self-hides when no shipped run has both an estimate and an actual (clean degrade). Every
+// value is XSS-safe via $() textContent and degrades to "—" (never NaN / undefined).
+
+// A signed money delta: +$0.42 (over) / -$0.13 (under). null/non-finite → "—".
+function signedMoney(delta) {
+  if (delta == null || !Number.isFinite(delta)) return "—";
+  const m = money(Math.abs(delta));
+  if (m == null) return "—";
+  if (delta === 0) return "±" + m;
+  return (delta > 0 ? "+" : "−") + m;
+}
+// A signed duration delta: +5m 03s (over) / −2m (under). null → "—".
+function signedDur(deltaSec) {
+  if (deltaSec == null || !Number.isFinite(deltaSec)) return "—";
+  const d = durText(Math.abs(deltaSec) * 1000);
+  if (d == null) return "—";
+  if (deltaSec === 0) return "±" + d;
+  return (deltaSec > 0 ? "+" : "−") + d;
+}
+// A within-X% chip from a 0..1+ mean-abs-error, e.g. 0.18 → "within 18%". null → "—".
+function withinPct(err) {
+  if (err == null || !Number.isFinite(err) || err < 0) return "—";
+  return "within " + Math.round(err * 100) + "%";
+}
+
+// One "estimate → actual" pair cell for cost or time. `fmt` renders each side; `sign`
+// renders the signed delta; a positive delta (over-ran the estimate) tints warm, under cool.
+function calPairCell(pair, fmt, sign, overLabel) {
+  const cell = $("div", "cal-pair");
+  if (!pair) { cell.appendChild($("span", "cal-na", "—")); return cell; }
+  cell.appendChild($("span", "cal-est", fmt(pair.est) || "—"));
+  cell.appendChild($("span", "cal-arrow", "→"));
+  cell.appendChild($("span", "cal-act", fmt(pair.act) || "—"));
+  const over = pair.delta > 0;
+  const d = $("span", "cal-delta " + (pair.delta === 0 ? "even" : over ? "over" : "under"), sign(pair.delta));
+  d.title = (pair.delta === 0 ? "spot on" : over ? overLabel + " than estimated" : "under the estimate")
+    + " · " + withinPct(pair.errPct);
+  cell.appendChild(d);
+  return cell;
+}
+
+function calibrationRow(r) {
+  const row = $("div", "cal-row");
+  // outcome pill + id/title
+  const oc = String(r.outcome || "").toLowerCase();
+  row.appendChild($("span", "vlog-outcome" + (oc === "shipped" ? " shipped" : oc === "merged" ? " merged" : ""), r.outcome || "—"));
+  const id = $("div", "cal-id");
+  const num = r.issueNumber != null ? r.issueNumber : r.prNumber;
+  const url = r.prUrl || r.issueUrl || null;
+  const numLabel = "#" + (num != null ? num : "?");
+  if (url) { const a = $("a", "vlog-num", numLabel); a.href = url; a.target = "_blank"; a.rel = "noopener"; id.appendChild(a); }
+  else id.appendChild($("span", "vlog-num", numLabel));
+  const titleTxt = r.title || numLabel;
+  const tt = $("span", "cal-title", titleTxt); tt.title = titleTxt;
+  id.appendChild(tt);
+  row.appendChild(id);
+  // cost: estimate → actual (Δ)
+  const cost = calPairCell(r.cost, (v) => money(v), signedMoney, "cost more");
+  cost.classList.add("cal-cost");
+  cost.title = "cost — estimate → actual (signed Δ)";
+  row.appendChild(cost);
+  // time: estimate → actual (Δ)
+  const time = calPairCell(r.time, (v) => durText(v * 1000), signedDur, "took longer");
+  time.classList.add("cal-time");
+  time.title = "time to ship — estimate → actual (signed Δ)";
+  row.appendChild(time);
+  return row;
+}
+
+function renderCalibration(state) {
+  const wrap = document.getElementById("calibration");
+  if (!wrap) return;
+  wrap.textContent = "";
+  if (!state) return;
+  // Fold the snapshot's landed runs into the archive (read-only — renderVoyageLog owns
+  // persistence), then grade estimate → actual over the whole archive.
+  const recentRuns = (state && Array.isArray(state.recentRuns)) ? state.recentRuns : [];
+  const archive = mergeVoyageArchive(loadVoyageArchive(), recentRuns, new Date().toISOString());
+  const cal = computeCalibration(Object.values(archive));
+  if (!cal.any) return;   // no shipped run has both an estimate and an actual → panel absent
+
+  const panel = $("div", "calibration");
+  const head = $("div", "lane-head cal-head");
+  const h2 = $("h2"); h2.appendChild($("span", "anchor", "🎯"));
+  h2.appendChild(document.createTextNode("estimate vs actual"));
+  head.appendChild(h2);
+  const sub = $("span", "lane-sub");
+  sub.appendChild($("span", "count", String(cal.n)));
+  sub.appendChild(document.createTextNode(cal.n === 1 ? " graded voyage" : " graded voyages"));
+  head.appendChild(sub);
+  panel.appendChild(head);
+
+  // rollup — the headline calibration + per-dimension accuracy tiles.
+  const roll = $("div", "cal-rollup");
+  const hero = $("div", "cal-hero");
+  hero.appendChild($("div", "cal-hero-k", "avg accuracy"));
+  const heroV = $("div", "cal-hero-v" + (cal.avgErr == null ? " dim" : ""), cal.avgErr == null ? "—" : withinPct(cal.avgErr));
+  heroV.title = "mean absolute error of the fleet's up-front predictions vs actual, across cost + time";
+  hero.appendChild(heroV);
+  roll.appendChild(hero);
+  const tile = (label, err, n) => {
+    const t = $("div", "cal-tile");
+    t.appendChild($("div", "cal-tk", label));
+    const v = withinPct(err);
+    t.appendChild($("div", "cal-tv" + (err == null ? " dim" : ""), v));
+    t.appendChild($("div", "cal-tn", n > 0 ? (n + (n === 1 ? " run" : " runs")) : "no data"));
+    return t;
+  };
+  roll.appendChild(tile("cost", cal.avgCostErr, cal.costN));
+  roll.appendChild(tile("time", cal.avgTimeErr, cal.timeN));
+  panel.appendChild(roll);
+
+  // per-run estimate → actual list
+  const scroll = $("div", "cal-scroll");
+  for (const r of cal.rows) scroll.appendChild(calibrationRow(r));
+  panel.appendChild(scroll);
+  wrap.appendChild(panel);
 }
 
 // ---- the horizon: waiting-runs dependency graph (#111) --------------------
@@ -3907,6 +4171,7 @@ function render(state) {
     wrap.appendChild(e);
     // The persistent voyage log (#194) survives a degraded snapshot — still show the archive.
     renderVoyageLog(state);
+    renderCalibration(state);   // #212 — estimate-vs-actual rollup rides the persistent archive too
     // The data vanished (degraded snapshot) and the board is now cleared — an open detail
     // panel would keep showing stale content over nothing, so close it here too (#164). This
     // early return precedes the usual refreshDetailPanel() call below, so do it explicitly.
@@ -3933,6 +4198,7 @@ function render(state) {
     wrap.appendChild(e);
     // The persistent voyage log (#194) outlives an idle fleet — still show the archive.
     renderVoyageLog(state);
+    renderCalibration(state);   // #212 — estimate-vs-actual rollup outlives an idle fleet too
     // No runs left to chart — the board is cleared, so an open detail panel has nothing
     // behind it; close it here too (this early return precedes refreshDetailPanel() below) (#164).
     closeDetailPanel();
@@ -4012,6 +4278,10 @@ function render(state) {
   // the current snapshot's landed runs into localStorage, so it grows beyond the live
   // recent-voyages window and survives a refresh / reload.
   renderVoyageLog(state);
+  // estimate-vs-actual calibration (#212) — grades the fleet's up-front predictions from the
+  // same persistent archive, under BOTH layouts like the scoreboard/trends. Self-hides until a
+  // shipped run has both an estimate and an actual.
+  renderCalibration(state);
   // keep any open board-detail panel in sync with the fresh data (or close it) (#164)
   refreshDetailPanel();
 
