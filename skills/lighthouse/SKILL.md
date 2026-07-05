@@ -309,7 +309,11 @@ busy** — a "no new work found" recon is a valid, useful result.
 
 [`crows-nest`](../crows-nest/SKILL.md) can dispatch lighthouse **autonomously** as **background,
 low-priority** reconnaissance — but only as *spare-capacity* work that **never competes with real
-build or review work**. The contract (the lookout's side is crows-nest §2f):
+build or review work**. The **exact hook** is the *tail of an empty-frontier tick*: crows-nest runs
+its reactive scheduler (scan → graph → schedule → dispatch → report), and **only if that tick's
+runnable frontier came up empty** — *horizon clear · harbour clear* — does it fall through to the
+recon step and consider dispatching lighthouse. A tick that dispatched or is holding any build or
+review never reaches it. The contract (the lookout's side is crows-nest §2f):
 
 - **Gated by `lighthouse.enabled`** (config, **default `false`** = opt-in). With it off, crows-nest
   **never** auto-dispatches lighthouse; manual `/lighthouse` still works. This is the master switch,
