@@ -290,7 +290,12 @@
        up cleanly across both lanes (#121). The time column is fixed (not max-content)
        and wide enough for the longest completed-voyage stamp ("shipped 45m 06s ago"),
        so it never drifts row-to-row and the recent lane aligns with the in-flight rows. */
-    grid-template-columns: 30px 60px minmax(0,1fr) 150px 96px 92px 96px 140px 14px;
+    /* The cost column is wide enough (#172) to CONTAIN "$X.XX so far · N.NM tok" — with
+       the token suffix (#149) the figure runs ~130px, and a narrow column let it overflow
+       LEFT (justify-content:flex-end) across the gap into the status column, drawing the
+       cost text over the slim progress bar (#156). Sizing the column to fit the figure keeps
+       cost and progress in separate, non-overlapping regions at every width. */
+    grid-template-columns: 30px 60px minmax(0,1fr) 150px 96px 140px 96px 140px 14px;
     padding: 11px 15px;
     background: linear-gradient(180deg, var(--wood-2), var(--wood));
     border: 1px solid var(--wood-edge); border-radius: 12px;
@@ -392,12 +397,12 @@
   /* coarse progress estimate (#156): a slim bar + % under the status word, on
      in-flight (building/reviewing) cards only. Honest — a phase-derived estimate. */
   .s-prog { display: inline-flex; align-items: center; gap: 6px; width: 100%; justify-content: flex-end; }
-  .s-prog-track { position: relative; height: 4px; width: 64px; border-radius: 2px;
+  .s-prog-track { position: relative; height: 4px; width: 56px; border-radius: 2px;
     background: #22384f; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); }
   .s-prog-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px;
     background: linear-gradient(90deg, var(--brass-dim), var(--brass-bright)); transition: width .6s ease; }
   .s-prog-pct { font-family: var(--mono); font-size: 10.5px; font-weight: 650;
-    color: var(--brass); min-width: 30px; text-align: right; letter-spacing: 0; white-space: nowrap; }
+    color: var(--brass); min-width: 28px; text-align: right; letter-spacing: 0; white-space: nowrap; }
   @media (prefers-reduced-motion: reduce) { .s-prog-fill { transition: none; } }
   .s-cost { color: var(--ink-dim); font-family: var(--mono); font-size: 13px;
     display: inline-flex; align-items: baseline; gap: 4px; justify-content: flex-end; }
@@ -1074,11 +1079,25 @@ function groupOf(run) {
 function isActiveBuild(run) {
   return !run.recent && !run.terminal && !run.blocked && groupOf(run) === "building";
 }
-// Whether a run's card is open: an active build is open BY DEFAULT (unless the operator
-// has manually collapsed it); every other run opens only on an explicit manual expand.
+// A run at the IN-REVIEW stage auto-expands its summary card too (#172) — the same
+// reviewer-facing affordance an active build gets (#131), so a reviewer sees the in-review
+// run's panel open without a click. Only a genuine in-flight in-review run (never recent,
+// terminal, or blocked), matched by the real "In review" stage at the active leg — not the
+// whole "reviewing" group (which also covers the earlier "PR opened" stage).
+function isInReview(run) {
+  return !run.recent && !run.terminal && !run.blocked
+    && groupOf(run) === "reviewing"
+    && (run.stages || [])[run.activeIndex] === "In review";
+}
+// A run whose card auto-expands by default: an active build (#131) or an in-review run (#172).
+// These share the summary-card affordance and the userCollapsed manual-collapse override.
+function autoExpands(run) { return isActiveBuild(run) || isInReview(run); }
+// Whether a run's card is open: an auto-expanding run (active build / in-review) is open BY
+// DEFAULT (unless the operator has manually collapsed it); every other run opens only on an
+// explicit manual expand.
 function isRunOpen(run) {
   const key = runKey(run);
-  if (isActiveBuild(run)) return !userCollapsed.has(key);
+  if (autoExpands(run)) return !userCollapsed.has(key);
   return expanded.has(key);
 }
 
@@ -1537,7 +1556,7 @@ function renderCard(run) {
 // a run block = the voyage row + (when expanded) the full log card.
 function renderRun(run) {
   const key = runKey(run);
-  const activeBuild = isActiveBuild(run);
+  const auto = autoExpands(run);   // active build (#131) OR in-review (#172) — auto-expanded
   const isOpen = isRunOpen(run);
   // The run's real armada:* GROUP rides as a `g-<group>` class so the CSS can key
   // the state-specific ambient animations off it (#150) — building shimmer, awaiting
@@ -1546,10 +1565,10 @@ function renderRun(run) {
   block.dataset.key = key;
   const row = renderRow(run, isOpen);
   const toggle = () => {
-    // An active build is expanded by default (#131): a manual toggle records the
-    // operator's collapse / re-open in userCollapsed. Every other run toggles the
-    // usual expanded set. Either way the auto-expand default is never mutated away.
-    if (activeBuild) {
+    // An auto-expanding run (active build #131 / in-review #172) is open by default: a manual
+    // toggle records the operator's collapse / re-open in userCollapsed. Every other run toggles
+    // the usual expanded set. Either way the auto-expand default is never mutated away.
+    if (auto) {
       if (userCollapsed.has(key)) userCollapsed.delete(key); else userCollapsed.add(key);
     } else {
       if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
@@ -1567,9 +1586,10 @@ function renderRun(run) {
     if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); toggle(); }
   });
   block.appendChild(row);
-  // An active build shows the COMPACT summary card (#131); every other expanded run
-  // shows the full log card. Both preserve the read-only invariant (no writes).
-  if (isOpen) block.appendChild(activeBuild ? renderSummaryCard(run) : renderCard(run));
+  // An auto-expanding run (active build #131 / in-review #172) shows the COMPACT summary
+  // card; every other expanded run shows the full log card. Both preserve the read-only
+  // invariant (no writes).
+  if (isOpen) block.appendChild(auto ? renderSummaryCard(run) : renderCard(run));
   return block;
 }
 
@@ -1739,6 +1759,11 @@ function refreshDetailPanel() {
   if (viewMode !== "board") { closeDetailPanel(); return; }
   const run = runByKey(selectedKey);
   if (!run) { closeDetailPanel(); return; }
+  // The open panel must honour the ACTIVE FILTER (#164): if the operator narrows the board
+  // so the open run no longer shows — or the run changes stage across a --watch poll so it
+  // no longer matches the filter — its board card is gone, so close the panel rather than
+  // leave a modal floating over a board that no longer holds it (the intent setFilterMode notes).
+  if (!matchesFilter(run)) { closeDetailPanel(); return; }
   fillDetailPanel(run);
 }
 // wire the close affordances once: the × button, a backdrop click, and Escape. A tiny
@@ -2245,6 +2270,10 @@ function render(state) {
     e.appendChild($("div", "big", "no runs to chart"));
     e.appendChild($("div", "sub", esc(state.degraded)));
     wrap.appendChild(e);
+    // The data vanished (degraded snapshot) and the board is now cleared — an open detail
+    // panel would keep showing stale content over nothing, so close it here too (#164). This
+    // early return precedes the usual refreshDetailPanel() call below, so do it explicitly.
+    closeDetailPanel();
     prevState = new Map();
     return;
   }
@@ -2259,6 +2288,9 @@ function render(state) {
     e.appendChild($("div", "big", "an empty harbour"));
     e.appendChild($("div", "sub", "The fleet is idle — no armed issues, open PRs, or recent voyages."));
     wrap.appendChild(e);
+    // No runs left to chart — the board is cleared, so an open detail panel has nothing
+    // behind it; close it here too (this early return precedes refreshDetailPanel() below) (#164).
+    closeDetailPanel();
     prevState = new Map();
     return;
   }
