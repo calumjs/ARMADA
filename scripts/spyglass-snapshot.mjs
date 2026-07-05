@@ -83,8 +83,13 @@ function ghJson(args) {
   }
 }
 
-function resolveRepo(explicit) {
+function resolveRepo(explicit, config = {}) {
+  // Precedence: --repo flag > config.activeRepo (the multi-repo selection) >
+  // ambient `gh repo view`. With neither flag nor activeRepo this is exactly
+  // today's single-repo behaviour (the ambient cwd repo). See repo-target.mjs.
   if (explicit) return explicit;
+  const active = typeof config.activeRepo === 'string' ? config.activeRepo.trim() : '';
+  if (active) return active;
   const r = ghJson(['repo', 'view', '--json', 'nameWithOwner']);
   return r && r.nameWithOwner ? r.nameWithOwner : null;
 }
@@ -394,7 +399,7 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const { config, commissioned } = readConfig();
   const label = args.label || config.triggerLabel || 'armada';
-  const repo = resolveRepo(args.repo);
+  const repo = resolveRepo(args.repo, config);
   const slug = (repo || 'local-repo').replace(/[^A-Za-z0-9._-]+/g, '-');
   const outDir = args.out || path.join(os.tmpdir(), 'armada-spyglass', slug);
 

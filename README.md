@@ -145,6 +145,15 @@ A couple of related distribution conventions:
   "dispatch": "shipwright",
   // Default base branch for new work.
   "baseBranch": "main",
+  // MULTI-REPO (opt-in) — let the fleet switch between more than one repo without re-commissioning.
+  //   "repos"      → the set of "owner/name" targets ([] / omitted = single-repo default, unchanged)
+  //   "activeRepo" → which one is currently selected ("" / omitted = the ambient cwd repo)
+  // Resolution rule everywhere: --repo flag > activeRepo > ambient `gh repo view`. Switch with
+  //   node scripts/repo-target.mjs use <owner/name>     (no re-commission; --add to append a new repo)
+  // crows-nest targets the active repo; spyglass charts it. One repo at a time — concurrent
+  // multi-repo watching is a follow-up. See skills/crows-nest/references/multi-repo.md.
+  "repos": [],
+  "activeRepo": "",
   // Optional author allowlist — whose issues the lookout will act on (matched case-insensitively).
   //   "" (blank/omitted) → anyone (default)
   //   "calumjs"          → only that author

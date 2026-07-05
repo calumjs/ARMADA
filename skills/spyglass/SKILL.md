@@ -118,7 +118,10 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/spyglass-snapshot.mjs" [--label <triggerLabe
 
 The script:
 
-1. Resolves the repo (via `gh repo view`) and the trigger label (arg → config → `armada`).
+1. Resolves the repo — **`--repo` flag > `config.activeRepo` (the multi-repo selection, commission §3a)
+   > ambient `gh repo view`** — and the trigger label (arg → config → `armada`). So when the fleet has
+   an `activeRepo` selected, the dashboard charts that repo with no extra flag; single-repo repos are
+   unchanged (ambient cwd).
 2. Runs the **same §2a read-only queries** crows-nest uses:
    ```bash
    gh issue list --label "<triggerLabel>" --state open \
@@ -747,7 +750,8 @@ the app into an output dir — it is **not** loaded into the rendered view:
 - Optional trigger label (positional, defaults to `.armada/config.json` → `triggerLabel`, else
   `armada`).
 - Optional `--watch <seconds>` cadence for continuous liveness; `--out <dir>` to override the output
-  dir; `--repo <owner/name>` to chart a different repo; `--no-open` to suppress the browser open.
+  dir; `--repo <owner/name>` to chart a different repo (overrides `config.activeRepo`; absent ⇒
+  `activeRepo` if set, else the ambient repo); `--no-open` to suppress the browser open.
 
 ## Output
 

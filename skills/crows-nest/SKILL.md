@@ -78,6 +78,24 @@ Read `.armada/config.json` from the target repo:
 - `dispatch` — how to hand off a claimed issue: `"shipwright"` (one build pass, default) or
   `"flagship"` (autonomous drive-to-merge loop).
 - `baseBranch` — default base for new work.
+- `repos` / `activeRepo` — **opt-in multi-repo targeting** (default: single-repo, unchanged). `repos`
+  is a list of `owner/name` the fleet may switch between; `activeRepo` selects which one this watch
+  targets. **Both empty/omitted ⇒ the lookout watches THIS repo** (the ambient `gh` cwd repo), exactly
+  as before. When set, the lookout **resolves the active repo once at arm time** and targets it for the
+  whole watch — the resolution rule is **`--repo` flag > `config.activeRepo` > ambient `gh repo view`**,
+  centralised in the bundled `repo-target.mjs` helper. **Report it in the tick header so the active
+  repo is unambiguous**, and switch it between runs with no re-commission:
+
+  ```bash
+  node "${CLAUDE_PLUGIN_ROOT:-<pluginRoot>}/scripts/repo-target.mjs" resolve   # active repo + source (flag/config/ambient)
+  node "${CLAUDE_PLUGIN_ROOT:-<pluginRoot>}/scripts/repo-target.mjs" use <owner/name>   # switch the active repo (writes activeRepo)
+  ```
+
+  Then **thread the resolved repo into every `gh` call** (§2a scan, §2d claim, §3/§5 reconcile) as
+  `--repo <activeRepo>` — **but only when it differs from the ambient repo** (i.e. `repos`/`activeRepo`
+  is configured). With no multi-repo config, omit `--repo` and run against the cwd repo exactly as
+  today. This increment watches **one selected repo per `/loop`**; watching several **concurrently** is
+  a deliberate follow-up — see [references/multi-repo.md](references/multi-repo.md).
 - `commands` — the project's `build`/`test`/`lint` (the ready-PR pipeline re-validates with these).
 - `pluginRoot` — the **fallback** location of ARMADA's bundled `scripts/` dir, recorded by
   [`commission`](../commission/SKILL.md) §1a under a no-plugin **drop-in** install (an absolute path
@@ -283,9 +301,10 @@ one PR list per tick, each `--json`-projected so the whole scan is two round-tri
 per-item calls:
 
 ```bash
-gh issue list --label "<triggerLabel>" --state open \
+# <repoArgs> = "--repo <activeRepo>" when multi-repo is configured (§1), else empty (ambient cwd repo).
+gh issue list <repoArgs> --label "<triggerLabel>" --state open \
   --json number,title,labels,createdAt,assignees,author,body --limit 50
-gh pr list --label "<triggerLabel>" --state open \
+gh pr list <repoArgs> --label "<triggerLabel>" --state open \
   --json number,title,isDraft,labels,headRefName,baseRefName,files,body,mergeable,statusCheckRollup,updatedAt --limit 50
 ```
 
@@ -301,7 +320,7 @@ non-terminal `armada:*` state and needs reconciling to shipped. Pull those in **
 round-trip so the on-merge reconcile (§5.1) has its input from the same scan:
 
 ```bash
-gh pr list --label "<triggerLabel>" --state merged \
+gh pr list <repoArgs> --label "<triggerLabel>" --state merged \
   --json number,title,labels,mergedAt,closingIssuesReferences,headRefName --limit 30
 ```
 
@@ -702,6 +721,10 @@ lands via §3e):
 crows-nest tick: 5 units (3 issues, 2 PRs) · dispatched build #142 "Add CSV export" + review #150 "Fix auth" (background) · held: #143 (waiting on #142) · #151 (base #150 merging first) · #144 queued (1/1 builds in flight) · watch live
 ```
 
+**When multi-repo is configured (§1), lead the tick with the active repo** so it's unambiguous which
+repo this watch is targeting — e.g. `crows-nest tick [calumjs/site]: …`. With single-repo config
+(no `repos`), omit the prefix — the tick line is unchanged.
+
 The schedule line must always surface three things: **builds running**, **reviews running**, and
 **held + why** — so a glance at the loop history shows the full picture across both tracks. Separate
 lines are logged when a background unit completes and is reconciled:
@@ -1080,6 +1103,11 @@ node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-run-snapshot.m
 # spyglass — whole-fleet sea-chart ("chart"):
 node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-snapshot.mjs" --label "armada" --watch 15
 ```
+
+When multi-repo is configured (§1), the dashboard picks up the same `activeRepo` from config
+automatically (spyglass §1a resolves `--repo` flag > `config.activeRepo` > ambient), so it charts the
+selected repo without an extra flag; pass `--repo <owner/name>` on the line to override for one
+session.
 
 Tell the user: *"…and this line brings up the live spyglass dashboard alongside the watch — it serves
 over `http://127.0.0.1:<port>` and refreshes itself; Ctrl-C to close it."* When `spyglass` is
