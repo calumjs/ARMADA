@@ -345,6 +345,36 @@ When the fleet is busy the dashboard opens on the **overview**, not a stack of f
   uncommissioned/failing `gh` shows **"no runs to chart"** with the degraded reason, exactly as the
   chart does.
 
+#### KANBAN board — runs in lanes by pipeline stage (#163)
+
+A visible **layout toggle** in the masthead (a segmented **list ⇄ board** control) switches the run
+presentation between the default **voyage list** (above) and a **KANBAN board**. The board renders the
+fleet as **seven fixed columns — one per real voyage stage, in pipeline order** (**Queued → Building →
+PR opened → In review → Awaiting merge → Merged → Shipped**), each run a **card in the lane matching its
+`activeIndex`**. It uses the **genuine `stageForIssue` / `stageForPr` mapping** (the same `STAGES` the
+snapshot emits per run) — **not** an invented stage list.
+
+- **In-flight *and* recent runs share the board** — a merged/shipped run lands in its **Merged** /
+  **Shipped** lane, so the whole pipeline is on one screen. In board mode the board is the single
+  per-run surface: the in-flight list, recent-voyages harbour, ready-to-merge lane and horizon graph are
+  **hidden** to avoid double-listing (they return the moment you toggle back to **list**). The **manifest
+  bar** (fleet totals + weather) rides above **both** layouts.
+- **Empty lanes still render, labelled** — every stage column is always shown (with a `0` count and a
+  placeholder), so the full pipeline reads at a glance even when a stage is momentarily empty.
+- **Blocked runs keep their (approximated) stage lane and wear the blocked overlay** — a red seam plus a
+  **⚠ blocked** badge on the card, matching the voyage row's blocked treatment (the same lossy
+  `armada:blocked` approximation documented in the stage-mapping table: a blocked issue → Building, a
+  blocked PR → In review).
+- **Each card is READ-ONLY** — a tinted vessel, the **deep-linked issue/PR number** and **title**
+  (new-tab GitHub links, `rel=noopener`), a live **status** label, live **cost** (honest about phase —
+  `~$X est` / *so far* / final, same as the row), and **live-ticking elapsed**. No control on the board
+  mutates the fleet.
+- **The chosen layout PERSISTS** across the `--watch` data refresh (it's held in JS state, re-applied on
+  every re-render) **and** across the `appVersion` auto-reload (mirrored to `localStorage` under
+  `spyglass:viewMode`, restored on load). It degrades to the default **list** if `localStorage` is
+  unavailable. The board **scrolls horizontally inside its own container**, so the page body never
+  scrolls sideways even with all seven lanes on a narrow window.
+
 The manifest **groups** are derived from the real voyage stages (see the mapping table below):
 **queued** = Queued; **building** = Building; **reviewing** = PR opened + In review; **awaiting-merge**
 = Awaiting merge; **done** = Merged + Shipped; and **blocked** overrides all of them for any blocked
