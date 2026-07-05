@@ -3807,6 +3807,12 @@ function render(state) {
     mergeEl.textContent = "";
     harbourEl.textContent = "";
     wrap.textContent = "";
+    // The fleet-totals manifest bar ("in flight N voyages · …") is redundant on the KANBAN
+    // board — the lanes already show the in-flight runs — so hide it here (#213). renderFleet
+    // populated #fleet above (it rides above BOTH layouts); clear it on the board path only.
+    // The list branch leaves it intact, and each poll re-renders it, so board↔list toggles
+    // cleanly with no stale bar left behind.
+    document.getElementById("fleet").textContent = "";
     renderBoardAnimated(state, fRuns, fRecent);
     // The cross-run dependency graph renders UNDER the board too (#174) — #horizon sits
     // right after #board in the DOM (with the now-empty merge/runs lanes collapsed between
