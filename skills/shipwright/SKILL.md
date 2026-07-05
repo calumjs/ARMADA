@@ -93,6 +93,17 @@ the phase-aware grace — see crows-nest §2d *"Is an in-flight build actually s
 missing or a beat fails, **swallow it and carry on** — a liveness write must **never** block, fail, or
 delay the build. It is a courtesy to the lookout, not a step the build depends on.
 
+**Your beat survives worktree reaping automatically — you do nothing special.** You build in an
+**isolated worktree** that crows-nest **reaps** on merge, but the dashboard reads the **main** repo's
+`out/liveness/`. The producer resolves the main repo root itself (`git rev-parse --git-common-dir`, which
+from a linked worktree points at the main repo's shared `.git`), so your beat lands in the main repo's
+`out/liveness/<run>.json` even though your cwd is inside the worktree — it's visible to the board and
+outlives the reap. This also means the beat works **without** `${CLAUDE_PLUGIN_ROOT}` resolving to
+anything inside the worktree (use the `pluginRoot` fallback for the script path, as above; the *output*
+path is resolved by the producer). And crows-nest independently emits a `building` beat at dispatch and a
+terminal beat at reconcile on your behalf (its §8g), so the progress bar populates and reaches 100% even
+if one of your own beats is skipped — your beats simply *refine* the phase in between (#170).
+
 The same phase you beat also drives a **coarse progress % estimate** (#156): the producer maps each
 phase → a percentage (`research` 10 → `planning` 20 → `worktree` 25 → `implementing` 40 → `validating`
 75; `addressing` 60, `rebasing` 80; `opening-pr` 95; the terminal marker = 100), which spyglass reads
