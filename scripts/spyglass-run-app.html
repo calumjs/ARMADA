@@ -2652,9 +2652,10 @@ function buildFeedItem(run) {
 
 // Render (or hide) the live activity feed for the whole fleet. Passed the FULL run set
 // (like the manifest) so it's independent of the stage filter — a fleet-wide stream. It
-// hides entirely when nothing is in flight / nothing is beating, and only marquees when
-// the items actually overflow the strip AND motion is allowed; otherwise it's a static,
-// wrapping strip. READ-ONLY.
+// hides entirely when nothing is in flight / nothing is beating; otherwise, whenever motion
+// is allowed, it gently loop-scrolls so it always reads as live on a wide capture (#198) —
+// tiling the set to fill the viewport when it wouldn't overflow. Static only under
+// reduced-motion. READ-ONLY.
 function renderFeed(runs) {
   const wrap = document.getElementById("feed");
   wrap.textContent = "";
@@ -2677,20 +2678,24 @@ function renderFeed(runs) {
   panel.appendChild(viewport);
   wrap.appendChild(panel);
 
-  // Motion decision, made AFTER the strip is in the DOM so widths are real. Static (wrap,
-  // no scroll) under reduced-motion, or whenever the items already fit; a gentle marquee
-  // only when they overflow and motion is allowed. Duration scales with content width for
-  // a constant, calm speed; a duplicated item set makes the -50% loop seamless.
+  // Motion decision, made AFTER the strip is in the DOM so widths are real. Static (wrap, no
+  // scroll) ONLY under reduced-motion; otherwise always loop-scroll so activity always reads
+  // as live (#198). If the set already overflows we keep today's single-duplicate -50%
+  // marquee; if it fits, we tile the set into a "half" wider than the viewport, then duplicate
+  // that half — so the seamless -50% loop never shows a gap. Duration scales with the tiled
+  // half-width for a constant, calm speed.
   if (prefersReducedMotion()) { track.classList.add("static"); return; }
-  const setWidth = track.scrollWidth;
-  if (setWidth > viewport.clientWidth + 4) {
-    for (const r of items) { const c = buildFeedItem(r); c.setAttribute("aria-hidden", "true"); track.appendChild(c); }
-    track.classList.add("marquee");
-    const speed = 42;   // px per second — unhurried and legible
-    track.style.animationDuration = Math.max(14, Math.round(setWidth / speed)) + "s";
-  } else {
-    track.classList.add("static");
+  const baseWidth = track.scrollWidth;          // width of one item set
+  const vw = viewport.clientWidth;
+  // copies per half: 1 when the set already overflows (today's path), else enough to exceed
+  // the viewport (≥2) so the loop's leading half always fills the strip — no visible gap/pop.
+  const copiesPerHalf = baseWidth > vw + 4 ? 1 : Math.max(2, Math.ceil((vw + 40) / Math.max(1, baseWidth)));
+  for (let c = 1; c < copiesPerHalf * 2; c++) {
+    for (const r of items) { const el = buildFeedItem(r); el.setAttribute("aria-hidden", "true"); track.appendChild(el); }
   }
+  track.classList.add("marquee");
+  const speed = 42;   // px per second — unhurried and legible
+  track.style.animationDuration = Math.max(14, Math.round((track.scrollWidth / 2) / speed)) + "s";
 }
 
 // ---- fleet-busyness ambient tempo (#179) ----------------------------------
