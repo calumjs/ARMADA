@@ -658,6 +658,116 @@ function readLiveness(branch, issueNumber, prNumber, worktree) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Live code-diff side-channel (#211) — the actual CODE a building run is writing.
+//
+// The thoughts ticker (#186) shows a run's phase NOTES; this shows the CODE. For an
+// in-flight BUILDING run we capture a BOUNDED `git diff` of its branch/worktree and
+// attach it to the run's snapshot, so the dashboard can render a live code panel that
+// grows as the build writes. STRICTLY best-effort + READ-ONLY: every git call is
+// wrapped (swallows all errors), short-timeout'd, and output-bounded, so a missing
+// branch, a detached worktree, or a gigantic diff can NEVER block/slow a snapshot tick
+// nor blow up run-state.json. Absent/empty → null (the panel then hides — clean degrade).
+//
+// The capture is split so it's unit-testable: parseDiff() is a PURE function (crafted
+// diff string → bounded structured lines + truncation marker), captureDiff() does the
+// bounded git call (a real fixture branch, or a missing branch → null, never throws).
+// ---------------------------------------------------------------------------
+const DIFF_MAX_FILES = 8;      // cap files rendered; extra files counted → "…+N more files"
+const DIFF_MAX_LINES = 400;    // cap total emitted diff lines; overflow → truncation marker
+const DIFF_MAX_LINE_LEN = 300; // clip an over-long single line (a minified bundle) with an ellipsis
+
+// Parse a unified `git diff` into a BOUNDED, structured line list the dashboard renders
+// as typed rows (file / hunk / add / del / ctx) — each row's raw text carried verbatim so
+// the client renders it via textContent (never innerHTML: a diff is arbitrary code, so
+// XSS-safety is critical — an `<img onerror>` / `</script>` line must stay inert). Caps
+// files AND total lines; over-cap is COUNTED and surfaced as a truncation note rather than
+// dumped. Returns null when there's no changed file (→ clean-degrade hidden panel).
+function parseDiff(raw, opts = {}) {
+  const maxFiles = opts.maxFiles ?? DIFF_MAX_FILES;
+  const maxLines = opts.maxLines ?? DIFF_MAX_LINES;
+  const maxLineLen = opts.maxLineLen ?? DIFF_MAX_LINE_LEN;
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  const clip = (s) => (s.length > maxLineLen ? s.slice(0, maxLineLen) + '…' : s);
+  const lines = raw.split(/\r?\n/);
+  const out = [];              // [{ t:'file'|'hunk'|'add'|'del'|'ctx', text }]
+  let fileCount = 0;           // total changed files (counted even past the cap)
+  let added = 0, removed = 0;  // +/- line tallies over the WHOLE diff
+  let linesTruncated = false;
+  for (const line of lines) {
+    if (line.startsWith('diff --git')) {
+      fileCount += 1;
+      if (fileCount > maxFiles) continue;            // count it, but emit no more file blocks
+      // Path from "diff --git a/<p> b/<p>"; fall back to the trailing token.
+      const m = line.match(/ b\/(.+)$/);
+      const p = m ? m[1] : line.replace(/^diff --git\s+/, '');
+      if (out.length < maxLines) out.push({ t: 'file', text: clip(p) });
+      else linesTruncated = true;
+      continue;
+    }
+    if (fileCount > maxFiles) continue;              // past the file cap — skip its body entirely
+    // Drop the noisy git metadata lines (index/mode/rename/binary and the ---/+++ pair):
+    // the file row already names the file, so these only clutter a compact panel.
+    if (/^(index |--- |\+\+\+ |old mode |new mode |new file |deleted file |similarity |rename |copy |Binary |GIT binary)/.test(line)) continue;
+    // Tally +/- across the whole (pre-cap) diff so the header count is honest even when
+    // the rendered body is truncated.
+    if (line.startsWith('+')) added += 1;
+    else if (line.startsWith('-')) removed += 1;
+    if (out.length >= maxLines) { linesTruncated = true; continue; }
+    if (line.startsWith('@@')) out.push({ t: 'hunk', text: clip(line) });
+    else if (line.startsWith('+')) out.push({ t: 'add', text: clip(line.slice(1)) });
+    else if (line.startsWith('-')) out.push({ t: 'del', text: clip(line.slice(1)) });
+    else if (line.startsWith(' ')) out.push({ t: 'ctx', text: clip(line.slice(1)) });
+    // else: a blank tail line / "\ No newline at end of file" — skip.
+  }
+  if (fileCount === 0 || out.length === 0) return null;   // nothing changed → hide the panel
+  const filesShown = Math.min(fileCount, maxFiles);
+  const moreFiles = Math.max(0, fileCount - maxFiles);
+  return {
+    lines: out,                 // bounded, typed render rows (client renders text via textContent)
+    files: fileCount,           // total changed files
+    filesShown,                 // files actually emitted
+    moreFiles,                  // files omitted by the cap (→ "…+N more files")
+    linesShown: out.length,     // emitted rows
+    truncated: linesTruncated || moreFiles > 0,
+    added,                      // total + lines across the whole diff
+    removed,                    // total - lines across the whole diff
+  };
+}
+
+// Capture a BOUNDED live diff for an in-flight building run (best-effort, read-only).
+// Prefers the run's isolation WORKTREE (`git -C <worktree> diff <base>` → committed +
+// uncommitted changes vs base = the freshest "as it builds" signal in one call); falls
+// back to the main repo's `git diff <base>...<branch>` (committed changes since base)
+// when there's no worktree on disk. Every git call is wrapped, short-timeout'd, and
+// output-capped (maxBuffer) — a throw (no branch, huge diff, git absent) is swallowed →
+// null, so it can never block/slow a tick. Returns parseDiff()'s bounded shape, or null.
+function captureDiff({ worktree, branch, base }) {
+  const baseRef = (typeof base === 'string' && base.trim()) ? base.trim() : 'HEAD';
+  const runGit = (args, cwd) => execFileSync('git', args, {
+    cwd: cwd || process.cwd(),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 4000,               // a local diff is fast; hard-cap so a hung git can't wedge a tick
+    maxBuffer: 8 * 1024 * 1024,  // a diff larger than this throws → swallowed → null (bounded)
+  });
+  let raw = null;
+  try {
+    if (worktree && existsSync(worktree)) {
+      // Working tree vs base — includes the branch's committed AND uncommitted edits.
+      raw = runGit(['-C', worktree, 'diff', '--no-color', baseRef], worktree);
+    } else if (branch) {
+      // No worktree on disk — committed changes on the branch since it forked from base.
+      raw = runGit(['diff', '--no-color', `${baseRef}...${branch}`]);
+    } else {
+      return null;
+    }
+  } catch {
+    return null;                 // missing branch / detached / huge diff / no git → clean degrade
+  }
+  try { return parseDiff(raw); } catch { return null; }
+}
+
 // Discover the logbook "done video" for a run from GitHub release assets
 // (READ-ONLY GET). logbook uploads the walkthrough as a per-PR/issue release
 // asset. Returns the best video match {name,url,updatedAt} or null.
@@ -1294,7 +1404,7 @@ function buildScheduler({ runs, recentRuns, issues, prs, cap, schedState, repo }
 // ---------------------------------------------------------------------------
 // Snapshot — the read-only scan + correlate + build runs.
 // ---------------------------------------------------------------------------
-function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePerMin, maxConcurrentBuilds }) {
+function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePerMin, maxConcurrentBuilds, baseBranch }) {
   const repoArgs = repo ? ['--repo', repo] : [];
 
   // Read-only §2a reads. NOTE: crows-nest DROPS the base trigger label when it
@@ -1387,6 +1497,15 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
     // null when no beat / unknown phase (→ the dashboard shows no bar). A recent
     // (terminal) run drops it — its outcome, not a live %, is what the harbour shows.
     const progress = recent ? null : readLiveness(branch, issueNumber, prNumber, worktree);
+    // Live code-diff side-channel (#211) — the actual CODE a BUILDING run is writing.
+    // Captured ONLY for an in-flight, non-blocked run at the Building stage (the leg where
+    // shipwright writes code) and only when we have a branch/worktree to diff — recent /
+    // terminal / blocked / non-building runs, and diff-less runs, carry null so the panel
+    // hides (clean degrade). Best-effort + bounded; never throws (see captureDiff).
+    const building = !recent && !stage.blocked && !stage.terminal && stage.activeIndex === IDX.BUILDING;
+    const diff = (building && (worktree || branch))
+      ? captureDiff({ worktree, branch, base: (pr && pr.baseRefName) || baseBranch })
+      : null;
     // Elapsed since the run started: the issue/PR open time, or the crows-nest
     // dispatch time from the run map (whichever is earliest & known).
     const startedAt = (issue && issue.createdAt) || (pr && pr.createdAt)
@@ -1449,6 +1568,7 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
       group: recent ? stage.group : groupForStage(stage),
       doneVideo,
       progress, // #156 — coarse phase-derived % from liveness (null → no bar)
+      diff,     // #211 — bounded live code-diff for an in-flight building run (null → panel hidden)
       cost,
       // recent-lane fields (#113); absent/null on in-flight runs.
       recent: !!recent,
@@ -1603,7 +1723,7 @@ function snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePe
   rollup.held = scheduler.nodes.filter((n) => n.waiting && n.held).length;
 
   return {
-    schema: 7,                         // schema 7 (#140): + readyToMerge[] — the human merge queue (reviewed-clean, mergeable, unmerged PRs, longest-waiting first); each in-flight PR run gains mergeable/readyToMerge/mergeCommand/waitingSince; rollup gains readyToMerge. schema 6 (#156): each in-flight run gains progress {pct, phase, estimate, terminal, source} — a coarse phase-derived % from the liveness beat (null when unavailable). schema 5 (#111): + scheduler {source, nodes, edges} — the waiting-runs dependency graph; rollup gains waiting/eligible/held. Additive — older tabs read tolerantly.
+    schema: 8,                         // schema 8 (#211): each in-flight BUILDING run gains diff {lines:[{t,text}], files, filesShown, moreFiles, linesShown, truncated, added, removed} — a bounded live code-diff of the branch/worktree it's writing (null when not building / no branch / no changes). Additive — older tabs ignore it. schema 7 (#140): + readyToMerge[] — the human merge queue (reviewed-clean, mergeable, unmerged PRs, longest-waiting first); each in-flight PR run gains mergeable/readyToMerge/mergeCommand/waitingSince; rollup gains readyToMerge. schema 6 (#156): each in-flight run gains progress {pct, phase, estimate, terminal, source} — a coarse phase-derived % from the liveness beat (null when unavailable). schema 5 (#111): + scheduler {source, nodes, edges} — the waiting-runs dependency graph; rollup gains waiting/eligible/held. Additive — older tabs read tolerantly.
     appVersion: computeAppVersion(),   // content stamp of the shipped app, recomputed each snapshot (so a long-lived --watch producer re-stamps when the UI ships) → drives the tab's version self-reload (SKILL §6)
     estRatePerMin,                     // coarse USD/min burn rate the dashboard uses to live-tick an in-flight run's estimate off `costSince` (kept here so it's server-configurable and driver/dashboard agree)
     generatedAt: new Date().toISOString(),
@@ -1739,7 +1859,7 @@ function main() {
   }
 
   function once(firstRun) {
-    const state = snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePerMin, maxConcurrentBuilds });
+    const state = snapshot({ label, repo, commissioned, recentHours, recentCap, estRatePerMin, maxConcurrentBuilds, baseBranch: config.baseBranch });
     const out = writeOutputs(outDir, state);
     const d = state.degraded ? ` [degraded: ${state.degraded}]` : '';
     console.log(`spyglass-run: ${state.summary}${d}`);
@@ -1800,4 +1920,5 @@ if (isEntry) main();
 export {
   LOCK_NAME, LOCK_INFO, pidAlive, acquireWatchLock, releaseWatchLock,
   samePath, servedRootFromCommand, resolveServedRoot, checkServedRoot, parseArgs,
+  parseDiff, captureDiff, DIFF_MAX_FILES, DIFF_MAX_LINES, DIFF_MAX_LINE_LEN,
 };

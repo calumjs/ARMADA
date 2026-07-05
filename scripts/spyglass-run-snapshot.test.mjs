@@ -19,9 +19,11 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync
 import path from 'path';
 import os from 'os';
 
+import { execFileSync } from 'child_process';
 import {
   LOCK_NAME, LOCK_INFO, pidAlive, acquireWatchLock, releaseWatchLock,
   samePath, servedRootFromCommand, checkServedRoot,
+  parseDiff, captureDiff, DIFF_MAX_FILES, DIFF_MAX_LINES,
 } from './spyglass-run-snapshot.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -288,6 +290,131 @@ await testAsync('e2e: --strict with a served-root != --out refuses to start', as
     rmSync(out, { recursive: true, force: true });
     rmSync(served, { recursive: true, force: true });
   }
+});
+
+// --- live code-diff capture (#211) -----------------------------------------
+// parseDiff() — the PURE parser: crafted unified-diff string → bounded, typed lines.
+const SAMPLE_DIFF = [
+  'diff --git a/src/app.js b/src/app.js',
+  'index e69de29..4b825dc 100644',
+  '--- a/src/app.js',
+  '+++ b/src/app.js',
+  '@@ -1,3 +1,4 @@',
+  ' const x = 1;',
+  '-const y = 2;',
+  '+const y = 3;',
+  '+const z = 4;',
+].join('\n');
+
+test('parseDiff: parses files/hunks/add/del/ctx into typed lines', () => {
+  const d = parseDiff(SAMPLE_DIFF);
+  assert(d, 'a non-empty diff parses to an object');
+  assert(d.files === 1, `one file, got ${d.files}`);
+  const types = d.lines.map((l) => l.t);
+  assert(types.includes('file') && types.includes('hunk'), 'has file + hunk rows');
+  assert(types.includes('add') && types.includes('del') && types.includes('ctx'), 'has add/del/ctx rows');
+  const add = d.lines.find((l) => l.t === 'add');
+  assert(add && !add.text.startsWith('+'), 'add row strips the leading +');
+  assert(d.added === 2 && d.removed === 1, `tally +2/-1, got +${d.added}/-${d.removed}`);
+  // Metadata (index/---/+++) is dropped — only the file row names the path.
+  const fileRow = d.lines.find((l) => l.t === 'file');
+  assert(fileRow.text === 'src/app.js', `file path is the b/ path, got ${fileRow.text}`);
+});
+
+test('parseDiff: empty / whitespace / no-diff input → null (clean degrade)', () => {
+  assert(parseDiff('') === null, 'empty string → null');
+  assert(parseDiff('   \n  ') === null, 'whitespace → null');
+  assert(parseDiff('not a diff at all') === null, 'no diff --git → null');
+  assert(parseDiff(null) === null, 'null → null');
+});
+
+test('parseDiff: bounds FILES with a "…+N more" marker', () => {
+  const many = [];
+  for (let i = 0; i < DIFF_MAX_FILES + 3; i++) {
+    many.push(`diff --git a/f${i}.js b/f${i}.js`, '@@ -1 +1 @@', `+line ${i}`);
+  }
+  const d = parseDiff(many.join('\n'));
+  assert(d.files === DIFF_MAX_FILES + 3, `counts ALL files (${d.files})`);
+  assert(d.filesShown === DIFF_MAX_FILES, `emits only the cap (${d.filesShown})`);
+  assert(d.moreFiles === 3, `moreFiles = 3, got ${d.moreFiles}`);
+  assert(d.truncated === true, 'truncated flag set on file overflow');
+  const fileRows = d.lines.filter((l) => l.t === 'file').length;
+  assert(fileRows === DIFF_MAX_FILES, `only cap file rows emitted, got ${fileRows}`);
+});
+
+test('parseDiff: bounds total LINES with the truncated flag', () => {
+  const big = ['diff --git a/big.js b/big.js', '@@ -1 +1 @@'];
+  for (let i = 0; i < DIFF_MAX_LINES + 200; i++) big.push(`+line ${i}`);
+  const d = parseDiff(big.join('\n'));
+  assert(d.lines.length <= DIFF_MAX_LINES, `emitted lines capped at ${DIFF_MAX_LINES}, got ${d.lines.length}`);
+  assert(d.truncated === true, 'truncated flag set on line overflow');
+  // The +/- tally still counts the WHOLE diff, past the render cap.
+  assert(d.added === DIFF_MAX_LINES + 200, `tally counts all adds, got ${d.added}`);
+});
+
+test('parseDiff: XSS-hostile diff content is carried as INERT text (no markup parsed)', () => {
+  const evil = [
+    'diff --git a/x.html b/x.html',
+    '@@ -0,0 +1,2 @@',
+    '+<img src=x onerror=alert(1)>',
+    '+</script><script>alert(2)</script>',
+  ].join('\n');
+  const d = parseDiff(evil);
+  const adds = d.lines.filter((l) => l.t === 'add').map((l) => l.text);
+  // The text is stored VERBATIM (the client renders it via textContent, so it's inert).
+  assert(adds[0] === '<img src=x onerror=alert(1)>', 'img payload stored as literal text');
+  assert(adds[1] === '</script><script>alert(2)</script>', 'script payload stored as literal text');
+  // Crucially, each is a single string field — never HTML — so nothing is executable.
+  assert(adds.every((t) => typeof t === 'string'), 'every diff line text is a plain string');
+});
+
+// captureDiff() — the bounded git call. Uses a real throwaway git repo fixture.
+function initRepo() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'spyglass-diff-repo-'));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: ['ignore', 'ignore', 'ignore'] });
+  git('init', '-q');
+  git('config', 'user.email', 't@t');
+  git('config', 'user.name', 't');
+  git('config', 'commit.gpgsign', 'false');
+  writeFileSync(path.join(dir, 'a.txt'), 'one\ntwo\nthree\n');
+  git('add', '-A');
+  git('commit', '-qm', 'base');
+  return { dir, git };
+}
+
+test('captureDiff: a worktree with working changes → a bounded parsed diff', () => {
+  const { dir, git } = initRepo();
+  try {
+    // Rename the base branch to a known name so the fallback path is well-defined too.
+    try { git('branch', '-M', 'master'); } catch { /* older git */ }
+    // Uncommitted working change → `git -C <dir> diff HEAD` shows it.
+    writeFileSync(path.join(dir, 'a.txt'), 'one\nTWO\nthree\nfour\n');
+    const d = captureDiff({ worktree: dir, base: 'HEAD' });
+    assert(d, 'a working change yields a diff');
+    assert(d.files === 1, `one file changed, got ${d.files}`);
+    assert(d.lines.some((l) => l.t === 'add'), 'has an added line');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('captureDiff: no worktree AND a missing branch → null, never throws', () => {
+  const { dir } = initRepo();
+  try {
+    let threw = false;
+    let res;
+    try { res = captureDiff({ worktree: null, branch: 'no-such-branch-xyz', base: 'master' }); }
+    catch { threw = true; }
+    assert(!threw, 'captureDiff must never throw on a missing branch');
+    assert(res === null, 'missing branch → null (clean degrade)');
+    // A non-existent worktree path also degrades to null (falls through to no branch).
+    assert(captureDiff({ worktree: '/no/such/worktree/path', branch: null, base: 'master' }) === null, 'bad worktree → null');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('captureDiff: a clean worktree (no changes) → null (panel hidden)', () => {
+  const { dir } = initRepo();
+  try {
+    assert(captureDiff({ worktree: dir, base: 'HEAD' }) === null, 'no changes → null');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 // --- Report ----------------------------------------------------------------
