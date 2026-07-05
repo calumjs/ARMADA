@@ -1592,6 +1592,13 @@ node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/spyglass-cost-postmorte
   map --issue <n> --branch <branch> --worktree <worktree-path>
 ```
 
+This foreground write only fires when the lookout dispatches under `/loop`. So that the map is *also*
+recorded under **manual dispatch** (a direct `/shipwright <n>`, or a supervised single pick outside a
+loop), [`shipwright`](../shipwright/SKILL.md) §4a records the **same** entry itself the moment it knows
+its branch/worktree — issue #191. The write is **idempotent** (the producer keys by issue and updates in
+place, preserving the original `startedAt`), so the two writers never conflict: whichever runs first
+creates the entry and the other refreshes it, with no duplicate and no regression under `/loop`.
+
 **Also emit a coarse `building` beat ON THE RUN'S BEHALF at dispatch** so the progress bar populates
 **immediately** — not only if/when the subagent gets around to its first beat (the #170 gap: a run sat
 with no `out/liveness/<run>.json` for its whole build, so the bar showed nothing). Key it by the run's

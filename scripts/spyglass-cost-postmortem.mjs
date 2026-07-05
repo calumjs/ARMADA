@@ -57,6 +57,7 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 // ---------------------------------------------------------------------------
 // API-equivalent price table — USD per 1,000,000 tokens. An ESTIMATE, not billing
@@ -417,4 +418,10 @@ function main() {
   }
 }
 
-main();
+// Run as a CLI only when invoked directly — importing this module (e.g. the test
+// harness) must NOT execute main(). Mirrors liveness-beat.mjs / consolidate-run-artifacts.mjs.
+const isEntry = process.argv[1]
+  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (isEntry) main();
+
+export { mapRun, record, outDirOf, mainRepoRoot };
