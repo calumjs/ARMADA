@@ -373,6 +373,34 @@ Same discipline as your liveness beat (§0a): **best-effort and side-channel** (
 though your cwd is inside the worktree, and it survives the worktree being reaped on merge. If the script
 is missing or the write fails, **swallow it and carry on** — it must never block or delay the build.
 
+### 4b. Record an up-front estimate (a genuine prediction, not a backfill)
+
+Now that you've **planned** the work (§3) but **before you write a line of code** (§5), record a
+best-effort **PREDICTION** for this run: your estimated **cost (USD)** and estimated **time to ship
+(seconds)**. This is the fleet learning to *forecast* — the dashboard later grades **estimate →
+actual** per shipped run and shows how calibrated the fleet is over time (#212). Make the call from
+your plan (the surfaces touched, the test burden, how novel the work is), keyed by your **branch**,
+else the issue number:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-<config.pluginRoot>}/scripts/estimate.mjs" \
+  record --run <branch|issue> --cost <usd> --duration <sec> [--note "<basis>"]
+```
+
+**It must be a genuine up-front prediction — NEVER backfilled from the result.** Record it *here*,
+from planning, while the actual cost/time are still unknown; the file is stamped with `at` (when you
+predicted), so the calibration is only honest if it predates the build. Never revise it after the
+fact to look accurate — an over- or under-estimate is *signal*, and quietly correcting it destroys
+the very calibration this exists to build. Either number may be omitted if you genuinely can't call
+it (→ that dimension is simply ungraded, shown as `—`).
+
+Same discipline as your liveness beat (§0a) and run-map (§4a): **best-effort, side-channel,
+reap-safe.** It writes only under `out/estimates/<run>.json` (gitignored) and the producer resolves
+the **main** repo root itself (`git rev-parse --git-common-dir`), so the estimate lands where the
+read-only dashboard reads and survives the worktree being reaped. If the script is missing or the
+write fails, **swallow it and carry on** — an estimate write must **never** block, fail, or delay the
+build. It is a forecast, not a step the build depends on.
+
 ## 5. Implement
 
 Follow the approved plan. **Match the surrounding code** — its naming, structure, error handling,
