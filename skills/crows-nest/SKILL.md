@@ -319,7 +319,15 @@ review). The steps:
 
 > **2a** scan both tracks (one batched scan) → **2b** build the cross-track dependency/conflict
 > graph → **2c** schedule for maximum parallelism → **2d** dispatch issue builds (and §3 dispatches
-> PR pipelines) → **2e** report.
+> PR pipelines) → **2e** report → **2f** dispatch opportunistic recon (lighthouse) *only if the
+> frontier came up empty this tick* — the lowest-priority, spare-capacity step, run last and never
+> allowed to hold the tick.
+
+**2f is the one step gated on there being nothing else to do.** 2a–2e are the reactive scheduler and
+always run; **2f fires only at the tail of a tick whose frontier turned out empty** (§2c's *horizon
+clear · harbour clear* case) — that empty-frontier moment is exactly the hook that dispatches
+[`lighthouse`](../lighthouse/SKILL.md) (§2f). The instant any build or review is runnable or in
+flight, the frontier isn't empty, so 2f is skipped and existing work wins.
 
 ### 2a. Scan both tracks in one batched scan
 
@@ -500,8 +508,14 @@ undispatched PR stays eligible) so a later tick re-evaluates them once the block
 unit is never lost and never silently skipped** — it's reported in §2e with its reason, and the loop
 picks it up next interval when its prerequisite has landed or a slot frees.
 
-If the frontier is empty and nothing is in flight, log `crows-nest: horizon clear · harbour clear`
-and return — the loop checks again next interval. Don't invent work to look busy.
+If the frontier is empty and nothing is in flight, log `crows-nest: horizon clear · harbour clear`.
+**This empty-frontier moment is the hook for opportunistic recon (§2f)**: after reporting (§2e),
+hand off to §2f, which — *only* when `lighthouse.enabled` and a trigger condition holds — dispatches
+a background [`lighthouse`](../lighthouse/SKILL.md) pass to survey the repo and charter unarmed
+future work, then returns immediately. Recon is the fleet's idle-time activity, so it never runs
+while there's real work: if the frontier is non-empty, skip §2f entirely and just return — the loop
+checks again next interval. Don't invent work to look busy (that's precisely what §2f's `--no-arm`,
+human-gated recon is *for* — never fabricate reactive work to fill a quiet tick).
 
 ### 2d. Dispatch the scheduled issue builds
 
@@ -786,6 +800,17 @@ crows-nest: #142 build completed → PR #150 opened (armada:done)
 crows-nest: #150 review pipeline completed → merged (armada:merged)
 ```
 
+**On an empty-frontier tick, the report also states the recon decision (§2f)** — so it's legible
+whether the idle tick dispatched a lighthouse pass or why it didn't. One extra clause on the
+*horizon clear · harbour clear* line, never on a tick that dispatched real work:
+
+```
+crows-nest: horizon clear · harbour clear · recon: dispatched lighthouse (background) — 26h since last scan
+crows-nest: horizon clear · harbour clear · recon: skipped (lighthouse.enabled=false)
+crows-nest: horizon clear · harbour clear · recon: skipped (no trigger — last scan 3h ago, 4 commits since)
+crows-nest recon: lighthouse filed 2 unarmed issue(s) — #171, #172 (human review to arm)
+```
+
 **Expose the schedule read-only for the dashboard (spyglass §6, #111).** The dependency/conflict graph
 you just built (§2b) and the held reasons you just reported are **crows-nest-internal** — not in GitHub
 labels — so [`spyglass`](../spyglass/SKILL.md)'s **horizon** view (its waiting-runs dependency graph)
@@ -803,6 +828,12 @@ as the lowest-priority, spare-capacity background activity** — it must **never
 compete with real build/review work, and **never hold a tick**. It is a fire-and-forget background
 dispatch under the **identical best-effort/side-channel discipline as cartographer (§8d) and the
 ship's bell (§8c)**: bounded, never fatal, reconciled when it returns.
+
+**Where this fires in the tick.** §2f runs at the **tail of the tick, after §2e's report, and only
+down the *horizon clear · harbour clear* path of §2c** — i.e. the tick already scanned both tracks,
+built the graph, found the runnable frontier **empty**, and dispatched nothing. That empty-frontier
+moment is the sole hook: a tick that dispatched (or is holding) *any* build or review never reaches
+§2f. So the check below is really *"the frontier came up empty — is there also a reason to survey?"*
 
 Dispatch lighthouse on a tick **only when every one of these holds**:
 
@@ -1768,6 +1799,11 @@ the tick is unaffected (the dashboard just infers the graph itself).
 - When `publicIntake.enabled` (§2g): public suggestions screened, the safe good ones re-authored into
   fresh chartered issues (originals closed-and-linked), the rest marked `armada:considered` (declined)
   or `armada:flagged` (suspected injection/abuse — surfaced to a human, never acted on).
+- When `lighthouse.enabled` (§2f): on an otherwise-idle tick (empty frontier) with a trigger condition
+  met, a background [`lighthouse`](../lighthouse/SKILL.md) recon pass that surveys the repo and files
+  ≈1–3 **unarmed** (`--no-arm`), de-duped future-work issues for a human to review and arm — the recon
+  decision (dispatched / skipped + why) reported on the *horizon clear · harbour clear* line (§2e).
+  Never runs while any build or review is runnable or in flight; existing work always wins.
 - On terminal/exception events (shipped / blocked, plus opened / awaiting-human at `notify: "all"`):
   a one-line **ship's bell** `PushNotification` per the `notify` level — degrading to a logged line
   when the notifier is unavailable, never fatal to the tick (§8) — **and**, when `bellCommand` is set
