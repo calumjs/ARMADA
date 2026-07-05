@@ -252,6 +252,39 @@
   .m-cost .val { font-family: var(--mono); font-size: 19px; font-weight: 650; color: var(--brass-bright); }
   .m-cost .caveat { font-size: 9.5px; color: var(--ink-faint); letter-spacing: .02em; }
 
+  /* ---------- today's fleet scoreboard banner (#193) ----------
+     A slim top strip above the manifest with today's live scoreboard: features
+     shipped, total spend, average build time (dispatch→merge) and throughput. It
+     shares the manifest's wood+brass look so it reads as one instrument, and stays
+     compact (one short row) so it never pushes the KANBAN lanes off-screen. Every
+     figure degrades to "—" (never NaN/undefined/Infinity) when its data is absent;
+     values are set via textContent (XSS-safe), and it refreshes on the same poll
+     cycle the board does. READ-ONLY — derived from the snapshot the page already reads. */
+  .scoreboard {
+    display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; margin: 12px 0 10px;
+    background: linear-gradient(180deg, var(--wood-2), var(--wood));
+    border: 1px solid var(--wood-edge); border-radius: 12px; overflow: hidden;
+    box-shadow: inset 0 1px 0 rgba(198,168,106,.08), 0 6px 18px rgba(0,0,0,.35);
+  }
+  .scoreboard .sb-lede {
+    display: flex; flex-direction: column; justify-content: center; gap: 1px;
+    padding: 9px 16px; border-right: 1px solid var(--line); min-width: 104px;
+  }
+  .scoreboard .sb-lede .k { font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--brass); }
+  .scoreboard .sb-lede .sub { font-size: 11px; color: var(--ink-faint);
+    font-family: var(--serif); font-style: italic; }
+  .score {
+    display: flex; flex-direction: column; justify-content: center; gap: 3px;
+    padding: 9px 16px; min-width: 118px; flex: 1 1 0; border-right: 1px solid var(--line);
+  }
+  .score:last-child { border-right: 0; }
+  .score .sv { font-family: var(--mono); font-size: 19px; font-weight: 650;
+    color: var(--brass-bright); line-height: 1; }
+  .score .sv.dim { color: var(--ink-faint); }
+  .score .sk { font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-faint); }
+  @media (max-width: 640px) { .score { min-width: 45%; flex-basis: 45%; } }
+
   /* ---------- the horizon: waiting-runs dependency graph (#111) ---------- */
   .horizon { margin: 4px 0 22px; }
   .horizon .lane-head { margin: 8px 2px 10px; }
@@ -1142,6 +1175,7 @@
     </div>
     <div class="layout">
       <div class="main">
+        <div id="scoreboard"></div>
         <div id="fleet"></div>
         <div id="feed"></div>
         <div id="board"></div>
@@ -2278,6 +2312,141 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// ---- today's fleet scoreboard banner (#193) -------------------------------
+// A live "today's scoreboard": features shipped, total spend, average build time
+// (dispatch→merge) and throughput. All four are derived PURELY from the snapshot the
+// page already polls — state.rollup + state.recentRuns — so they update on the same
+// poll cycle and mutate nothing (READ-ONLY).
+//
+//   * shipped today   — state.rollup.shippedToday (the driver's authoritative count of
+//                       non-blocked terminal runs that landed since local midnight; it's
+//                       counted from the full windowed set, so it's accurate even past the
+//                       recent-lane cap). Falls back to the visible recentRuns subset.
+//   * spent today     — Σ recorded per-run cost (run.cost.totalCost) over today's landed
+//                       runs that carry a cost file. A lower bound: runs without a recorded
+//                       cost don't contribute; spendKnown is false when NONE do (→ "—").
+//   * avg build       — mean(completedAt − startedAt) over today's landed runs that have
+//                       both stamps. startedAt is the issue/PR open (or crows-nest dispatch)
+//                       time and completedAt the merge/close time — the driver's dispatch→
+//                       merge span. Null (→ "—") when no sample.
+//   * throughput      — shippedToday ÷ hours elapsed since local midnight (features/hour).
+//                       Guarded so an empty/zero-elapsed day yields "—", never Infinity.
+//
+// Pure function so it's unit-testable in Node against a fixture snapshot. `nowMs` is
+// injectable for deterministic tests; it defaults to Date.now().
+function computeScoreboard(state, nowMs) {
+  const now = (typeof nowMs === "number" && Number.isFinite(nowMs)) ? nowMs : Date.now();
+  const rollup = (state && state.rollup) || {};
+  const recent = (state && Array.isArray(state.recentRuns)) ? state.recentRuns : [];
+  const mid = new Date(now); mid.setHours(0, 0, 0, 0);   // local midnight (matches the driver)
+  const sot = mid.getTime();
+  const parseMs = (iso) => { const t = Date.parse(iso == null ? "" : iso); return Number.isFinite(t) ? t : null; };
+
+  // Today's LANDED runs visible in the harbour subset: non-blocked, merged/shipped,
+  // completed since local midnight.
+  const landedToday = recent.filter((r) => {
+    if (!r || r.blocked) return false;
+    if (r.outcome !== "Merged" && r.outcome !== "Shipped") return false;
+    const c = parseMs(r.completedAt);
+    return c != null && c >= sot;
+  });
+
+  // 1) shipped today — authoritative rollup count, else the visible subset's length.
+  const shippedToday = (typeof rollup.shippedToday === "number" && Number.isFinite(rollup.shippedToday))
+    ? rollup.shippedToday
+    : landedToday.length;
+
+  // 2) spent today — sum of recorded per-run cost over today's landed runs.
+  let spend = 0, spendKnown = false, spendN = 0;
+  for (const r of landedToday) {
+    const c = r.cost;
+    const tc = (c && c.present && typeof c.totalCost === "number" && Number.isFinite(c.totalCost)) ? c.totalCost : null;
+    if (tc != null) { spend += tc; spendKnown = true; spendN += 1; }
+  }
+
+  // 3) avg build time — mean dispatch→merge span over today's landed runs with both stamps.
+  let durSum = 0, durN = 0;
+  for (const r of landedToday) {
+    const s = parseMs(r.startedAt), e = parseMs(r.completedAt);
+    if (s != null && e != null && e >= s) { durSum += (e - s); durN += 1; }
+  }
+  const avgBuildMs = durN > 0 ? durSum / durN : null;
+
+  // 4) throughput — shipped today ÷ hours elapsed since midnight (guarded against /0).
+  const hoursElapsed = (now - sot) / 3600000;
+  const throughput = (typeof shippedToday === "number" && Number.isFinite(shippedToday) && hoursElapsed > 0)
+    ? shippedToday / hoursElapsed : null;
+
+  return { shippedToday, spend, spendKnown, spendN, avgBuildMs, avgSampleN: durN, throughput, hoursElapsed };
+}
+
+// Compact duration text from a millisecond span — "1h 08m" / "12m 30s" / "45s". Null /
+// non-finite / negative → null (→ the caller shows "—").
+function durText(ms) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return null;
+  let s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400); s -= d * 86400;
+  const h = Math.floor(s / 3600); s -= h * 3600;
+  const m = Math.floor(s / 60); s -= m * 60;
+  if (d) return `${d}d ${String(h).padStart(2, "0")}h`;
+  if (h) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m) return `${m}m ${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
+}
+
+// One scoreboard tile — label + value. Value is set via textContent (XSS-safe); a "—"
+// placeholder is dimmed. `title` carries the metric's plain-language explanation.
+function scoreTile(label, value, title) {
+  const present = value != null && value !== "—";
+  const cell = $("div", "score");
+  cell.appendChild($("div", "sv" + (present ? "" : " dim"), present ? value : "—"));
+  cell.appendChild($("div", "sk", label));
+  if (title) cell.title = title;
+  return cell;
+}
+
+// Render the live scoreboard banner from the current snapshot. Cleared (empty strip)
+// when there's no state. Degrades every figure to "—" independently.
+function renderScoreboard(state) {
+  const wrap = document.getElementById("scoreboard");
+  wrap.textContent = "";
+  if (!state) return;
+  const s = computeScoreboard(state, Date.now());
+  const bar = $("div", "scoreboard");
+
+  const lede = $("div", "sb-lede");
+  lede.appendChild($("div", "k", "today"));
+  lede.appendChild($("div", "sub", "the fleet's scoreboard"));
+  bar.appendChild(lede);
+
+  const shipped = Number.isFinite(s.shippedToday) ? String(s.shippedToday) : "—";
+  bar.appendChild(scoreTile("shipped today", shipped,
+    "Features that landed (merged/shipped) today, since local midnight."));
+
+  const spendVal = s.spendKnown ? (money(s.spend) || "—") : "—";
+  bar.appendChild(scoreTile("spent today", spendVal,
+    s.spendKnown
+      ? `Total recorded fleet spend across ${s.spendN} of today's landed run(s) (runs without a recorded cost aren't included).`
+      : "No recorded cost yet for today's landed runs."));
+
+  const avgVal = s.avgBuildMs != null ? (durText(s.avgBuildMs) || "—") : "—";
+  bar.appendChild(scoreTile("avg build", avgVal,
+    s.avgSampleN > 0
+      ? `Mean dispatch→merge time across ${s.avgSampleN} of today's landed run(s).`
+      : "No completed build times yet today."));
+
+  const thr = (s.throughput != null && Number.isFinite(s.throughput)) ? (s.throughput.toFixed(1) + "/h") : "—";
+  bar.appendChild(scoreTile("throughput", thr,
+    (s.throughput != null && Number.isFinite(s.throughput))
+      ? `${Number.isFinite(s.shippedToday) ? s.shippedToday : 0} shipped ÷ ${s.hoursElapsed.toFixed(1)}h since midnight (features/hour).`
+      : "Not enough of today elapsed to chart a rate yet."));
+
+  wrap.appendChild(bar);
+}
+
+// Expose the pure metric fn for a Node unit test without a DOM (harmless in the browser).
+if (typeof module !== "undefined" && module.exports) { module.exports = { computeScoreboard, durText }; }
+
 // ---- manifest (fleet totals) bar ------------------------------------------
 function renderFleet(state, runs) {
   const wrap = document.getElementById("fleet");
@@ -3000,6 +3169,7 @@ function render(state) {
   for (const k of Array.from(userCollapsed)) if (!live.has(k)) userCollapsed.delete(k);
 
   if (state && state.degraded) {
+    document.getElementById("scoreboard").textContent = "";
     document.getElementById("fleet").textContent = "";
     document.getElementById("feed").textContent = "";
     document.getElementById("gittree").textContent = "";
@@ -3021,6 +3191,7 @@ function render(state) {
     return;
   }
   if (!runs.length && !recentRuns.length) {
+    document.getElementById("scoreboard").textContent = "";
     document.getElementById("fleet").textContent = "";
     document.getElementById("feed").textContent = "";
     document.getElementById("gittree").textContent = "";
@@ -3041,6 +3212,7 @@ function render(state) {
     return;
   }
 
+  renderScoreboard(state);    // today's scoreboard banner — rides at the very top (#193)
   renderFleet(state, runs);   // the manifest bar rides above BOTH layouts
   renderFeed(runs);           // the live activity ticker — fleet-wide, above BOTH layouts (#186)
   renderWake(state, recentRuns);   // the commit-graph of landed runs, also above BOTH layouts (#176)
