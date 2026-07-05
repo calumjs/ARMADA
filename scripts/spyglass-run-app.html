@@ -65,6 +65,19 @@
   }
   .page { max-width: 1200px; margin: 0 auto; padding: 0 18px 72px; }
 
+  /* two-column body (#176): the main fleet surface + a narrow, sticky right-hand column
+     holding the git commit-tree of shipped/merged runs. The tree lives on the SIDE (its
+     own column) so it never crowds the KANBAN lanes; the main column keeps min-width:0 so
+     its horizontally-scrolling board stays contained. Collapses to a single stacked column
+     on narrow viewports. */
+  .layout { display: flex; align-items: flex-start; gap: 16px; }
+  .layout .main { flex: 1 1 auto; min-width: 0; }
+  .layout .side { flex: 0 0 236px; width: 236px; position: sticky; top: 14px; align-self: flex-start; }
+  @media (max-width: 980px) {
+    .layout { flex-direction: column; }
+    .layout .side { position: static; width: 100%; flex-basis: auto; }
+  }
+
   /* ---------- masthead ---------- */
   .masthead { position: relative; padding: 26px 6px 0; margin-bottom: 6px; }
   .brandrow { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
@@ -714,6 +727,75 @@
   .kc-meta { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); }
   @media (max-width: 640px) { .kcol { flex-basis: 76vw; min-width: 76vw; } }
 
+  /* ---------- the wake: a git-graph of shipped/merged runs landing on main (#176) ----------
+     A dedicated band that reads like `git log --graph`: recently LANDED runs (the recent-
+     voyages set) as commits on a single VERTICAL trunk, NEWEST AT TOP, each node deep-linking
+     to its merge commit — `● <sha>  #<n>  <title>` per row, with `HEAD → main` on the tip.
+     Fed ONLY from existing recentRuns + merge-commit refs already in the snapshot (READ-ONLY,
+     no new git history), bounded to the recent window. Rendered as its OWN band (like the
+     manifest bar) above both layouts, so it never crowds the KANBAN lanes. Scrolls vertically
+     inside itself past a tall window so the page body never grows unbounded. */
+  .wake {
+    margin: 0;
+    background:
+      radial-gradient(500px 220px at 80% -20%, rgba(198,168,106,.12), rgba(198,168,106,0) 60%),
+      linear-gradient(180deg, #0c1e30, #0a1826);
+    border: 1px solid var(--wood-edge); border-radius: 12px;
+    box-shadow: inset 0 1px 0 rgba(198,168,106,.06), 0 6px 18px rgba(0,0,0,.3);
+    padding: 12px 4px 8px;
+  }
+  .wake-head { display: flex; flex-direction: column; gap: 3px; padding: 0 12px 8px; }
+  .wake-head h2 {
+    margin: 0; font-family: var(--serif); font-size: 13px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--brass); font-weight: 600;
+  }
+  .wake-head h2 .branch { color: var(--brass-bright); margin-right: .4em; letter-spacing: normal; }
+  .wake-sub { color: var(--ink-faint); font-family: var(--mono); font-size: 10.5px; letter-spacing: .01em; }
+
+  /* the graph — a scroll box holding the branching commit tree. Bounded to the viewport
+     height and scrolls internally past a tall recent window. */
+  .wake-graph { padding: 0 4px 2px; max-height: calc(100vh - 150px);
+    overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; }
+  /* one commit row = a rail cell (an SVG drawing the main trunk PLUS this PR's branch,
+     curving out of main and merging back at the commit node — the branch/merge railroad of
+     `git log --graph`) beside the commit body. A FIXED row height makes each row's trunk
+     segment abut the next into one continuous main line, with a branch on every commit. */
+  .gc-row { display: grid; grid-template-columns: 60px minmax(0, 1fr); align-items: stretch; height: 52px; }
+  .gc-rail { position: relative; }
+  .gc-rail svg { display: block; width: 60px; height: 52px; overflow: visible; }
+  .gc-trunk { fill: none; stroke: var(--brass); stroke-width: 2.2; }
+  .gc-branch { fill: none; stroke-width: 1.8; stroke-linecap: round; }
+  .gc-branch.merged { stroke: var(--done); }
+  .gc-branch.shipped { stroke: var(--brass-bright); }
+  /* the merge commit node on the trunk + the smaller branch-tip node (the PR's own commit) */
+  .gc-node { stroke: var(--abyss); stroke-width: 2; }
+  .gc-node.merged { fill: var(--done); }
+  .gc-node.shipped { fill: var(--brass); }
+  .gc-tip { stroke: var(--abyss); stroke-width: 1.5; }
+  .gc-tip.merged { fill: var(--done); }
+  .gc-tip.shipped { fill: var(--brass); }
+
+  .gc-body { display: flex; flex-direction: column; justify-content: center; text-decoration: none;
+    color: inherit; min-width: 0; padding: 5px 8px 5px 2px; }
+  a.gc-body:hover .gc-num { color: var(--brass-bright); }
+  a.gc-body:hover .gc-sha { color: var(--brass); }
+  a.gc-body:hover .gc-sha .ext { opacity: 1; }
+  a.gc-body:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; border-radius: 6px; }
+  .gc-line1 { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .gc-num { font-family: var(--mono); font-weight: 650; font-size: 12px; color: var(--brass); flex: none; }
+  .gc-sha { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); letter-spacing: .02em;
+    display: inline-flex; align-items: baseline; flex: none; }
+  .gc-sha .ext { opacity: .55; margin-left: 1px; font-size: 8px; vertical-align: super; }
+  .gc-pill { margin-left: auto; font-size: 8px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+    padding: 1px 5px; border-radius: 999px; border: 1px solid currentColor; flex: none; }
+  .gc-pill.merged { color: var(--done); }
+  .gc-pill.shipped { color: var(--brass); }
+  .gc-ref { font-family: var(--mono); font-size: 8.5px; font-weight: 650; letter-spacing: .02em;
+    color: #06231a; background: linear-gradient(180deg, var(--brass-bright), var(--brass));
+    border-radius: 999px; padding: 1px 6px; flex: none; }
+  .gc-title { color: var(--parch); font-weight: 600; font-size: 12px; margin-top: 3px; line-height: 1.25;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
   /* ---------- focused detail panel (#164) — click a board card to expand ----------
      The KANBAN cards are too narrow to expand inline, so a click opens the run's full
      detail (pipeline / worktree / branch / per-model cost table / logbook video / review
@@ -810,12 +892,19 @@
       </div>
       <div class="substamp" id="sub">weighing anchor…</div>
     </div>
-    <div id="fleet"></div>
-    <div id="board"></div>
-    <div id="mergequeue"></div>
-    <div class="runs" id="runs"></div>
-    <div id="horizon"></div>
-    <div id="harbour"></div>
+    <div class="layout">
+      <div class="main">
+        <div id="fleet"></div>
+        <div id="board"></div>
+        <div id="mergequeue"></div>
+        <div class="runs" id="runs"></div>
+        <div id="horizon"></div>
+        <div id="harbour"></div>
+      </div>
+      <aside class="side">
+        <div id="gittree"></div>
+      </aside>
+    </div>
   </div>
   <!-- focused detail panel (#164): the KANBAN cards open their full detail here, over
        the board. Populated on open by renderCard(run); hidden by default. Read-only. -->
@@ -2229,6 +2318,109 @@ function renderHorizon(state) {
   requestAnimationFrame(draw);
 }
 
+// ---- the wake: commit-graph of shipped/merged runs landing on main (#176) --
+// A dedicated horizontal band that reads like `git log --graph`: recently LANDED
+// runs (the recent-voyages set) as commits on a single trunk, NEWEST AT LEFT, each
+// node deep-linking to its merge commit. Fed ONLY from the existing recentRuns +
+// the merge-commit refs already in the snapshot — no new git history is fetched, and
+// it never mutates anything (READ-ONLY). Bounded to the recent window (recentRuns is
+// already capped by the driver's recentWindow). Rendered as its own band above both
+// layouts (like the manifest bar) so it never crowds the KANBAN lanes. Renders
+// nothing when nothing has landed yet.
+// The rail SVG for one commit row: the main trunk segment PLUS a branch peeling off the
+// trunk, out to the PR's own commit node, and merging back into the merge node on main —
+// a real branch/merge, the `git log --graph` railroad. `pos` trims the trunk cleanly at
+// the newest/oldest ends; `lane` alternates the branch depth so the tree reads with some
+// life rather than as a flat line. Colour-keyed by outcome (merged = green, shipped = brass).
+function wakeRail(kind, pos, lane) {
+  const NS = "http://www.w3.org/2000/svg";
+  const xMain = 17, nodeY = 26, laneX = lane ? 50 : 40, tipY = 9;
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 60 52");
+  svg.setAttribute("aria-hidden", "true");
+  const path = (d, cls) => { const p = document.createElementNS(NS, "path"); p.setAttribute("class", cls); p.setAttribute("d", d); return p; };
+  const dot = (cx, cy, r, cls) => { const c = document.createElementNS(NS, "circle"); c.setAttribute("class", cls); c.setAttribute("cx", cx); c.setAttribute("cy", cy); c.setAttribute("r", r); return c; };
+  // trunk segment — full row height so rows abut into one line; trimmed at the end nodes.
+  let d = `M${xMain} 0 V52`;
+  if (pos === "first") d = `M${xMain} ${nodeY} V52`;
+  else if (pos === "last") d = `M${xMain} 0 V${nodeY}`;
+  else if (pos === "only") d = null;
+  if (d) svg.appendChild(path(d, "gc-trunk"));
+  // the branch — a single open curve sweeping up-and-out from the merge node on main to
+  // the PR's own commit (the tip), the `|\` of a merge in `git log --graph`; not a loop.
+  svg.appendChild(path(
+    `M${xMain} ${nodeY} C ${xMain + 13} ${nodeY} ${laneX} ${nodeY - 8} ${laneX} ${tipY}`,
+    "gc-branch " + kind));
+  svg.appendChild(dot(laneX, tipY, 3.2, "gc-tip " + kind));   // the PR's own branch commit
+  svg.appendChild(dot(xMain, nodeY, 5, "gc-node " + kind));   // the merge, landing on main
+  return svg;
+}
+function renderCommitRow(run, isHead, pos, lane) {
+  const merged = run.outcome === "Merged";
+  const kind = merged ? "merged" : "shipped";
+  // number → the PR when there is one (the merge lands the PR), else the issue.
+  const num = "#" + (run.prNumber ?? run.issueNumber ?? "?");
+  const row = $("div", "gc-row");
+
+  // rail cell — the branch/merge graphic for this commit.
+  const rail = $("div", "gc-rail");
+  rail.appendChild(wakeRail(kind, pos, lane));
+  row.appendChild(rail);
+
+  // body — links to the MERGE COMMIT when its ref is known (the AC), else the PR, else
+  // the issue: always the deepest link available. Read-only, new tab.
+  const url = run.mergeCommitUrl || run.prUrl || run.issueUrl;
+  const body = url ? $("a", "gc-body") : $("div", "gc-body");
+  if (url) {
+    body.href = url; body.target = "_blank"; body.rel = "noopener";
+    body.title = run.mergeCommitUrl
+      ? `${run.outcome} — open the merge commit ${String(run.mergeCommitOid).slice(0, 10)} for ${num} on GitHub`
+      : `open ${num} on GitHub`;
+  } else {
+    body.title = esc(run.title || "");
+  }
+  const l1 = $("div", "gc-line1");
+  l1.appendChild($("span", "gc-num", num));
+  // like `git log --oneline`: the short merge-commit sha (when known).
+  if (run.mergeCommitOid) {
+    const sha = $("span", "gc-sha", String(run.mergeCommitOid).slice(0, 7));
+    if (run.mergeCommitUrl) { const ext = $("span", "ext", "↗"); ext.setAttribute("aria-hidden", "true"); sha.appendChild(ext); }
+    l1.appendChild(sha);
+  }
+  l1.appendChild($("span", "gc-pill " + kind, merged ? "merged" : "shipped"));
+  body.appendChild(l1);
+  body.appendChild($("div", "gc-title", esc(run.title || "")));
+  row.appendChild(body);
+  return row;
+}
+function renderWake(state, recentRuns) {
+  const wrap = document.getElementById("gittree");
+  wrap.textContent = "";
+  // Only runs that actually LANDED on main — merged/shipped, not blocked (a blocked
+  // recent run never reached the trunk). recentRuns arrive newest-completed-first, so
+  // the trunk reads newest-at-top with no re-sort.
+  const landed = (recentRuns || []).filter((r) => !r.blocked && (r.outcome === "Merged" || r.outcome === "Shipped"));
+  if (!landed.length) return;
+
+  const band = $("div", "wake");
+  const head = $("div", "wake-head");
+  const h2 = $("h2");
+  h2.appendChild($("span", "branch", "⎇"));
+  h2.appendChild(document.createTextNode("the fleet's wake"));
+  head.appendChild(h2);
+  head.appendChild($("span", "wake-sub", `${landed.length} landed on main · newest first`));
+  band.appendChild(head);
+
+  const graph = $("div", "wake-graph");
+  const n = landed.length;
+  landed.forEach((run, i) => {
+    const pos = n === 1 ? "only" : i === 0 ? "first" : i === n - 1 ? "last" : "mid";
+    graph.appendChild(renderCommitRow(run, i === 0, pos, i % 2 === 1));
+  });
+  band.appendChild(graph);
+  wrap.appendChild(band);
+}
+
 // ---- render ---------------------------------------------------------------
 let lastState = null;
 function render(state) {
@@ -2261,6 +2453,7 @@ function render(state) {
 
   if (state && state.degraded) {
     document.getElementById("fleet").textContent = "";
+    document.getElementById("gittree").textContent = "";
     document.getElementById("board").textContent = "";
     document.getElementById("horizon").textContent = "";
     harbourEl.textContent = "";
@@ -2279,6 +2472,7 @@ function render(state) {
   }
   if (!runs.length && !recentRuns.length) {
     document.getElementById("fleet").textContent = "";
+    document.getElementById("gittree").textContent = "";
     document.getElementById("board").textContent = "";
     document.getElementById("horizon").textContent = "";
     harbourEl.textContent = "";
@@ -2296,6 +2490,7 @@ function render(state) {
   }
 
   renderFleet(state, runs);   // the manifest bar rides above BOTH layouts
+  renderWake(state, recentRuns);   // the commit-graph of landed runs, also above BOTH layouts (#176)
 
   // Transitions across BOTH lanes, computed once regardless of layout so the chime and
   // "just shipped" flourish fire the same way in list or board view.
