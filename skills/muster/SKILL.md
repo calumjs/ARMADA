@@ -79,6 +79,13 @@ do nothing special; just beat your phase. Beats are **best-effort and side-chann
 liveness write must **never** block, fail, or delay the review. The reader (crows-nest §2d *"Is an
 in-flight build actually stalled?"*) consumes these beats + the phase-aware grace to classify the run.
 
+Your beat lands in the **main** repo's `out/liveness/` even when you run inside a linked worktree: the
+producer resolves the main repo root itself (`git rev-parse --git-common-dir`), so the beat is visible to
+the dashboard and survives worktree reaping, and it works without `${CLAUDE_PLUGIN_ROOT}` resolving
+inside the worktree (the `pluginRoot` fallback covers the script path). crows-nest also emits a terminal
+beat on the run's behalf at its reconcile (its §8g), so the bar reaches 100% even if your own `done` is
+missed (#170).
+
 The phase you beat also drives a **coarse progress % estimate** (#156): the producer maps `reviewing`
 → 40, `visual-inspection` → 70, `posting` → 90, and the terminal marker → 100, which spyglass shows as
 a slim progress bar + % on your in-flight review card. You do **nothing extra** — just beat your phase;
