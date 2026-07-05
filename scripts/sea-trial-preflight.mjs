@@ -25,15 +25,29 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') args.json = true;
-    else if (a === '--config') args.config = argv[++i];
-    else if (a === '--max-runtime-sec') args.maxRuntimeSec = Number(argv[++i]) || args.maxRuntimeSec;
+    else if (a === '--config' || a === '--max-runtime-sec') {
+      // Value-flags MUST be followed by a value. A trailing value-flag (or one immediately
+      // followed by another flag) is a malformed invocation — if we blindly consumed the next
+      // token we'd assign `undefined` and later throw in existsSync(undefined). Record it and
+      // let the run degrade to a clean SKIP (exit 0) instead of throwing.
+      const val = argv[i + 1];
+      if (val === undefined || (typeof val === 'string' && val.startsWith('--'))) {
+        args.malformed = `${a} given with no value`;
+        continue; // don't consume a token; keep defaults intact
+      }
+      i++;
+      if (a === '--config') args.config = val;
+      else args.maxRuntimeSec = Number(val) || args.maxRuntimeSec;
+    }
   }
   return args;
 }
 
 // Read commands.run from the repo's config, tolerating an absent/malformed file (fail soft → skip).
 function readRunCommand(configPath) {
-  if (!existsSync(configPath)) return { present: false, reason: 'not commissioned (.armada/config.json absent)' };
+  // Guard against a non-string path (belt-and-suspenders vs a malformed --config): existsSync(undefined)
+  // throws a TypeError, which would violate the never-throws contract. Treat it as a clean skip.
+  if (typeof configPath !== 'string' || !existsSync(configPath)) return { present: false, reason: 'not commissioned (.armada/config.json absent)' };
   let cfg;
   try {
     cfg = JSON.parse(readFileSync(configPath, 'utf8'));
@@ -66,7 +80,11 @@ function probePlaywright() {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const run = readRunCommand(args.config);
+// A malformed invocation (e.g. a trailing value-flag with no value) can't be trusted to point at the
+// right config — degrade to a clean SKIP rather than reading an undefined path (which would throw).
+const run = args.malformed
+  ? { present: false, reason: `malformed invocation (${args.malformed})` }
+  : readRunCommand(args.config);
 const browser = run.present ? probePlaywright() : { available: false, reason: 'not probed (no runnable app)' };
 
 let verdict, reason;
