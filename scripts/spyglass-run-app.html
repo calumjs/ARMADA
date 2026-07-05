@@ -2986,7 +2986,7 @@ function renderFeed(runs) {
 //
 // XSS-CRITICAL: a diff line is arbitrary code. EVERY line's text is set via the
 // $()/textContent helper — NEVER innerHTML — and +/- colouring is by CLASS on the line
-// element, never by parsing or injecting markup. So an `<img onerror=…>` or `</script>`
+// element, never by parsing or injecting markup. So an `<img onerror=…>` or a close-script tag
 // in a diff line is inert text, never executed. Bounded by the client too (see the caps
 // below) on top of the server-side cap, with a truncation note.
 
@@ -3030,7 +3030,7 @@ function buildDiffRun(run) {
     if (shown >= CD_MAX_LINES) { clientTruncated = true; break; }
     const cls = "cd-line " + (CLS[ln && ln.t] || "cd-ctx");
     // ln.text is untrusted code — $(...,...,txt) sets it via textContent, so any markup
-    // in it (an <img onerror>, a </script>) renders as literal text and never executes.
+    // in it (an <img onerror>, a close-script tag) renders as literal text and never executes.
     code.appendChild($("span", cls, ln && ln.text != null ? String(ln.text) : ""));
     shown++;
   }
