@@ -417,6 +417,31 @@ Hold the bar:
   the bug was actually removed, not merely that the suite is green. muster remains the backstop, but
   it should be **confirming** a verified fix, not discovering an unverified one.
 
+## 6b. Runtime shakedown — optionally drive the app via `sea-trial`
+
+A green §6 proves the code compiles and the old assertions hold; it does **not** prove the change
+*works when a user drives the running app*. When the change has a **runtime surface** (a UI flow, a
+route, an interaction — anything harder to prove with a test than by sailing it) and the repo exposes
+`commands.run`, invoke [`sea-trial`](../sea-trial/SKILL.md) via the `Skill` tool against the just-built
+change **before opening the PR**: it launches the app via `commands.run`, drives the real flow with
+Playwright, and returns a **PASS / FAIL / SKIPPED / DEGRADED** verdict with evidence (screenshots,
+console/network errors). This is the drive-the-running-app layer **on top of** the §6a
+reproduce→fix→verify loop.
+
+Treat it exactly like the logbook hand-off (§9) and muster's runtime lens (§1c): **best-effort and
+side-channel** — invoke it, absorb the outcome, and **never let its verdict block, fail, or delay the
+build**. A **SKIPPED** (no `commands.run`) or **DEGRADED** (no Playwright/browser) result changes
+nothing — the static gates from §6 still stand; carry on and note it. A **FAIL** is **advisory, not a
+build gate**: it's a real runtime regression a green build missed, so surface it **strongly** — fold
+the evidence (screenshots, console/network errors) into the PR body and recommend the fix so muster and
+a human see it plainly — but it does **not** hard-block opening the PR. Fix it if you can before
+opening; if you don't, open the PR with the FAIL noted as a recommended follow-up rather than holding
+the build. This keeps sea-trial consistent with its contract that a **failure or skip must never block
+or fail a build or review** — same as muster §1c, where a FAIL is a surfaced finding but never wedges
+the gate. (This is distinct from the §6a bug-repro bar, which **is** a hard gate — that's the reported
+symptom of a bug-type issue, not this optional, off-by-default runtime lens.) sea-trial is gated by
+`sea-trial.enabled` for this auto-invocation (a human's `/sea-trial` always runs).
+
 ## 7. Open the pull request
 
 ```bash

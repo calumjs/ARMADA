@@ -203,6 +203,24 @@ adds, text overflowing a fixed-width column — are **invisible in the diff** an
 UI change that was never rendered during review is an **incomplete review**: say so in the summary rather
 than passing a diff-only read as complete.
 
+### 1c. Runtime lens — optionally drive the flow via `sea-trial`
+
+The visual inspection (§1b) renders a UI change and *looks* at it; [`sea-trial`](../sea-trial/SKILL.md)
+generalises that to a **driven runtime flow** — it launches the app via `commands.run` and drives the
+real user interaction the PR touches with Playwright, returning a **PASS / FAIL / SKIPPED / DEGRADED**
+verdict with evidence. When the PR has a runtime surface beyond a static render (a multi-step flow, an
+interaction, a data path that only manifests live) and the repo exposes `commands.run`, muster can
+invoke sea-trial via the `Skill` tool as an **additional lens** and fold its verdict into the review:
+
+- A **FAIL** is a finding — surface it with the screenshot/console evidence sea-trial captured, the
+  same as any code or visual finding.
+- A **SKIPPED** (no runnable app) or **DEGRADED** (no Playwright/browser) is **noted in the summary**
+  the same way a missing second lens is (§1a) — a degraded lens is **incomplete, not a pass**, and it
+  **never blocks or wedges** the review. sea-trial degrades gracefully and never errors, so this lens
+  can only *add* signal, never stall the gate.
+
+Gated by `sea-trial.enabled` for auto-invocation; a human's `/sea-trial` always runs.
+
 ### Per-finding schema (both lenses return this)
 
 Each reviewer returns a JSON array of findings; a finding is:
