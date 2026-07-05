@@ -154,24 +154,41 @@ hits the drop.)
 Detect the collision and warn — but, exactly as §1b, **never edit the user's `.gitignore`** (out of
 scope):
 
+Test the **actual files** cartographer would stage, not just the directory path — a bare
+`git check-ignore -q .armada/cartography` catches only a dir/parent ignore, but a **content-level**
+rule (`.armada/cartography/*`, `.armada/cartography/**`, or a scoped `*.md`) can leave the directory
+reported "tracked" while the learned files themselves are unstageable, so the silent-drop class isn't
+fully closed. Dry-run the exact add and treat "nothing added / paths are ignored" as GITIGNORED:
+
 ```bash
-# Is the cartography store path ignored? (check-ignore exits 0 when the path IS ignored)
-git check-ignore -q .armada/cartography && echo "GITIGNORED" || echo "tracked"
+# Robust preflight: dry-run the add cartographer would run and see if git would stage anything.
+staged=$(git add --dry-run --ignore-missing -- .armada/cartography/ 2>&1)
+if [ -z "$staged" ] || printf '%s' "$staged" | grep -qiE 'ignored by .*gitignore|paths are ignored'; then
+  echo "GITIGNORED"      # dir may look tracked, but the learned files won't stage → treat as ignored
+else
+  echo "tracked"
+fi
+# Alternative — check-ignore each concrete file under the store (catches *, **, *.md):
+#   for f in .armada/cartography/*.md; do git check-ignore -q "$f" && echo "GITIGNORED: $f"; done
 # Read the cartography mode from the config just written/confirmed (§3):
 #   → .armada/config.json → cartography   ("off" | "proposal" | "on")
 ```
 
-If `.armada/cartography/` (or `.armada/`) is ignored **and** `cartography: "on"`, print a prominent
-warning in the readiness report:
+If the store is ignored (by a dir, parent `.armada/`, or content-level `*`/`**`/`*.md` rule) **and**
+`cartography: "on"`, print a prominent warning in the readiness report:
 
 ```
 ⚠ .armada/cartography/ is covered by .gitignore, but cartography is set to "on" — cartographer
   commits its learned heuristics into the active PR by staging that dir, and `git add
   .armada/cartography/` is a silent no-op when it's ignored, so the learning is SILENTLY DROPPED
-  and never lands. Either un-ignore the cartography path yourself (e.g. add `!.armada/cartography/`
-  to .gitignore) so the commit can land, or keep cartography at "proposal" (which presents a diff
-  for approval instead of committing, so a gitignored dir doesn't strand it). commission will not
-  modify your .gitignore for you.
+  and never lands. Un-ignore the cartography path yourself so the commit can land — the right
+  un-ignore depends on which rule is catching the files:
+    • a direct dir ignore (.armada/cartography/)        → add `!.armada/cartography/`
+    • a recursive/content ignore (.../**, .../*, *.md)   → add `!.armada/cartography/**`
+    • a parent-dir ignore (.armada/ ignores everything)  → `!.armada/`, then `!.armada/cartography/`,
+        then `!.armada/cartography/**` (a child negation can't un-ignore a file whose parent is ignored)
+  …or keep cartography at "proposal" (which presents a diff for approval instead of committing, so a
+  gitignored dir doesn't strand it). commission will not modify your .gitignore for you.
 ```
 
 This warning is **advisory** — it never edits `.gitignore`, flips the `cartography` key, stages

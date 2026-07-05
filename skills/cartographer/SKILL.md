@@ -284,6 +284,13 @@ class as the drop-in `.claude/` issue (#95/#96). This gives a clear rule:
 | `"proposal"` | No (presents a diff for approval) | **No effect** — a gitignored store doesn't strand it. |
 | `"on"` | **Yes** (stages + commits) | **Learning silently dropped** — `git add` no-ops. Warned by commission §1c and cartographer §9.0. |
 
+"Gitignored" here means the **files won't stage**, not merely that the directory is named in an ignore
+rule: a content-level ignore (`.armada/cartography/*`, `.armada/cartography/**`, or a scoped `*.md`)
+drops the learned files while leaving the directory reported "tracked". The §9.0 / §1c preflight
+therefore probes the **actual files** (a dry-run `git add`), not just the dir, and the un-ignore hint
+covers parent-dir (`!.armada/`) and recursive (`!.armada/cartography/**`) cases, not only
+`!.armada/cartography/`.
+
 So: a repo that wants `"on"` must keep `.armada/cartography/` **tracked** (not gitignored); a repo
 that *does* gitignore it — treating its learned map as local scratch, which is exactly what **ARMADA
 itself** does to keep its own cartography out of the shipped plugin — should stay at **`"proposal"`**
@@ -306,12 +313,29 @@ this guard exists to catch: `"on"` mode *looks* like it committed, but nothing l
 warns about it at setup (commission §1c); cartographer is the **commit-time backstop** — never assume
 the store is committable, verify it:
 
+**Test the actual files you're about to commit, not just the directory path.** A bare
+`git check-ignore -q .armada/cartography` tests only the *directory*, so a **content-level** ignore —
+`.armada/cartography/*`, `.armada/cartography/**`, or a scoped `*.md` under it — can leave the
+directory reported "tracked" while the real learned files are unstageable; `git add` then silently
+no-ops them and the drop class isn't closed. Probe the concrete files with a dry-run add (the same
+thing the real `git add` would do), and treat "nothing added / paths are ignored" as GITIGNORED:
+
 ```bash
-# Does the store path get ignored? (check-ignore exits 0 when the path IS ignored)
-git check-ignore -q .armada/cartography && echo "GITIGNORED" || echo "tracked"
+# Robust preflight: dry-run the exact add and see if git would actually stage anything.
+# --ignore-missing avoids erroring on an empty/new store; the guard fires when the files are ignored.
+staged=$(git add --dry-run --ignore-missing -- .armada/cartography/ 2>&1)
+if [ -z "$staged" ] || printf '%s' "$staged" | grep -qiE 'ignored by .*gitignore|paths are ignored'; then
+  echo "GITIGNORED"      # dir may look tracked, but the learned files won't stage → treat as ignored
+else
+  echo "tracked"
+fi
+# Belt-and-braces alternative — check-ignore each concrete file under the store (catches *, **, *.md):
+#   git ls-files --others --exclude-standard --ignored -- .armada/cartography/   # lists ignored files, if any
+#   for f in .armada/cartography/*.md; do git check-ignore -q "$f" && echo "GITIGNORED: $f"; done
 ```
 
-If `.armada/cartography/` (or `.armada/`) is ignored, **do not attempt the silent `git add`** — it
+If `.armada/cartography/` (or `.armada/`, or a content-level `*`/`**`/`*.md` rule under it) is
+ignored, **do not attempt the silent `git add`** — it
 would no-op and you'd report success while nothing landed. Instead **surface a clear warning and skip
 the commit**, then carry on without failing (on the auto path cartographer is best-effort and
 side-channel, §7 — it must never turn a green tick red; on the manual path, tell the user directly):
@@ -319,8 +343,14 @@ side-channel, §7 — it must never turn a green tick red; on the manual path, t
 ```
 ⚠ cartography: .armada/cartography/ is gitignored, so the learned heuristics cannot be committed —
   `git add` would be a silent no-op and the update would be lost. Nothing was committed. To land
-  cartography, either un-ignore .armada/cartography/ (e.g. add `!.armada/cartography/` to .gitignore)
-  and re-run, or switch cartography to "proposal" mode (which presents the diff for approval instead
+  cartography, un-ignore the store yourself so the files can stage — the right un-ignore depends on
+  which rule is catching them:
+    • a direct dir ignore (.armada/cartography/)        → add `!.armada/cartography/`
+    • a recursive/content ignore (.armada/cartography/**, .../*, *.md) → add `!.armada/cartography/**`
+    • a parent-dir ignore (.armada/ ignores everything)  → re-include the parents too:
+        `!.armada/` then `!.armada/cartography/` then `!.armada/cartography/**`
+      (a child negation can't un-ignore a file whose parent dir is still ignored)
+  …then re-run; or switch cartography to "proposal" mode (which presents the diff for approval instead
   of committing). I will not modify your .gitignore.
 ```
 
