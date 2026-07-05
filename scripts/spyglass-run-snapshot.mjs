@@ -638,9 +638,18 @@ function readLiveness(branch, issueNumber, prNumber, worktree) {
   const pct = terminal ? 100 : progressFor(phase);
   if (pct == null) return null;
   const beatTs = (typeof doc.beatTs === 'number' && Number.isFinite(doc.beatTs)) ? doc.beatTs : null;
+  // The latest activity NOTE the beat carried (#186) — the free-text "what I'm doing
+  // right now" shipwright/muster pass to `liveness-beat.mjs beat --note "…"` (SKILL §0a).
+  // The live activity feed renders "<phase> · <note>" per in-flight run, so surface it
+  // here alongside the phase it's already deriving progress from. Read-only; trimmed to a
+  // sane length so a stray long note can't blow out the ticker, and null when absent/blank
+  // (the feed then shows just the phase → degrades cleanly).
+  const rawNote = (typeof doc.note === 'string') ? doc.note.trim() : '';
+  const note = rawNote ? (rawNote.length > 140 ? `${rawNote.slice(0, 139)}…` : rawNote) : null;
   return {
     pct,                 // 0..100 coarse estimate
     phase,               // the liveness phase it was derived from
+    note,                // #186 — latest activity note from the beat (null when absent)
     terminal,            // terminal marker present → 100
     estimate: true,      // ALWAYS honestly an estimate (phase-derived, not true sub-step)
     source: 'liveness',

@@ -1026,6 +1026,71 @@
   @media (prefers-reduced-motion: reduce) {
     .detail-overlay, .detail-panel { animation: none; }
   }
+
+  /* ---------- live activity feed / ticker (#186) ----------
+     A slim, fleet-wide strip that streams what every IN-FLIGHT run is doing RIGHT NOW —
+     its current liveness PHASE + the latest activity NOTE the beat carried — for builds
+     (shipwright: research→…→opening-pr) AND reviews (muster: reviewing→visual-inspection→
+     posting) alike. It rides above BOTH the list and KANBAN layouts (in the .main column,
+     never the git-tree aside), so it never crowds the lanes or the tree. When the items
+     overflow the strip it marquees gently; hovering pauses it for reading. Under
+     prefers-reduced-motion (and whenever the items already fit) it becomes a STATIC,
+     wrapping strip with no motion at all. Hidden entirely when nothing is in flight /
+     nothing is beating — it degrades to absent, never an error. READ-ONLY. */
+  .feed { margin: 10px 0 2px; }
+  .feed-panel {
+    border: 1px solid var(--wood-edge); border-radius: 12px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(24,45,67,.72), rgba(10,29,48,.72));
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.03), 0 6px 18px rgba(3,10,18,.28);
+  }
+  .feed-head {
+    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+    border-bottom: 1px solid var(--line);
+    font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-dim);
+    background: rgba(10,20,32,.35);
+  }
+  .feed-head .live-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--done); flex: 0 0 auto;
+    box-shadow: 0 0 0 0 rgba(55,181,140,.55); animation: feed-pulse 2.4s ease-out infinite;
+  }
+  @keyframes feed-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(55,181,140,.55); }
+    70%  { box-shadow: 0 0 0 7px rgba(55,181,140,0); }
+    100% { box-shadow: 0 0 0 0 rgba(55,181,140,0); }
+  }
+  .feed-head .fh-count { margin-left: auto; color: var(--ink-faint); letter-spacing: .06em; text-transform: none; font-size: 11px; }
+  .feed-viewport { position: relative; overflow: hidden; }
+  /* soft fade at both edges so a scrolling item slides in/out of view, not a hard cut. */
+  .feed-viewport::before, .feed-viewport::after {
+    content: ""; position: absolute; top: 0; bottom: 0; width: 34px; z-index: 2; pointer-events: none;
+  }
+  .feed-viewport::before { left: 0; background: linear-gradient(90deg, rgba(11,26,42,.95), rgba(11,26,42,0)); }
+  .feed-viewport::after  { right: 0; background: linear-gradient(270deg, rgba(11,26,42,.95), rgba(11,26,42,0)); }
+  .feed-track { display: flex; align-items: center; gap: 26px; padding: 8px 14px; width: max-content; }
+  .feed-track.marquee { animation: feed-marquee linear infinite; will-change: transform; }
+  .feed-viewport:hover .feed-track.marquee, .feed-viewport:focus-within .feed-track.marquee { animation-play-state: paused; }
+  @keyframes feed-marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+  /* static (fits, or reduced-motion): wrap the items, no track scroll, no edge fades needed. */
+  .feed-track.static { flex-wrap: wrap; width: auto; gap: 8px 22px; }
+  .feed-item { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .feed-item .fi-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+    background: var(--fc, var(--building)); box-shadow: 0 0 7px var(--fc, var(--building));
+  }
+  .feed-item .fi-num { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--ink); }
+  .feed-item .fi-phase {
+    font-size: 9.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--fc, var(--building));
+    border: 1px solid currentColor; border-radius: 999px; padding: 1px 7px; opacity: .92;
+  }
+  .feed-item .fi-sep { color: var(--ink-faint); }
+  .feed-item .fi-note { font-size: 12.5px; color: var(--ink-dim); }
+  @media (prefers-reduced-motion: reduce) {
+    .feed-head .live-dot { animation: none; }
+    .feed-track.marquee { animation: none; }
+  }
+  @media (max-width: 640px) {
+    .feed-item .fi-note { font-size: 12px; }
+  }
 </style>
 </head>
 <body>
@@ -1078,6 +1143,7 @@
     <div class="layout">
       <div class="main">
         <div id="fleet"></div>
+        <div id="feed"></div>
         <div id="board"></div>
         <div id="mergequeue"></div>
         <div class="runs" id="runs"></div>
@@ -2270,6 +2336,105 @@ function renderFleet(state, runs) {
   wrap.appendChild(bar);
 }
 
+// ---- live activity feed / ticker (#186) -----------------------------------
+// A fleet-wide stream of what every IN-FLIGHT run is doing right now, from the liveness
+// beat the fleet already emits (SKILL §0a/§0b): its current PHASE + the latest activity
+// NOTE, surfaced by the snapshot on run.progress. It covers BUILDS (shipwright) and
+// REVIEWS (muster) in one unified stream. Strictly a VIEW — it renders only what the
+// beat already carries and mutates nothing.
+
+// Human-friendly label for a liveness phase. Falls back to the raw phase with hyphens
+// spaced out, so an unknown/future phase still reads (never a blank).
+const FEED_PHASE_LABEL = {
+  research: "researching", planning: "planning", worktree: "worktree",
+  implementing: "implementing", validating: "validating", "opening-pr": "opening PR",
+  addressing: "addressing review", rebasing: "rebasing",
+  reviewing: "reviewing", "visual-inspection": "visual inspection", posting: "posting review",
+};
+function feedPhaseLabel(phase) {
+  const p = String(phase || "").trim().toLowerCase();
+  if (!p) return null;
+  return FEED_PHASE_LABEL[p] || p.replace(/-/g, " ");
+}
+
+// A run belongs in the feed when it's a genuinely in-flight build or review that is
+// BEATING — i.e. it carries a live liveness phase on run.progress. Recent / terminal /
+// blocked runs, and runs with no beat yet (queued, PR-opened-awaiting-review, awaiting
+// merge — no phase), are excluded, so the feed is exactly the live activity stream.
+function feedEligible(run) {
+  if (!run || run.recent || run.terminal || run.blocked) return false;
+  const g = groupOf(run);
+  if (g !== "building" && g !== "reviewing") return false;
+  const p = run.progress;
+  return !!(p && p.phase);
+}
+
+// One ticker item: a group-coloured dot, the run number, its phase pill, and the beat's
+// latest note (when present). Built twice when the strip marquees (a seamless second copy).
+function buildFeedItem(run) {
+  const g = groupOf(run);
+  const color = GROUP_COLOR[g] || "var(--building)";
+  const p = run.progress || {};
+  const it = $("span", "feed-item");
+  it.style.setProperty("--fc", color);
+  it.appendChild($("span", "fi-dot"));
+  it.appendChild($("span", "fi-num", "#" + (run.issueNumber ?? run.prNumber ?? "?")));
+  const phase = feedPhaseLabel(p.phase) || (g === "reviewing" ? "in review" : "building");
+  it.appendChild($("span", "fi-phase", phase));
+  const note = (p.note != null && String(p.note).trim()) ? String(p.note).trim() : null;
+  if (note) {
+    it.appendChild($("span", "fi-sep", "·"));
+    it.appendChild($("span", "fi-note", note));
+  }
+  const label = `#${run.issueNumber ?? run.prNumber ?? "?"} — ${phase}${note ? " — " + note : ""}`;
+  it.title = label;
+  it.setAttribute("aria-label", label);
+  return it;
+}
+
+// Render (or hide) the live activity feed for the whole fleet. Passed the FULL run set
+// (like the manifest) so it's independent of the stage filter — a fleet-wide stream. It
+// hides entirely when nothing is in flight / nothing is beating, and only marquees when
+// the items actually overflow the strip AND motion is allowed; otherwise it's a static,
+// wrapping strip. READ-ONLY.
+function renderFeed(runs) {
+  const wrap = document.getElementById("feed");
+  wrap.textContent = "";
+  const items = (runs || []).filter(feedEligible)
+    // Newest activity reads first: reviewing then building, then by number ascending.
+    .sort((a, b) => (a.issueNumber ?? a.prNumber ?? 0) - (b.issueNumber ?? b.prNumber ?? 0));
+  if (!items.length) return;   // no in-flight beats → the strip is simply absent (clean degrade)
+
+  const panel = $("div", "feed-panel");
+  const head = $("div", "feed-head");
+  head.appendChild($("span", "live-dot"));
+  head.appendChild(document.createTextNode("live activity"));
+  head.appendChild($("span", "fh-count", items.length + (items.length === 1 ? " run" : " runs")));
+  panel.appendChild(head);
+
+  const viewport = $("div", "feed-viewport");
+  const track = $("div", "feed-track");
+  for (const r of items) track.appendChild(buildFeedItem(r));
+  viewport.appendChild(track);
+  panel.appendChild(viewport);
+  wrap.appendChild(panel);
+
+  // Motion decision, made AFTER the strip is in the DOM so widths are real. Static (wrap,
+  // no scroll) under reduced-motion, or whenever the items already fit; a gentle marquee
+  // only when they overflow and motion is allowed. Duration scales with content width for
+  // a constant, calm speed; a duplicated item set makes the -50% loop seamless.
+  if (prefersReducedMotion()) { track.classList.add("static"); return; }
+  const setWidth = track.scrollWidth;
+  if (setWidth > viewport.clientWidth + 4) {
+    for (const r of items) { const c = buildFeedItem(r); c.setAttribute("aria-hidden", "true"); track.appendChild(c); }
+    track.classList.add("marquee");
+    const speed = 42;   // px per second — unhurried and legible
+    track.style.animationDuration = Math.max(14, Math.round(setWidth / speed)) + "s";
+  } else {
+    track.classList.add("static");
+  }
+}
+
 // ---- fleet-busyness ambient tempo (#179) ----------------------------------
 // Translate the live fleet state into the board's ambient "visual tempo": how fast and
 // how bright the background sea-glow breathes. Deterministic — a pure function of the
@@ -2836,6 +3001,7 @@ function render(state) {
 
   if (state && state.degraded) {
     document.getElementById("fleet").textContent = "";
+    document.getElementById("feed").textContent = "";
     document.getElementById("gittree").textContent = "";
     document.getElementById("board").textContent = "";
     document.getElementById("horizon").textContent = "";
@@ -2856,6 +3022,7 @@ function render(state) {
   }
   if (!runs.length && !recentRuns.length) {
     document.getElementById("fleet").textContent = "";
+    document.getElementById("feed").textContent = "";
     document.getElementById("gittree").textContent = "";
     document.getElementById("board").textContent = "";
     document.getElementById("horizon").textContent = "";
@@ -2875,6 +3042,7 @@ function render(state) {
   }
 
   renderFleet(state, runs);   // the manifest bar rides above BOTH layouts
+  renderFeed(runs);           // the live activity ticker — fleet-wide, above BOTH layouts (#186)
   renderWake(state, recentRuns);   // the commit-graph of landed runs, also above BOTH layouts (#176)
 
   // Transitions across BOTH lanes, computed once regardless of layout so the chime and
